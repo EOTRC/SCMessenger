@@ -777,20 +777,23 @@ impl MeshService {
                                         );
                                     }
 
-                                    // NAT hole-punch Priority 1: proactively dial the bootstrap
-                                    // relay on startup so an outbound NAT mapping exists before
-                                    // any inbound circuit-relay traffic arrives. Non-blocking:
-                                    // a failure here must never fail service startup.
-                                    if !parsed_bootstrap.is_empty() {
-                                        match handle.connect_to_bootstrap_relay().await {
-                                            Ok(()) => tracing::info!(
-                                                "Connected to bootstrap relay"
-                                            ),
-                                            Err(e) => tracing::warn!(
-                                                "Bootstrap relay unavailable at startup (non-fatal): {:?}",
-                                                e
-                                            ),
-                                        }
+                                    // NAT hole-punch Priority 1: proactively dial a seed peer on
+                                    // startup so an outbound NAT mapping exists before any
+                                    // inbound circuit-relay traffic arrives. Non-blocking: a
+                                    // failure here must never fail service startup.
+                                    //
+                                    // Not gated on `parsed_bootstrap` any more: the swarm now
+                                    // sources seed candidates from the connection ledger first,
+                                    // so a node with an empty startup address list but a warm
+                                    // ledger must still get its hole punch. `Ok(())` now means
+                                    // an actual connection was established, so the log line is
+                                    // no longer a false positive.
+                                    match handle.connect_to_seed_peers().await {
+                                        Ok(()) => tracing::info!("Connected to seed peer"),
+                                        Err(e) => tracing::warn!(
+                                            "No seed peer reachable at startup (non-fatal): {:?}",
+                                            e
+                                        ),
                                     }
                                     while let Some(event) = event_rx.recv().await {
                                         match event {

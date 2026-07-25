@@ -29,6 +29,10 @@ zeroize = { workspace = true }
 libcrux-ml-kem = { workspace = true }
 ml-dsa = { version = "0.1.1", features = ["getrandom"] }
 bs58 = "0.5"
+# Invite QR payloads: base64 only, no compression (seed entries are bare
+# multiaddrs and fit the QR budget uncompressed). Pure Rust and already in the
+# workspace lockfile transitively, so this adds no new crates.
+base64 = "0.22"
 uniffi = { workspace = true, features = ["wasm-unstable-single-threaded"] }
 anyhow = { workspace = true }
 thiserror = { workspace = true }

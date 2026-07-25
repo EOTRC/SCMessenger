@@ -75,6 +75,60 @@ outward via `to_shared_entries()` / `share_ledger()`.
 On a LAN -- two laptops on the same Wi-Fi, a phone and a desktop in the same
 room -- no address is needed at all. Start both and they find each other.
 
+## [Current] Invites Carry a Seed Ledger -- Routing Only, No Identity
+
+An invite token (`core/src/relay/invite.rs`, `InviteToken`) carries a
+`seed_ledger`: a snapshot of the inviter's connection ledger, with the
+inviter's own dialable address always first and never evicted. It holds at
+most `MAX_SEED_LEDGER_ENTRIES` (16) records.
+
+**A seed entry is a bare multiaddr and nothing else.** No peer id, no public
+key, no nickname, no topics, no success/failure counters, no `last_seen`. An
+invite says *where to knock*, not *who lives there*: all of those fields are
+identity or behavioural metadata about a third party who never agreed to
+appear in someone else's invite. The invitee dials the bare address, completes
+the Noise handshake, and learns the peer's identity from Identify at connect
+time -- the same path used for any mDNS- or gossip-learned peer.
+`LedgerManager::annotate_identity()` attaches that identity locally afterwards.
+
+This is safe because transport peer identity is not what secures messages.
+Confidentiality is per-contact X25519 / XChaCha20-Poly1305 established out of
+band from public keys, so reaching an unintended node at a given address leaks
+nothing and decrypts nothing. Dropping the peer id does forgo dial-time
+identity pinning, which is an availability property, not a confidentiality one.
+
+The encoded invite is `SCI1:` + base64(token), checked against the 2953-byte QR
+byte-mode budget at encode time; a token that would not scan is rejected rather
+than silently truncated. No compression: 16 bare multiaddrs are roughly 500
+bytes, so a compressor would only add attack surface.
+
+The seed ledger is inside `get_signable_data()`, so it is covered by the
+inviter's signature. Tampering with it -- adding, rewriting or removing an
+entry -- invalidates the invite. This is what stops anyone who intercepts or
+forwards an invite from injecting addresses that a fresh node would dial on
+first launch.
+
+**Residual privacy note (reduced, not eliminated).** An invite still discloses
+the inviter's IP address and up to 15 other node IPs to whoever holds it. QR
+codes get photographed, forwarded and posted publicly. Treat an invite as
+though its address list were public:
+
+- Do not post an invite QR code anywhere you would not post your home IP.
+- Prefer short expiry windows for invites you share outside a room.
+- A revoked or expired invite does not un-disclose addresses that were already
+  read out of it.
+
+That is unavoidable if the invite is to be useful at all -- seed delivery is
+invite/QR only, there is no DNS seed and no shipped node list -- and it is now
+bare routing data with no identities attached.
+
+Imported seed addresses start unproven: `LedgerManager::import_seed_entries()`
+adds them with `success_count = 0` and no identity fields, which keeps them out
+of `dialable_addresses()` and `get_preferred_relays()`. They are surfaced
+through `seed_addresses()` until a real connection promotes them. An existing
+ledger entry is never touched by seed data -- counters, `last_seen` and any
+known peer id are all left exactly as they are.
+
 ## [Current] Supplying a Seed Peer Address
 
 Address format is a libp2p multiaddr:

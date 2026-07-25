@@ -291,6 +291,23 @@ const BOOTSTRAP_BACKOFF_INITIAL_SECS: u64 = 60;
 /// Maximum bootstrap re-dial backoff in seconds (16 minutes).
 const BOOTSTRAP_BACKOFF_MAX_SECS: u64 = 960;
 
+/// Upper bound on how many peer entries we put in a `/sc/ledger-exchange/1.0.0`
+/// RESPONSE. Bounds both the wire size of a single reply and how much of our
+/// peer graph one requester can pull in one round trip.
+///
+/// Native only: the wasm32 event loop has no `IronCore::ledger_manager` to
+/// answer from (that field is `cfg(not(wasm32))`), so it still replies empty.
+#[cfg(not(target_arch = "wasm32"))]
+const LEDGER_EXCHANGE_MAX_RESPONSE_PEERS: usize = 64;
+
+/// How many ledger-derived addresses `ConnectToSeedPeers` considers before
+/// falling back to the addresses the swarm was started with.
+///
+/// Native only: seed dialing is unsupported on wasm32 (browsers cannot open raw
+/// TCP/QUIC sockets), where the command returns an explicit error instead.
+#[cfg(not(target_arch = "wasm32"))]
+const SEED_DIAL_LEDGER_CANDIDATES: u32 = 8;
+
 /// How long a `SwarmCommand::Dial` reply may wait for a real
 /// `ConnectionEstablished`/`OutgoingConnectionError` signal before the
 /// pending entry is expired with a timeout error.
@@ -1432,8 +1449,13 @@ pub enum SwarmCommand {
         interval_secs: u64,
         reply: mpsc::Sender<Result<(), String>>,
     },
-    /// Proactively connect to bootstrap mesh nodes (NAT hole punching)
-    ConnectToBootstrapRelay {
+    /// Proactively connect to a seed peer (NAT hole punching).
+    ///
+    /// Candidates come from the connection ledger first and only then from the
+    /// addresses the swarm was started with. There is no such thing as a
+    /// dedicated bootstrap relay in this mesh — every node is a full relay —
+    /// so the command is named for what it does: dial a seed peer.
+    ConnectToSeedPeers {
         reply: mpsc::Sender<Result<(), String>>,
     },
     /// Shutdown the swarm
@@ -1797,14 +1819,19 @@ impl SwarmHandle {
         }
     }
 
-    /// Proactively connect to bootstrap mesh nodes for NAT hole punching.
-    /// This establishes an outbound connection to known mesh nodes, creating a NAT mapping
-    /// that allows inbound traffic through mesh forwarding paths. Called on startup
-    /// to ensure reachability in NAT scenarios.
-    pub async fn connect_to_bootstrap_relay(&self) -> Result<()> {
+    /// Proactively connect to a seed peer for NAT hole punching.
+    ///
+    /// Establishes an outbound connection to a known mesh node, creating a NAT
+    /// mapping that allows inbound traffic through mesh forwarding paths.
+    /// Called on startup to ensure reachability in NAT scenarios.
+    ///
+    /// `Ok(())` means a connection was actually established, not merely that a
+    /// dial was queued: the reply is held until `ConnectionEstablished` (or an
+    /// `OutgoingConnectionError`, or the pending-dial timeout) resolves it.
+    pub async fn connect_to_seed_peers(&self) -> Result<()> {
         let (reply_tx, mut reply_rx) = mpsc::channel(1);
         self.command_tx
-            .send(SwarmCommand::ConnectToBootstrapRelay { reply: reply_tx })
+            .send(SwarmCommand::ConnectToSeedPeers { reply: reply_tx })
             .await
             .map_err(|_| anyhow::anyhow!("Swarm task not running"))?;
 
@@ -3524,14 +3551,53 @@ pub async fn start_swarm_with_config(
                                             }
                                         }
 
-                                        // Respond with an empty list — the application layer
-                                        // will send our full ledger via ShareLedger command
-                                        // after processing the received entries.
+                                        // Reciprocate from the core ledger directly.
+                                        //
+                                        // This used to answer with an empty list on the
+                                        // assumption that the application layer would follow
+                                        // up with a ShareLedger command. Only the CLI ever
+                                        // did. Android, iOS and WASM never call share_ledger
+                                        // (it is not exposed over UniFFI), so two mobile
+                                        // devices exchanged nothing at all: each received the
+                                        // other's ledger and answered with silence. Answering
+                                        // here means every node reciprocates regardless of
+                                        // platform, and no client author can forget to.
+                                        //
+                                        // DISCLOSURE NOTE: this makes our known-peer list
+                                        // readable by any peer that opens
+                                        // /sc/ledger-exchange/1.0.0 with us, without any app
+                                        // layer opt-in. That is the intended semantics of a
+                                        // gossip ledger (the requester already discloses its
+                                        // own list in the request), but it is a widening of
+                                        // what a passive peer can learn and is called out for
+                                        // adversarial review.
+                                        let requester = peer.to_string();
+                                        let response_peers: Vec<SharedPeerEntry> = core_handle
+                                            .as_ref()
+                                            .and_then(|w| w.upgrade())
+                                            .map(|core| {
+                                                core.ledger_manager
+                                                    .dialable_addresses()
+                                                    .into_iter()
+                                                    // Don't echo the requester back to itself.
+                                                    .filter(|e| e.peer_id.as_deref() != Some(requester.as_str()))
+                                                    .take(LEDGER_EXCHANGE_MAX_RESPONSE_PEERS)
+                                                    .map(|e| crate::store::ledger_entry::ledger_entry_to_shared(&e))
+                                                    .collect()
+                                            })
+                                            .unwrap_or_default();
+
+                                        tracing::debug!(
+                                            "Ledger exchange reply to {}: sending {} peer entries",
+                                            peer,
+                                            response_peers.len()
+                                        );
+
                                         let _ = swarm.behaviour_mut().ledger_exchange.send_response(
                                             channel,
                                             LedgerExchangeResponse {
                                                 version_tag: 1,
-                                                peers: Vec::new(), // App layer fills this via ShareLedger
+                                                peers: response_peers,
                                                 new_peers_learned: new_count,
                                                 version: 1,
                                             },
@@ -5079,26 +5145,106 @@ pub async fn start_swarm_with_config(
                                 tracing::debug!("Keepalive interval updated to {}s", interval_secs);
                                 let _ = reply.send(Ok(())).await;
                             }
-                            SwarmCommand::ConnectToBootstrapRelay { reply } => {
-                                let mut result = Err("No bootstrap addresses available".to_string());
-                                for bootstrap_addr in &bootstrap_addrs_clone {
-                                    let stripped_addr: Multiaddr = bootstrap_addr
+                            SwarmCommand::ConnectToSeedPeers { reply } => {
+                                // Candidate order: proven ledger peers first (discovery is
+                                // ledger sharing, not a shipped node list), then whatever
+                                // addresses this swarm was started with (invite-supplied or
+                                // env-supplied) as a fallback for a cold ledger.
+                                let mut candidates: Vec<Multiaddr> = Vec::new();
+                                let push_candidate = |addr: Multiaddr, out: &mut Vec<Multiaddr>| {
+                                    let stripped: Multiaddr = addr
                                         .iter()
                                         .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
                                         .collect();
+                                    if !stripped.is_empty() && !out.contains(&stripped) {
+                                        out.push(stripped);
+                                    }
+                                };
 
-                                    match swarm.dial(stripped_addr.clone()) {
-                                        Ok(_) => {
-                                            tracing::info!("Proactively dialed bootstrap mesh node for NAT hole punch: {}", stripped_addr);
-                                            result = Ok(());
-                                            break;
+                                if let Some(core) = core_handle.as_ref().and_then(|w| w.upgrade()) {
+                                    for entry in core
+                                        .ledger_manager
+                                        .get_preferred_relays(SEED_DIAL_LEDGER_CANDIDATES)
+                                    {
+                                        if let Ok(addr) = entry.multiaddr.parse::<Multiaddr>() {
+                                            push_candidate(addr, &mut candidates);
                                         }
-                                        Err(e) => {
-                                            tracing::warn!("Bootstrap relay dial failed: {}: {}", stripped_addr, e);
+                                    }
+
+                                    // Then unproven seed entries -- typically imported from an
+                                    // invite. `get_preferred_relays` deliberately filters these
+                                    // out (it requires success_count > 0), so without this loop
+                                    // a freshly invited node has NO candidate at all: its ledger
+                                    // contains only seeds it has never dialed. That is exactly
+                                    // the cold-start case invite seeding exists to serve.
+                                    // Ordered after proven peers because a seed is only a hint.
+                                    for entry in core.ledger_manager.seed_addresses() {
+                                        if let Ok(addr) = entry.multiaddr.parse::<Multiaddr>() {
+                                            push_candidate(addr, &mut candidates);
                                         }
                                     }
                                 }
-                                let _ = reply.send(result).await;
+                                for addr in &bootstrap_addrs_clone {
+                                    push_candidate(addr.clone(), &mut candidates);
+                                }
+
+                                // Dial the first candidate that the swarm accepts, then wait
+                                // for the real outcome. A queued dial is NOT a connection:
+                                // replying Ok() here is what made Android and iOS log
+                                // "Connected to bootstrap relay" for connections that never
+                                // formed. Registering in `pending_dials` hands the reply to
+                                // the existing ConnectionEstablished / OutgoingConnectionError
+                                // / sweep-timeout machinery.
+                                //
+                                // Only one candidate is attempted per command: separate
+                                // swarm.dial() calls produce independent outcome events, and
+                                // the first one to arrive would resolve the reply — so a fast
+                                // failure on candidate 2 could mask a slower success on
+                                // candidate 1. Callers retry.
+                                let mut queued: Option<Multiaddr> = None;
+                                let mut last_error = String::new();
+                                for candidate in &candidates {
+                                    match swarm.dial(candidate.clone()) {
+                                        Ok(_) => {
+                                            tracing::info!(
+                                                "Dialed seed peer for NAT hole punch: {}",
+                                                candidate
+                                            );
+                                            queued = Some(candidate.clone());
+                                            break;
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("Seed peer dial failed: {}: {}", candidate, e);
+                                            last_error = format!("{}: {}", candidate, e);
+                                        }
+                                    }
+                                }
+
+                                match queued {
+                                    Some(addr) => {
+                                        if let Some(old_entry) = pending_dials.remove(&addr) {
+                                            let _ = old_entry.reply.send(Err(
+                                                "Superseded by a newer dial to the same address".to_string(),
+                                            )).await;
+                                        }
+                                        pending_dials.insert(
+                                            addr.clone(),
+                                            PendingDialEntry {
+                                                reply,
+                                                dialed_at: web_time::Instant::now(),
+                                                candidate_addrs: vec![addr],
+                                            },
+                                        );
+                                    }
+                                    None => {
+                                        let err = if candidates.is_empty() {
+                                            "No seed peer addresses available (ledger empty and no startup addresses)".to_string()
+                                        } else {
+                                            format!("All seed peer dials were rejected: {}", last_error)
+                                        };
+                                        let _ = reply.send(Err(err)).await;
+                                    }
+                                }
                             }
                             SwarmCommand::SetRelayBudget { budget } => {
                                 relay_budget = budget;
@@ -5489,7 +5635,7 @@ pub async fn start_swarm_with_config(
                             SwarmCommand::GetBestPaths { reply, .. } => {
                                 let _ = reply.send(Vec::new()).await;
                             }
-                            SwarmCommand::ConnectToBootstrapRelay { reply } => {
+                            SwarmCommand::ConnectToSeedPeers { reply } => {
                                 // Browsers cannot open raw TCP/QUIC sockets, so the
                                 // seed-dial path used on native targets does not apply
                                 // here. The WASM client reaches the mesh over its

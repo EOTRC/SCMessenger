@@ -131,7 +131,7 @@ async fn test_ledger_convergence_between_nodes() {
     // because it cannot track the connection against a specific PeerId.
     let mut dial_addr = node1_addr.clone();
     dial_addr.push(libp2p::multiaddr::Protocol::P2p(peer_id1));
-    swarm2.dial(dial_addr).await.expect("Failed to dial");
+    dial_or_already_connected(&swarm2, dial_addr).await;
 
     // Wait for connection handshake and protocols to negotiate
     tokio::time::sleep(Duration::from_millis(1000)).await;
@@ -164,6 +164,204 @@ async fn test_ledger_convergence_between_nodes() {
         has_converged_entry,
         "Node 2's ledger should contain node 1's pre-existing entry via ledger_exchange"
     );
+}
+
+/// Item 3 of the v0.4.0 ledger work: the ledger-exchange RESPONSE must be
+/// populated by the swarm itself from `IronCore::ledger_manager`.
+///
+/// Before this fix `swarm.rs` answered every `/sc/ledger-exchange/1.0.0`
+/// request with `peers: Vec::new()`, on the assumption that the application
+/// layer would follow up with a `ShareLedger` command. Only the CLI ever did,
+/// so a phone received ledgers and answered with silence. This test asserts
+/// convergence in BOTH directions from a single initiation, with neither node's
+/// application layer calling `share_ledger` on the responding side.
+#[tokio::test]
+#[ignore = "requires real networking; run with --include-ignored"]
+async fn test_ledger_exchange_response_is_reciprocated_from_core() {
+    use scmessenger_core::IronCore;
+    use tempfile::TempDir;
+
+    tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .try_init()
+        .ok();
+
+    // Each node gets its own IronCore (and therefore its own LedgerManager),
+    // wired into the swarm as a core handle.
+    let dir1 = TempDir::new().expect("tempdir 1");
+    let dir2 = TempDir::new().expect("tempdir 2");
+    let core1 = Arc::new(IronCore::with_storage(
+        dir1.path().to_string_lossy().to_string(),
+    ));
+    let core2 = Arc::new(IronCore::with_storage(
+        dir2.path().to_string_lossy().to_string(),
+    ));
+
+    // A proven entry in each ledger that the other node can only learn via
+    // ledger exchange.
+    const NODE1_ONLY_ADDR: &str = "/ip4/198.51.100.11/tcp/9000";
+    const NODE2_ONLY_ADDR: &str = "/ip4/203.0.113.22/tcp/9000";
+    core1
+        .ledger_manager
+        .record_connection(NODE1_ONLY_ADDR.to_string(), "QmNode1Only".to_string());
+    core2
+        .ledger_manager
+        .record_connection(NODE2_ONLY_ADDR.to_string(), "QmNode2Only".to_string());
+
+    let keypair1 = Keypair::generate_ed25519();
+    let peer_id1 = libp2p::PeerId::from(keypair1.public());
+    let keypair2 = Keypair::generate_ed25519();
+
+    let (event_tx1, mut event_rx1) = mpsc::channel(256);
+    let (event_tx2, mut event_rx2) = mpsc::channel(256);
+
+    let swarm1: SwarmHandle = start_swarm(
+        keypair1,
+        None,
+        event_tx1,
+        Some(Arc::downgrade(&core1)),
+        false,
+        None,
+        scmessenger_core::transport::default_routing_engine_handle(),
+    )
+    .await
+    .expect("Failed to start swarm1");
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Drain node 1's listen addresses, and remember any ledger entries node 1
+    // receives so we can assert the request direction too.
+    let mut all_addrs: Vec<Multiaddr> = Vec::new();
+    let node1_received: Arc<parking_lot::Mutex<Vec<String>>> =
+        Arc::new(parking_lot::Mutex::new(Vec::new()));
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(event) = event_rx1.recv().await {
+            if let SwarmEvent2::ListeningOn(addr) = event {
+                all_addrs.push(addr);
+                let has_loopback_tcp = all_addrs.iter().any(|a| {
+                    let s = a.to_string();
+                    s.contains("/127.0.0.1/")
+                        && s.contains("/tcp/")
+                        && !s.contains("/ws")
+                        && !s.contains("/quic")
+                });
+                if has_loopback_tcp {
+                    break;
+                }
+            }
+        }
+    })
+    .await
+    .ok();
+
+    let node1_addr = select_dialable_tcp_loopback(&all_addrs)
+        .expect("No suitable plain TCP loopback address found among node1 listeners");
+
+    let node1_received_task = node1_received.clone();
+    tokio::spawn(async move {
+        while let Some(event) = event_rx1.recv().await {
+            if let SwarmEvent2::LedgerReceived { entries, .. } = event {
+                let mut seen = node1_received_task.lock();
+                for entry in entries {
+                    seen.push(entry.multiaddr);
+                }
+            }
+        }
+    });
+
+    let swarm2: SwarmHandle = start_swarm(
+        keypair2,
+        None,
+        event_tx2,
+        Some(Arc::downgrade(&core2)),
+        false,
+        None,
+        scmessenger_core::transport::default_routing_engine_handle(),
+    )
+    .await
+    .expect("Failed to start swarm2");
+
+    let node2_received: Arc<parking_lot::Mutex<Vec<String>>> =
+        Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let node2_received_task = node2_received.clone();
+    tokio::spawn(async move {
+        while let Some(event) = event_rx2.recv().await {
+            if let SwarmEvent2::LedgerReceived { entries, .. } = event {
+                let mut seen = node2_received_task.lock();
+                for entry in entries {
+                    seen.push(entry.multiaddr);
+                }
+            }
+        }
+    });
+
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    let mut dial_addr = node1_addr.clone();
+    dial_addr.push(libp2p::multiaddr::Protocol::P2p(peer_id1));
+    dial_or_already_connected(&swarm2, dial_addr).await;
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    // ONLY node 2 initiates. Node 1's application layer never calls
+    // share_ledger -- the swarm must answer out of core1's ledger by itself.
+    let outbound: Vec<SharedPeerEntry> = core2
+        .ledger_manager
+        .dialable_addresses()
+        .into_iter()
+        .map(|entry| SharedPeerEntry {
+            multiaddr: entry.multiaddr,
+            last_peer_id: entry.peer_id,
+            last_seen: entry.last_seen.unwrap_or(0) / 1000,
+            known_topics: entry.topics,
+        })
+        .collect();
+    assert!(
+        outbound.iter().any(|e| e.multiaddr == NODE2_ONLY_ADDR),
+        "node 2 should be offering its own seeded entry"
+    );
+    swarm2
+        .share_ledger(peer_id1, outbound)
+        .await
+        .expect("Failed to share ledger");
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Request direction (worked before this change).
+    assert!(
+        node1_received.lock().iter().any(|a| a == NODE2_ONLY_ADDR),
+        "node 1 should have received node 2's entry from the exchange request; got {:?}",
+        node1_received.lock()
+    );
+
+    // Response direction (the reciprocity gap this change closes).
+    assert!(
+        node2_received.lock().iter().any(|a| a == NODE1_ONLY_ADDR),
+        "node 2 should have received node 1's entry in the exchange RESPONSE \
+         without node 1's app layer calling share_ledger; got {:?}",
+        node2_received.lock()
+    );
+
+    let _ = swarm1.shutdown().await;
+    let _ = swarm2.shutdown().await;
+}
+
+/// Dial `addr`, tolerating the case where the two nodes have already found each
+/// other.
+///
+/// Both nodes run on the same host with mDNS enabled, so libp2p frequently
+/// connects them before the explicit dial and then rejects it with
+/// `PeerCondition::Disconnected` / `NotDialing`. That is a connected outcome,
+/// not a failure — panicking on it made this whole file fail on any machine
+/// where mDNS wins the race. Genuine dial failures still surface, because the
+/// convergence assertions below cannot pass without a live connection.
+async fn dial_or_already_connected(swarm: &SwarmHandle, addr: Multiaddr) {
+    if let Err(e) = swarm.dial(addr).await {
+        let msg = e.to_string();
+        let already_connected =
+            msg.contains("already connected") || msg.contains("dial is in progress");
+        assert!(already_connected, "Failed to dial: {}", msg);
+        eprintln!("[INFO] Explicit dial skipped, peers already connected: {msg}");
+    }
 }
 
 /// Select a plain TCP loopback address from a list of ListeningOn multiaddrs.
