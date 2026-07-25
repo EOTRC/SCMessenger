@@ -121,6 +121,13 @@ final class MeshRepository {
     /// Priority order: GCP relay (cloud) → OSX relay (home/local backup).
     private static let staticBootstrapNodes: [String] = []
 
+    /// NAT hole-punch Priority 1 (iOS parity with core connect_to_bootstrap_relay /
+    /// Android ensureBootstrapRelayConnected): proactive outbound dial target used to
+    /// establish a NAT mapping before any inbound circuit-relay traffic is expected.
+    /// Hardcoded for now per HANDOFF NAT hole-punch task; should move to
+    /// bootstrap.rs-sourced config once that's exposed over the UniFFI boundary.
+    private static let defaultBootstrapRelay = "/ip4/100.56.248.69/tcp/9001"
+
     /// Resolved bootstrap nodes using the core BootstrapResolver.
     /// Priority: SC_BOOTSTRAP_NODES env var → remote URL → static fallback.
     /// ANR FIX: Return static fallback immediately, no network I/O at class load time.
@@ -861,6 +868,12 @@ final class MeshRepository {
             serviceState = .running
             statusEvents.send(.serviceStateChanged(.running))
 
+            if swarmTransportStarted {
+                Task { [weak self] in
+                    await self?.ensureBootstrapRelayConnected()
+                }
+            }
+
             // Protect raw identity sled store from backup — keys are already in Keychain.
             // In-place updates retain contacts.db; the current encrypted Keychain
             // snapshot is the deterministic fallback if an app container is lost.
@@ -944,6 +957,23 @@ final class MeshRepository {
             logger.error("Failed to start mesh service: \(error.localizedDescription)")
             appendDiagnostic("service_start failure error=\(error.localizedDescription)")
             throw error
+        }
+    }
+
+    /// NAT hole-punch Priority 1 (iOS): proactively dial the bootstrap relay right
+    /// after mesh startup, so an outbound NAT mapping exists before any inbound
+    /// circuit-relay traffic is expected. Non-fatal on failure -- mesh startup
+    /// must not be blocked by an unreachable relay.
+    private func ensureBootstrapRelayConnected() async {
+        guard let swarmBridge else {
+            logger.warning("Skipping bootstrap relay connect: SwarmBridge not wired yet")
+            return
+        }
+        do {
+            try await swarmBridge.dial(multiaddr: Self.defaultBootstrapRelay)
+            logger.info("Connected to bootstrap relay")
+        } catch {
+            logger.warning("Bootstrap relay unavailable at startup (non-fatal): \(error.localizedDescription)")
         }
     }
 

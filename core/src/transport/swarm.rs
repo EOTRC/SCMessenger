@@ -1432,6 +1432,10 @@ pub enum SwarmCommand {
         interval_secs: u64,
         reply: mpsc::Sender<Result<(), String>>,
     },
+    /// Proactively connect to bootstrap mesh nodes (NAT hole punching)
+    ConnectToBootstrapRelay {
+        reply: mpsc::Sender<Result<(), String>>,
+    },
     /// Shutdown the swarm
     Shutdown,
 }
@@ -1783,6 +1787,24 @@ impl SwarmHandle {
                 interval_secs,
                 reply: reply_tx,
             })
+            .await
+            .map_err(|_| anyhow::anyhow!("Swarm task not running"))?;
+
+        match reply_rx.recv().await {
+            Some(Ok(())) => Ok(()),
+            Some(Err(e)) => Err(anyhow::anyhow!("{}", e)),
+            None => Err(anyhow::anyhow!("No reply from swarm")),
+        }
+    }
+
+    /// Proactively connect to bootstrap mesh nodes for NAT hole punching.
+    /// This establishes an outbound connection to known mesh nodes, creating a NAT mapping
+    /// that allows inbound traffic through mesh forwarding paths. Called on startup
+    /// to ensure reachability in NAT scenarios.
+    pub async fn connect_to_bootstrap_relay(&self) -> Result<()> {
+        let (reply_tx, mut reply_rx) = mpsc::channel(1);
+        self.command_tx
+            .send(SwarmCommand::ConnectToBootstrapRelay { reply: reply_tx })
             .await
             .map_err(|_| anyhow::anyhow!("Swarm task not running"))?;
 
@@ -5056,6 +5078,27 @@ pub async fn start_swarm_with_config(
                             SwarmCommand::UpdateKeepalive { peer_id: _, interval_secs, reply } => {
                                 tracing::debug!("Keepalive interval updated to {}s", interval_secs);
                                 let _ = reply.send(Ok(())).await;
+                            }
+                            SwarmCommand::ConnectToBootstrapRelay { reply } => {
+                                let mut result = Err("No bootstrap addresses available".to_string());
+                                for bootstrap_addr in &bootstrap_addrs_clone {
+                                    let stripped_addr: Multiaddr = bootstrap_addr
+                                        .iter()
+                                        .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
+                                        .collect();
+
+                                    match swarm.dial(stripped_addr.clone()) {
+                                        Ok(_) => {
+                                            tracing::info!("Proactively dialed bootstrap mesh node for NAT hole punch: {}", stripped_addr);
+                                            result = Ok(());
+                                            break;
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("Bootstrap relay dial failed: {}: {}", stripped_addr, e);
+                                        }
+                                    }
+                                }
+                                let _ = reply.send(result).await;
                             }
                             SwarmCommand::SetRelayBudget { budget } => {
                                 relay_budget = budget;

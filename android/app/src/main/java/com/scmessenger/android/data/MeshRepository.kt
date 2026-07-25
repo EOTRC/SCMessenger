@@ -86,6 +86,15 @@ open class MeshRepository(
          */
         fun getBootstrapNodesForSettings(): List<String> = listOf("/ip4/100.56.248.69/tcp/9001")
 
+        /**
+         * NAT hole-punch Priority 1 (Android parity with core connect_to_bootstrap_relay):
+         * proactive outbound dial to the bootstrap relay on startup, establishing a NAT
+         * mapping before any inbound circuit-relay traffic is expected. Hardcoded for now
+         * per HANDOFF NAT hole-punch task; should move to bootstrap.rs-sourced config once
+         * that's exposed over the UniFFI boundary.
+         */
+        private const val DEFAULT_BOOTSTRAP_RELAY = "/ip4/100.56.248.69/tcp/9001"
+
         interface BootstrapSource {
             val name: String
             fun getBootstrapNodes(): List<String>
@@ -3347,6 +3356,7 @@ open class MeshRepository(
             swarmBridge = meshService?.getSwarmBridge()
             refreshAddressesSnapshots()
             updateBleIdentityBeacon()
+            ensureBootstrapRelayConnected()
 
             Timber.i("[OK] Internet transport (Swarm) listening on tcp/9001 and bridge wired")
         } catch (e: Exception) {
@@ -4925,6 +4935,25 @@ open class MeshRepository(
     }
 
     open suspend fun dialPeer(multiaddr: String) = dial(multiaddr)
+
+    /**
+     * NAT hole-punch Priority 1 (Android): proactively dial the bootstrap relay right
+     * after the swarm/bridge is wired up, so an outbound NAT mapping exists before any
+     * inbound circuit-relay traffic is expected. Non-fatal on failure -- mesh startup
+     * must not be blocked by an unreachable relay.
+     */
+    private suspend fun ensureBootstrapRelayConnected() {
+        if (swarmBridge == null) {
+            Timber.w("Skipping bootstrap relay connect: SwarmBridge not wired yet")
+            return
+        }
+        try {
+            dial(DEFAULT_BOOTSTRAP_RELAY)
+            Timber.i("Connected to bootstrap relay")
+        } catch (e: Exception) {
+            Timber.w(e, "Bootstrap relay unavailable at startup (non-fatal): $DEFAULT_BOOTSTRAP_RELAY")
+        }
+    }
 
     // Identity Management
     /**

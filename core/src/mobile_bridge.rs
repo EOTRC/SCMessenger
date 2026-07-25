@@ -776,6 +776,22 @@ impl MeshService {
                                             e
                                         );
                                     }
+
+                                    // NAT hole-punch Priority 1: proactively dial the bootstrap
+                                    // relay on startup so an outbound NAT mapping exists before
+                                    // any inbound circuit-relay traffic arrives. Non-blocking:
+                                    // a failure here must never fail service startup.
+                                    if !parsed_bootstrap.is_empty() {
+                                        match handle.connect_to_bootstrap_relay().await {
+                                            Ok(()) => tracing::info!(
+                                                "Connected to bootstrap relay"
+                                            ),
+                                            Err(e) => tracing::warn!(
+                                                "Bootstrap relay unavailable at startup (non-fatal): {:?}",
+                                                e
+                                            ),
+                                        }
+                                    }
                                     while let Some(event) = event_rx.recv().await {
                                         match event {
                                             crate::transport::SwarmEvent::MessageReceived {
