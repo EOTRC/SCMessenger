@@ -4,13 +4,27 @@
 > If a section has no marker, treat it as `[Needs Revalidation]`.
 > Canonical baseline references: docs/CURRENT_STATE.md, REMAINING_WORK_TRACKING.md, docs/REPO_CONTEXT.md, docs/GLOBAL_ROLLOUT_PLAN.md, and DOCUMENTATION.md.
 
-## [Current] GCP Node Status (2026-03-16)
+Status: Current
+Last updated: 2026-07-25
 
-- **VM**: `scmessenger-bootstrap` in `us-central1-a` — **RUNNING**
-- **Container**: `scmessenger-relay` — **HEALTHY** (ports 9000-9001 exposed)
-- **Image**: `us-central1-docker.pkg.dev/scmessenger-bootstrapnode/scmessenger-repo/scmessenger-cli:latest`
-- **Peer ID**: `12D3KooWHdTdBQ1utHmLn1VAwhKoJvh54oo3xDvaJkcgGNowqouc`
-- **External IP**: `34.135.34.73` (ephemeral)
+## [Current] Deployed Node Record
+
+A GCP-hosted node is an ordinary SCMessenger node that happens to have a public
+address. It is not a relay role or a bootstrap role -- every node is a full relay.
+Record your own deployment's values here; they are deployment-specific and must
+not be copied from documentation into any client or build.
+
+- **VM**: `<VM_NAME>` in `<GCP_ZONE>` (e.g. `us-central1-a`)
+- **Container**: `<CONTAINER_NAME>` (ports 9000-9001 exposed)
+- **Image**: `<REGION>-docker.pkg.dev/<GCP_PROJECT>/<REPO>/scmessenger-cli:latest`
+- **Peer ID**: `<PEER_ID>` -- read with `docker exec <CONTAINER_NAME> scm identity`
+- **External IP**: `<NODE_IP>` -- prefer a reserved static IP; an ephemeral IP
+  changes on stop/start and invalidates every address already shared with peers
+
+Its multiaddr, for clients that need a cold-start entry point, is
+`/ip4/<NODE_IP>/tcp/9001/p2p/<PEER_ID>`, supplied via `SC_BOOTSTRAP_NODES` (the
+only variable name the code reads). See `docs/BOOTSTRAP.md` and
+`docs/RELAY_OPERATOR_GUIDE.md`.
 
 ## [Current] Section Action Outcome (2026-02-23)
 
@@ -65,7 +79,9 @@ gcloud auth configure-docker us-central1-docker.pkg.dev
 
 ## [Current] 3. Build & Deploy
 
-You can run this sequence every time you want to update the GCP relay node.
+You can run this sequence every time you want to update the GCP node. (The
+resource names below -- `scmessenger-bootstrap`, `scmessenger-relay` -- are just
+the existing VM and container names; they do not denote node roles.)
 
 ```bash
 # Option 1: Use the deploy script (recommended)

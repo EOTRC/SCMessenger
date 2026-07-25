@@ -48,11 +48,18 @@ amendment table). Machine queue: `scm_v1_farm_queue.jsonl`. Dispatch order:
 stale body). Batch-dispatch rules: `docs/ORCHESTRATION.md` Section 9
 (post-mortem of the reverted 71d02d4d/e298e9bf swarm run).
 
-- **NEW CRITICAL — E-00 (OPERATOR GATE):** ratchet/PQ subsystem is
-  unreachable from the production path; every real message has zero forward
-  secrecy and zero PQ protection today. Ticket:
-  `HANDOFF/todo/CRITICAL_RATCHET_SUBSYSTEM_NOT_WIRED_INTO_IRONCORE.md`.
-  Blocks E-01b/c, E-02, E-03, E-04, B-01. Architecture decision required.
+- **E-00 (OPERATOR GATE) -- [CLOSED 2026-07-17, DO NOT RE-OPEN]:** as filed on
+  2026-07-17 the ratchet/PQ subsystem was unreachable from the production path,
+  leaving real messages without forward secrecy or PQ protection. This was
+  **implemented and closed the same day** (commit `6059038c`; kill switch
+  `SCM_RATCHET_DISABLE`; regression test
+  `core/tests/integration_e00_ratchet_wiring.rs`; build-verified with a
+  unanimous Fusion adversarial pass). The ticket now lives at
+  `HANDOFF/done/CRITICAL_RATCHET_SUBSYSTEM_NOT_WIRED_INTO_IRONCORE.md` -- it is
+  **not** in `todo/`. The text above describes the original defect for audit
+  trace only. E-01b ratchet-level mixing remains open
+  (`HANDOFF/todo/E01B_FABLE_DESIGN_HANDOFF.md`) and is separate, non-v0.4.0
+  scope.
 - **Done since 07-13:** U1-U4, A-01 (A3), A-02 (F1), A-07, A-08, outbox
   flush Sites 2+3 (CRITICAL_OUTBOX closed), custody DriftFrame wrap
   (82adf735), Hermes farm-sim transport ports + hardening (30b78eea,

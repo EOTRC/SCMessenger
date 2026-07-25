@@ -171,12 +171,25 @@ scm identity show
 
 **Save this information** — your Peer ID is how others will contact you.
 
-### [Needs Revalidation] 3. Configure Bootstrap Nodes (Optional)
+### [Current] 3. Supply a Seed Peer Address (Optional)
+
+On a local network, peers are found automatically via mDNS -- nothing to
+configure. Supply an address only for the cold-start case: an empty ledger and no
+peers on your LAN. Get the multiaddr from the SCMessenger node you are joining.
 
 ```powershell
-scm config bootstrap add /dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN
-scm config bootstrap add /dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa
+scm config set bootstrap_node_add /ip4/<NODE_IP>/tcp/9001/p2p/<PEER_ID>
+scm config get bootstrap_nodes
 ```
+
+`config` takes only `set`, `get`, and `list`; there is no `config bootstrap`
+subcommand. After the first connection, peers are learned and persisted via the
+`/sc/ledger-exchange/1.0.0` protocol. See `docs/BOOTSTRAP.md`.
+
+> [WARNING] Do not use the public libp2p/IPFS bootstrap nodes
+> (`/dnsaddr/bootstrap.libp2p.io/...`), which earlier revisions of this guide
+> suggested. They run a different network, host no SCMessenger peers, and are
+> exactly the external infrastructure dependency SCMessenger is built to avoid.
 
 ## [Needs Revalidation] File Locations on Windows
 

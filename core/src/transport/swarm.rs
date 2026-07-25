@@ -5489,6 +5489,21 @@ pub async fn start_swarm_with_config(
                             SwarmCommand::GetBestPaths { reply, .. } => {
                                 let _ = reply.send(Vec::new()).await;
                             }
+                            SwarmCommand::ConnectToBootstrapRelay { reply } => {
+                                // Browsers cannot open raw TCP/QUIC sockets, so the
+                                // seed-dial path used on native targets does not apply
+                                // here. The WASM client reaches the mesh over its
+                                // WebSocket transport instead. Report this explicitly
+                                // rather than replying Ok() and implying a connection
+                                // that was never attempted.
+                                let _ = reply
+                                    .send(Err(
+                                        "seed-peer dialing is not supported on wasm32; \
+                                         the browser client connects over WebSocket"
+                                            .to_string(),
+                                    ))
+                                    .await;
+                            }
                             SwarmCommand::Shutdown => {
                                 tracing::info!("WASM swarm shutting down");
                                 break;

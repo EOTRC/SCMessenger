@@ -1,4 +1,7 @@
-# SCMessenger — Simple Android Installation Guide
+# SCMessenger - Simple Android Installation Guide
+
+Status: Current
+Last updated: 2026-07-25
 
 This guide describes how to quickly install SCMessenger on an Android phone using a pre-built APK file from a Windows or Mac/Linux computer.
 
@@ -74,4 +77,17 @@ adb shell am start -n "com.scmessenger.android/.ui.MainActivity"
 
 1. Open **SCMessenger** on the phone.
 2. Grant any remaining system prompts (Bluetooth / Location / Local Network) when prompted inside the app.
-3. SCMessenger automatically connects to the network relay (`100.56.248.69:9001`) over cellular data or Wi-Fi.
+3. **Nearby peers are found automatically.** With the permissions above granted,
+   the app discovers other SCMessenger devices on the same Wi-Fi network and over
+   Bluetooth LE and Wi-Fi Aware, with no configuration. If someone near you is
+   running SCMessenger, you should see peers appear on your own.
+4. **For peers beyond your local network**, you need one peer address the first
+   time. Use the **Join Mesh** flow and tap **Scan QR Code** to scan a join
+   bundle from someone who is already connected. After that first connection the
+   app learns and stores further peers automatically, so you do not need to
+   repeat this.
+
+> There are no dedicated relays or bootstrap servers in SCMessenger, and no
+> addresses are shipped in the app. Every node is a full relay -- your phone
+> relays for other people too. Peers propagate between nodes over the mesh's
+> ledger-exchange protocol. See `docs/BOOTSTRAP.md`.

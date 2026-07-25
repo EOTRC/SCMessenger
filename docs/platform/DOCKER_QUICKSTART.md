@@ -6,14 +6,34 @@
 
 # SCMessenger Docker Quick Start
 
+Status: Current
+Last updated: 2026-07-25
+
 This guide gets you up and running with SCMessenger in Docker in under 5 minutes.
+
+> **Model note:** SCMessenger has no dedicated relays and no bootstrap node role.
+> There are only nodes, and every node is a full relay. Peers are learned through
+> local discovery (mDNS on the LAN) and through ledger exchange
+> (`/sc/ledger-exchange/1.0.0`). No addresses are shipped in any build, so a
+> container with an empty ledger and no LAN peers needs **one** address you
+> supply. See `docs/BOOTSTRAP.md`.
+>
+> **Environment variable:** the only name the code reads is
+> **`SC_BOOTSTRAP_NODES`**. Plain `BOOTSTRAP_NODES` is silently ignored --
+> including in `docker-compose.yml` and some files under `docker/`, which still
+> set the unprefixed name. That is a defect in those files, not a second
+> supported spelling.
+>
+> **Addresses in this guide are placeholders.** `<NODE_IP>` and `<PEER_ID>` come
+> from a node you or someone you know operates. There is no project-operated
+> address to copy.
 
 ## [Current] Section Action Outcome (2026-02-23)
 
 - `rewrite`: this guide remains operational only where commands match current docker files and image/runtime behavior.
 - `move`: community-operated deployment policy belongs in `docs/UNIFIED_GLOBAL_APP_PLAN.md`.
 - `move`: current validated runtime behavior belongs in `docs/CURRENT_STATE.md`.
-- `delete/replace`: cloud/bootstrap examples here are historical unless validated against current bootstrap model and scripts.
+- `delete/replace`: done 2026-07-25 -- hardcoded node IPs removed, `BOOTSTRAP_NODES` corrected to `SC_BOOTSTRAP_NODES`, and the shipped-defaults framing replaced with the ledger-exchange model.
 
 ## [Needs Revalidation] Prerequisites
 
@@ -60,24 +80,29 @@ docker run -d \
 docker logs scmessenger
 ```
 
-### [Needs Revalidation] With Bootstrap Nodes
+### [Current] Supplying a Seed Peer Address
 
-To connect your node to an existing network, add bootstrap nodes:
+A node on a LAN with other SCMessenger nodes needs no address at all -- mDNS finds
+them. Supply an address only for the cold-start case: empty ledger, no local
+peers, and you want internet connectivity.
 
 ```bash
-# Your GCP node's multiaddress format:
-# /ip4/<PUBLIC_IP>/tcp/9001/p2p/<PEER_ID>
+# Multiaddr format:
+# /ip4/<NODE_IP>/tcp/9001/p2p/<PEER_ID>
 
-# Example with bootstrap node
 docker run -d \
   --name scmessenger \
   -p 9000:9000 \
   -p 9001:9001 \
   -v ~/scm_data:/root/.local/share/scmessenger \
   -e LISTEN_PORT=9000 \
-  -e BOOTSTRAP_NODES="/ip4/136.117.121.95/tcp/9001/p2p/12D3KooWGhWrfkwWRxmskC8bfGGvhd3gHYBQgigRbJeZL9Yd3W2S" \
+  -e SC_BOOTSTRAP_NODES="/ip4/<NODE_IP>/tcp/9001/p2p/<PEER_ID>" \
   scmessenger
 ```
+
+This address is a one-time entry point, not a dependency. Once connected, the
+node receives peer records over ledger exchange and persists them, so the seed
+address stops mattering.
 
 ## [Needs Revalidation] Connect Two Nodes (Local + Cloud)
 
@@ -98,13 +123,15 @@ docker logs scmessenger | grep "Peer ID"
 
 # Get your public IP
 curl ifconfig.me
-# Example output: 136.117.121.95
+# Output: your VM's public IP -- call it <NODE_IP>
 ```
 
 **Your cloud node's multiaddress:**
 ```
-/ip4/<YOUR_PUBLIC_IP>/tcp/9001/p2p/<YOUR_PEER_ID>
+/ip4/<NODE_IP>/tcp/9001/p2p/<PEER_ID>
 ```
+
+Both values are specific to your deployment. Record them; the next step uses them.
 
 ### [Needs Revalidation] Step 2: Start your local node (Mac/Linux)
 
@@ -115,10 +142,10 @@ docker run -d \
   -p 9000:9000 \
   -p 9001:9001 \
   -v ~/scm_data_local:/root/.local/share/scmessenger \
-  -e BOOTSTRAP_NODES="/ip4/136.117.121.95/tcp/9001/p2p/12D3KooWGhWrfkwWRxmskC8bfGGvhd3gHYBQgigRbJeZL9Yd3W2S" \
+  -e SC_BOOTSTRAP_NODES="/ip4/<NODE_IP>/tcp/9001/p2p/<PEER_ID>" \
   scmessenger
 
-# Check logs - you should see "Connected to bootstrap node"
+# Watch the dial and connection
 docker logs -f scmessenger-local
 ```
 
@@ -142,13 +169,16 @@ cargo build --release --bin scmessenger-cli
 # Start node
 ./target/release/scmessenger-cli start --port 9000
 
-# Add bootstrap node
-./target/release/scmessenger-cli config bootstrap add \
-  /ip4/136.117.121.95/tcp/9001/p2p/12D3KooWGhWrfkwWRxmskC8bfGGvhd3gHYBQgigRbJeZL9Yd3W2S
+# Add a seed peer address (only needed for cold start with no LAN peers)
+./target/release/scmessenger-cli config set bootstrap_node_add \
+  /ip4/<NODE_IP>/tcp/9001/p2p/<PEER_ID>
 
 # Restart to connect
 ./target/release/scmessenger-cli start --port 9000
 ```
+
+The `config` subcommand takes `set`, `get`, and `list` only. There is no
+`config bootstrap` subcommand.
 
 ## [Needs Revalidation] Port Configuration
 
@@ -191,19 +221,27 @@ docker logs scmessenger | grep "Listening on"
 **Check 2**: Ensure firewall ports are open:
 ```bash
 # Test from another machine
-nc -zv <YOUR_PUBLIC_IP> 9001
+nc -zv <NODE_IP> 9001
 ```
 
-**Check 3**: Verify bootstrap address format:
+**Check 3**: Verify the seed address format:
 ```
-/ip4/<IP>/tcp/9001/p2p/<PEER_ID>
+/ip4/<NODE_IP>/tcp/9001/p2p/<PEER_ID>
 ```
 All three components must be correct.
 
-**Check 4**: Check bootstrap connection logs:
+**Check 4**: Check dial logs:
 ```bash
 docker logs scmessenger | grep -i bootstrap
 ```
+
+**Check 5**: Confirm the variable name. If you set `BOOTSTRAP_NODES` instead of
+`SC_BOOTSTRAP_NODES`, the container starts fine and dials nothing -- the variable
+is never read. This is the most common cause of a silent 0-peer container.
+
+**Check 6**: If the ledger is empty and there are no LAN peers, 0 peers is the
+correct behaviour until an address is supplied. Nothing is shipped to fall back
+on.
 
 ### [Needs Revalidation] Identity Changes on Restart
 
@@ -261,9 +299,11 @@ docker exec scmessenger scm status
 # View history
 docker exec scmessenger scm history
 
-# Bootstrap nodes management
-docker exec scmessenger scm config bootstrap list
-docker exec scmessenger scm config bootstrap add <multiaddr>
+# Seed peer address management
+docker exec scmessenger scm config get bootstrap_nodes
+docker exec scmessenger scm config set bootstrap_node_add <multiaddr>
+docker exec scmessenger scm config set bootstrap_node_remove <multiaddr>
+docker exec scmessenger scm config list
 ```
 
 ## [Needs Revalidation] Next Steps

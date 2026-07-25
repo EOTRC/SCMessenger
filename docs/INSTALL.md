@@ -14,6 +14,9 @@
 
 # SCMessenger - Native Installation Guide
 
+Status: Current
+Last updated: 2026-07-25
+
 Build and run SCMessenger directly on your system without Docker.
 
 ## [Needs Revalidation] Quick Start
@@ -187,41 +190,62 @@ Or with custom port:
 
 ---
 
-## [Needs Revalidation] Connecting to Other Nodes
+## [Current] Connecting to Other Nodes
 
-### [Needs Revalidation] Add a Bootstrap Node
+There are no dedicated relays and no bootstrap node role in SCMessenger -- only
+nodes, and every node is a full relay. Peers are learned automatically:
 
-To connect to an existing node (e.g., a public relay or friend's node):
+- **On a local network:** mDNS finds other SCMessenger nodes with no
+  configuration. If you are testing two machines on the same Wi-Fi, just start
+  both.
+- **Remote peers:** learned over the `/sc/ledger-exchange/1.0.0` protocol from
+  peers you are already connected to, and persisted locally.
+
+No addresses are compiled into any build. You only need to supply one manually in
+the cold-start case: empty ledger *and* no peers on your local network.
+
+Full model and troubleshooting: `docs/BOOTSTRAP.md`.
+
+### [Current] Supply a Seed Peer Address
+
+Get the multiaddr from the node you are joining -- a friend's node, or your own
+server. Never reuse an address from documentation; there is no project-operated
+address to reuse.
 
 ```bash
-# Format: /ip4/<IP>/tcp/<P2P_PORT>/p2p/<PEER_ID>
-./target/release/scmessenger-cli config bootstrap add \
-  /ip4/136.117.121.95/tcp/9001/p2p/12D3KooWGhWrfkwWRxmskC8bfGGvhd3gHYBQgigRbJeZL9Yd3W2S
+# Format: /ip4/<NODE_IP>/tcp/<P2P_PORT>/p2p/<PEER_ID>
+./target/release/scmessenger-cli config set bootstrap_node_add \
+  /ip4/<NODE_IP>/tcp/9001/p2p/<PEER_ID>
 ```
+
+Or per-run, without persisting:
+
+```bash
+export SC_BOOTSTRAP_NODES="/ip4/<NODE_IP>/tcp/9001/p2p/<PEER_ID>"
+```
+
+`SC_BOOTSTRAP_NODES` is the only environment variable name the code reads; a
+plain `BOOTSTRAP_NODES` is silently ignored.
 
 **Restart to connect:**
 ```bash
 ./target/release/scmessenger-cli start
 ```
 
-You should see:
-```
-[CONFIG] Connecting to bootstrap nodes...
-  1. Dialing /ip4/136.117.121.95/tcp/9001/p2p/12D3KooW... ...
-  [OK] Connected to bootstrap node 1
-[OK] Peer: 12D3KooWGhWrfkwWRxmskC8bfGGvhd3gHYBQgigRbJeZL9Yd3W2S
-```
+Startup logs the dial attempt and the resulting connection, then your own PeerId.
 
-### [Needs Revalidation] View Bootstrap Nodes
+### [Current] View and Remove Seed Addresses
+
+The `config` subcommand takes `set`, `get`, and `list` only -- there is no
+`config bootstrap` subcommand.
 
 ```bash
-./target/release/scmessenger-cli config bootstrap list
-```
+# View
+./target/release/scmessenger-cli config get bootstrap_nodes
+./target/release/scmessenger-cli config list
 
-### [Needs Revalidation] Remove a Bootstrap Node
-
-```bash
-./target/release/scmessenger-cli config bootstrap remove <multiaddr>
+# Remove
+./target/release/scmessenger-cli config set bootstrap_node_remove <multiaddr>
 ```
 
 ---
@@ -486,9 +510,11 @@ scmessenger-cli history --search "keyword"
 scmessenger-cli config list
 scmessenger-cli config get <key>
 scmessenger-cli config set <key> <value>
-scmessenger-cli config bootstrap add <multiaddr>
-scmessenger-cli config bootstrap remove <multiaddr>
-scmessenger-cli config bootstrap list
+
+# Seed peer addresses (there is no `config bootstrap` subcommand)
+scmessenger-cli config set bootstrap_node_add <multiaddr>
+scmessenger-cli config set bootstrap_node_remove <multiaddr>
+scmessenger-cli config get bootstrap_nodes
 
 # Testing
 scmessenger-cli test                    # Run self-tests
@@ -547,15 +573,20 @@ netstat -ano | findstr :9000
 scmessenger-cli start --port 8000
 ```
 
-### [Needs Revalidation] Peer Count Stays at 0
+### [Current] Peer Count Stays at 0
 
-1. **Check firewall** - Ensure ports 9000 and 9001 are open
-2. **Add bootstrap nodes** - You need at least one peer to discover others
-3. **Check logs** - Look for connection errors
-4. **Test connectivity:**
+1. **On a LAN, check mDNS** - Another SCMessenger node on the same network should
+   be found automatically. Client isolation on guest Wi-Fi blocks this entirely.
+2. **Cold start with no local peers** - Expected. Supply one seed peer address
+   (see "Connecting to Other Nodes" above). Nothing is compiled in to fall back
+   on.
+3. **Check the variable name** - `SC_BOOTSTRAP_NODES`, not `BOOTSTRAP_NODES`.
+4. **Check firewall** - Ensure ports 9000 and 9001 are open.
+5. **Check logs** - Look for dial and connection errors.
+6. **Test connectivity:**
    ```bash
    # From another machine, test if port is reachable
-   nc -zv <your-ip> 9001
+   nc -zv <NODE_IP> 9001
    ```
 
 ### [Needs Revalidation] Build Fails on Low Memory

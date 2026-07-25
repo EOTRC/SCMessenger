@@ -94,13 +94,20 @@ Supported keys for `config get|set`:
 - `enable_nat_traversal`
 - `enable_relay`
 
-Bootstrap nodes are managed under:
+Seed peer addresses (the optional list of peers to dial at startup before any
+peers are known) are managed through `config set` pseudo-keys. `config` itself
+takes only `set`, `get`, and `list` -- there is no `config bootstrap`
+subcommand:
 
 ```bash
-scmessenger-cli config bootstrap add <multiaddr>
-scmessenger-cli config bootstrap remove <multiaddr>
-scmessenger-cli config bootstrap list
+scmessenger-cli config set bootstrap_node_add <multiaddr>
+scmessenger-cli config set bootstrap_node_remove <multiaddr>
+scmessenger-cli config get bootstrap_nodes
 ```
+
+The list ships empty. SCMessenger has no dedicated relays and no bootstrap node
+role -- every node is a full relay, and peers are learned via local discovery and
+the `/sc/ledger-exchange/1.0.0` protocol. See `docs/BOOTSTRAP.md`.
 
 ## Test
 

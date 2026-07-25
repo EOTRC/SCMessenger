@@ -1,4 +1,7 @@
-# SCMessenger — Windows Android Quick Start Guide
+# SCMessenger - Windows Android Quick Start Guide
+
+Status: Current
+Last updated: 2026-07-25
 
 This guide will walk you through setting up your Windows computer and installing SCMessenger on your Android phone. Follow these steps sequentially.
 
@@ -61,11 +64,23 @@ To compile the secure core, build the Android app, and install it on your phone:
 
 ---
 
-## Step 6: Connect to the Mesh (Lucas <-> Josh Alpha Test)
-The application is pre-configured to automatically connect to the cloud relay (`100.56.248.69:9001`) in the background at startup.
+## Step 6: Connect to the Mesh
+SCMessenger has no dedicated relays and no bootstrap servers -- there are only
+nodes, and every node is a full relay, including your phone. No addresses are
+shipped in the app.
+
 1. Open SCMessenger on your phone.
-2. The app will automatically bootstrap and connect to the mesh network.
-3. If you ever need to manually connect or re-add the bootstrap address, go to the **Join Mesh** screen, type in the address below, and tap **Join**:
-   ```
-   /ip4/100.56.248.69/tcp/9001
-   ```
+2. **Local peers are discovered automatically.** The install script granted the
+   Bluetooth, location, and local-network permissions, so the app finds other
+   SCMessenger devices on the same Wi-Fi network and over Bluetooth LE and Wi-Fi
+   Aware with no configuration. For a two-device test, put both devices on the
+   same Wi-Fi and this is all you need.
+3. **To reach peers beyond your local network**, supply one peer address the first
+   time: open the **Join Mesh** flow and tap **Scan QR Code** to scan a join
+   bundle from a node that is already connected. The bundle carries the peer
+   address, so nothing has to be typed.
+4. After that first connection the app learns further peers over the mesh's
+   ledger-exchange protocol and stores them, so the address you started from stops
+   mattering.
+
+Full model, including the CLI side: `docs/BOOTSTRAP.md`.

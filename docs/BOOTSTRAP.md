@@ -1,342 +1,301 @@
-> **Component Status Notice (2026-02-23)**
-> This document contains mixed current and historical components; do not classify the entire file as deprecated.
-> Section-level policy: `[Current]` = verified, `[Historical]` = context-only, `[Needs Revalidation]` = not yet rechecked.
-> If a section has no marker, treat it as `[Needs Revalidation]`.
-> Canonical baseline references: docs/CURRENT_STATE.md, REMAINING_WORK_TRACKING.md, docs/REPO_CONTEXT.md, docs/GLOBAL_ROLLOUT_PLAN.md, and DOCUMENTATION.md.
+# Joining the Mesh: Peer Discovery and Node Addresses
 
-# Bootstrap Node Configuration
+Status: Current
+Last updated: 2026-07-25
 
-SCMessenger automatically embeds default bootstrap nodes into all builds (Docker images and native binaries), enabling instant network connectivity without manual configuration.
+> Scope note: this document replaces the former "Bootstrap Node Configuration"
+> guidance, which described a privileged tier of shipped bootstrap nodes. That
+> tier does not exist. Canonical architecture reference:
+> `docs/TRANSPORT_ARCHITECTURE.md`. Governance/trust reference:
+> `docs/BOOTSTRAP_GOVERNANCE.md`. Operating a well-connected node:
+> `docs/RELAY_OPERATOR_GUIDE.md`.
 
-## [Current] Section Action Outcome (2026-02-23)
+## [Current] The Model in One Paragraph
 
-- `rewrite`: canonical bootstrap model is env/startup override + dynamic fetch + static fallback.
-- `move`: strategic/bootstrap rollout policy is maintained in `docs/UNIFIED_GLOBAL_APP_PLAN.md` and `REMAINING_WORK_TRACKING.md`.
-- `keep`: this document remains operator-facing bootstrap usage guidance.
-- `delete/replace`: treat default-only interpretations as historical unless reconfirmed in current code paths.
+SCMessenger has no dedicated relays and no bootstrap node role. There are only
+**nodes**, and **every node is a full relay**. Every build -- desktop, mobile,
+headless -- starts both a libp2p relay server and a relay client
+unconditionally (`core/src/transport/behaviour.rs`, field `relay_server`, plus
+`.with_relay_client(...)` in every swarm build path), and every SCMessenger peer
+advertises itself as a relay in its libp2p `identify` agent string. A node with
+a public address is not a special class of node; it is an ordinary node that
+happens to be reachable.
 
-## [Needs Revalidation] How It Works
+Peers are learned two ways:
 
-### [Needs Revalidation] 1. Embedded Defaults
+1. **Local discovery** -- mDNS on the LAN, plus BLE, Wi-Fi Aware / Wi-Fi Direct
+   on Android, and Multipeer on iOS. No configuration, no internet.
+2. **Ledger exchange** -- the `/sc/ledger-exchange/1.0.0` protocol. Nodes gossip
+   the peer records they already know to the peers they are connected to. This
+   is what replaced static bootstrap lists for learning about *remote* peers.
 
-All builds include hardcoded bootstrap nodes in `cli/src/bootstrap.rs`:
+Kademlia DHT lookups, libp2p `identify`, and peer broadcast also contribute once
+a node has at least one live connection. None of these require a privileged
+entry node.
 
-```rust
-pub const DEFAULT_BOOTSTRAP_NODES: &[&str] = &[];
+## [Current] There Are No Shipped Default Addresses
+
+All compiled-in address lists are empty, by design:
+
+| Location | Constant / field | Value |
+|----------|------------------|-------|
+| `core/src/transport/bootstrap.rs` | `CORE_BOOTSTRAP_NODES` | `&[]` |
+| `cli/src/bootstrap.rs` | `DEFAULT_BOOTSTRAP_NODES` | `&[]` |
+| `cli/src/config.rs` | `bootstrap_nodes` config default | empty |
+
+The Rust core and the CLI contain no hardcoded routable IP addresses. Any node
+address in a running install got there because a **user or operator supplied
+it**. The project does not accept contributed addresses into a shipped default
+list, and there is no PR process for doing so.
+
+The remaining `bootstrap_*` names in code and config are historical vocabulary
+for one thing only: *the optional list of peer addresses to dial on startup
+before any peers are known*. Treat "bootstrap node" in config keys as
+"user-supplied seed peer address", not as a node role.
+
+## [Current] Cold Start: The Only Case That Needs Manual Input
+
+A node needs exactly one reachable peer address, once, and only when **both** of
+these are true:
+
+- its ledger is empty (first run, or data directory wiped), and
+- there are no peers on its local network to find via mDNS/BLE/Wi-Fi.
+
+In that case the user supplies one address. After that first connection the node
+receives peer records over ledger exchange, persists them, and no longer depends
+on the address it started from:
+
+- CLI ledger: `<data_dir>/peers.json` (`cli/src/ledger.rs`)
+- Core/mobile ledger: `ledger.json` via `LedgerManager`
+  (`core/src/store/ledger_entry.rs`)
+
+Entries are added from `PeerIdentified` and `LedgerReceived` events and shared
+outward via `to_shared_entries()` / `share_ledger()`.
+
+On a LAN -- two laptops on the same Wi-Fi, a phone and a desktop in the same
+room -- no address is needed at all. Start both and they find each other.
+
+## [Current] Supplying a Seed Peer Address
+
+Address format is a libp2p multiaddr:
+
+```
+/ip4/<NODE_IP>/tcp/<P2P_PORT>/p2p/<PEER_ID>
 ```
 
-### [Needs Revalidation] 2. Automatic Merging
+`<NODE_IP>`, `<P2P_PORT>` and `<PEER_ID>` come from the node you are joining.
+Its operator can read them off that node with `scm identity` and the node's own
+"Listening on" log lines. Never copy an address out of documentation -- addresses
+are deployment-specific and there are no project-operated ones to copy.
 
-When a node starts:
-1. **First run**: Creates `config.json` with embedded bootstrap nodes
-2. **Subsequent runs**: Merges any new defaults with existing user configuration
-3. **Environment variables**: Adds `BOOTSTRAP_NODES` from environment to the merged list
-4. **Deduplication**: Ensures no duplicate entries
+### [Current] CLI
 
-### [Needs Revalidation] 3. Smart Updates
+The `config` subcommand takes `set` / `get` / `list` only
+(`cli/src/cli.rs`, `ConfigAction`). Seed addresses are managed through `set`
+with a pseudo-key:
 
-- Upgrading to a new version automatically adds new bootstrap nodes
-- User-added nodes are preserved
-- Users can manually remove unwanted nodes: `scm config bootstrap remove <addr>`
+```bash
+# Add a seed peer address
+scmessenger-cli config set bootstrap_node_add /ip4/<NODE_IP>/tcp/9001/p2p/<PEER_ID>
 
-## [Needs Revalidation] For End Users
+# Remove one
+scmessenger-cli config set bootstrap_node_remove /ip4/<NODE_IP>/tcp/9001/p2p/<PEER_ID>
 
-### [Needs Revalidation] Docker
+# Inspect
+scmessenger-cli config get bootstrap_nodes
+scmessenger-cli config list
+```
 
-Just run - bootstrap nodes are preconfigured:
+> [WARNING] Earlier revisions of this document showed
+> `scm config bootstrap add|list|remove <addr>`. **That command form does not
+> exist** and never did -- there is no `bootstrap` subcommand under `config`.
+> Use the `config set bootstrap_node_add` / `config set bootstrap_node_remove`
+> forms above.
+
+### [Current] Environment Variable
+
+The only environment variable the code reads is **`SC_BOOTSTRAP_NODES`**
+(`cli/src/bootstrap.rs`, `core/src/transport/bootstrap.rs`). It takes a
+comma-separated multiaddr list and, when set and non-empty, is the only source
+used.
+
+```bash
+export SC_BOOTSTRAP_NODES="/ip4/<NODE_IP>/tcp/9001/p2p/<PEER_ID>"
+scmessenger-cli start
+```
 
 ```bash
 docker run -d \
   --name scmessenger \
   -p 9000:9000 -p 9001:9001 \
+  -e SC_BOOTSTRAP_NODES="/ip4/<NODE_IP>/tcp/9001/p2p/<PEER_ID>" \
   testbotz/scmessenger:latest
 ```
 
-Watch it connect:
+> [WARNING] A plain `BOOTSTRAP_NODES` variable is **silently ignored** -- nothing
+> in the codebase reads it. Some compose files under `docker/` still set the
+> unprefixed name; that is a known defect in those files, not a second supported
+> spelling. Always use `SC_BOOTSTRAP_NODES`.
+
+### [Current] Mobile
+
+Android and iOS discover peers on the local network with no configuration. For
+internet reachability, the Join Mesh flow ingests a join bundle by QR scan
+(Android: `android/app/src/main/java/com/scmessenger/android/ui/join/JoinMeshScreen.kt`,
+"Scan QR Code"). The bundle carries the seed peer addresses, so the address is
+still user-supplied -- it is just transported as a QR code rather than typed.
+
+### [Current] Private Networks: Build-Time Seeding
+
+For a closed deployment you can compile a seed list in, via the same variable
+read through `option_env!` at build time (`cli/src/bootstrap.rs`):
 
 ```bash
-docker logs -f scmessenger
-# [CONFIG] Connecting to bootstrap nodes...
-#   [OK] Connected to bootstrap node 1
-```
-
-### [Needs Revalidation] Native Binary
-
-No configuration needed - just start:
-
-```bash
-./scmessenger-cli start
-# Automatically connects to embedded bootstrap nodes
-```
-
-### [Needs Revalidation] Adding Additional Nodes
-
-Environment variable (Docker):
-
-```bash
-docker run -d \
-  -e SC_BOOTSTRAP_NODES="/ip4/1.2.3.4/tcp/9001/p2p/12D3Koo..." \
-  testbotz/scmessenger:latest
-```
-
-CLI command (native):
-
-```bash
-scmessenger-cli config bootstrap add /ip4/1.2.3.4/tcp/9001/p2p/12D3Koo...
-```
-
-### [Needs Revalidation] Viewing Bootstrap Nodes
-
-```bash
-# Docker
-docker exec scmessenger scm config bootstrap list
-
-# Native
-scmessenger-cli config bootstrap list
-```
-
-### [Needs Revalidation] Removing Bootstrap Nodes
-
-```bash
-# Docker
-docker exec scmessenger scm config bootstrap remove /ip4/1.2.3.4/tcp/9001/p2p/...
-
-# Native
-scmessenger-cli config bootstrap remove /ip4/1.2.3.4/tcp/9001/p2p/...
-```
-
-## [Needs Revalidation] For Developers & Maintainers
-
-### [Needs Revalidation] Adding New Default Bootstrap Nodes
-
-Edit `cli/src/bootstrap.rs`:
-
-```rust
-pub const DEFAULT_BOOTSTRAP_NODES: &[&str] = &[
-    "/ip4/1.2.3.4/tcp/9001/p2p/12D3KooW...",  // New node
-    "/ip4/5.6.7.8/tcp/9001/p2p/12D3KooW...",  // Another node
-];
-```
-
-Rebuild and publish:
-
-```bash
-# Native build
+export SC_BOOTSTRAP_NODES="/ip4/<NODE_IP>/tcp/9001/p2p/<PEER_ID>"
 cargo build --release
 
-# Docker build
-docker build -t testbotz/scmessenger:latest -f docker/Dockerfile .
-docker push testbotz/scmessenger:latest
-```
-
-Users who upgrade will automatically get the new bootstrap nodes merged into their config.
-
-### [Needs Revalidation] Build-Time Override
-
-Override defaults at build time using environment variable:
-
-```bash
-# Native build
-export SC_BOOTSTRAP_NODES="/ip4/1.2.3.4/tcp/9001/p2p/12D3Koo...,/ip4/5.6.7.8/tcp/9001/p2p/12D3Koo..."
-cargo build --release
-
-# Docker build
 docker build \
-  --build-arg SC_BOOTSTRAP_NODES="/ip4/1.2.3.4/tcp/9001/p2p/12D3Koo..." \
-  -t my-custom-build \
+  --build-arg SC_BOOTSTRAP_NODES="/ip4/<NODE_IP>/tcp/9001/p2p/<PEER_ID>" \
+  -t my-private-build \
   -f docker/Dockerfile .
 ```
 
-This is useful for:
-- Custom private networks
-- Testing with specific bootstrap infrastructure
-- Regional deployments with nearby bootstrap nodes
+This is for private networks, test infrastructure, and regional deployments you
+control. It is not a mechanism for adding addresses to public builds.
 
-### [Needs Revalidation] Setting Up a Bootstrap Node
+## [Current] Running a Reachable Node
 
-Any node can be a bootstrap node. Requirements:
+Any node with a stable public address helps others cold-start -- not because it
+holds a special role, but because it is easy to reach. Requirements:
 
-1. **Stable public IP address**
-2. **Open firewall ports** (9000, 9001)
-3. **Persistent identity** (don't delete data directory)
-4. **High availability** (24/7 uptime preferred)
+1. Stable public IP or DNS name
+2. Inbound TCP/UDP open on the P2P port (9001 by default; 9000 for the
+   WebSocket/API interface)
+3. Persistent data directory, so the PeerId stays stable across restarts
+4. Reasonable uptime
 
-Get your node's multiaddress:
+Read the node's own identity and addresses:
 
 ```bash
-# If using Docker
+# Docker
 docker exec scmessenger scm identity
 
-# If using native binary
+# Native
 scmessenger-cli identity
 ```
 
-Share the multiaddress with the community or add it to `DEFAULT_BOOTSTRAP_NODES`.
+Full operational guidance -- systemd unit, cloud firewall rules, health checks,
+monitoring -- is in `docs/RELAY_OPERATOR_GUIDE.md`.
 
-### [Needs Revalidation] Bootstrap Node Strategy
+Sensible topology for a deployment you run: a couple of geographically separate
+reachable nodes so a single outage does not isolate new joiners, across more than
+one hosting provider. This is redundancy advice for *your* infrastructure. It is
+not a project-wide bootstrap tier, and there is no list to enroll in.
 
-**Geographic Distribution**: Place bootstrap nodes in different regions (North America, Europe, Asia, etc.) to ensure low-latency initial connections for users worldwide.
+## [Current] What a Relaying Node Can and Cannot See
 
-**Redundancy**: Always have at least 3-5 bootstrap nodes. If one goes down, others provide connectivity.
+Every node relays, so this applies to every node, not to a special class:
 
-**Diversity**: Mix cloud providers (GCP, AWS, Azure, DigitalOcean, etc.) to avoid single-provider dependency.
+- **Cannot** read message contents -- everything is end-to-end encrypted.
+- **Cannot** impersonate a peer -- identities are cryptographic.
+- **Can** observe transport metadata: which PeerIds connected, message sizes,
+  timing.
+- **Can** misbehave -- refuse circuits, or gossip junk peer records over ledger
+  exchange. Mitigation is structural: multiple independent paths, reputation
+  tracking on relay performance, and no node being load-bearing for entry.
+- **Publicly reachable nodes attract DDoS.** Mitigate with rate limits,
+  connection caps, and the relay budget cap (`max_relay_budget` in settings,
+  applied via `set_relay_budget`).
 
-**Community Nodes**: Encourage community members to run stable bootstrap nodes and submit PRs to add them to defaults.
-
-## [Needs Revalidation] Architecture
-
-### [Needs Revalidation] Bootstrap vs Relay
-
-**Bootstrap nodes** help new peers join the network and discover other peers. They are NOT required for ongoing communication.
-
-**All nodes relay**: Every node that can relay does relay. Bootstrap nodes are just well-known entry points.
-
-### [Needs Revalidation] Discovery After Bootstrap
-
-Once connected to a bootstrap node:
-1. **DHT Discovery**: Node joins Kademlia DHT and discovers nearby peers
-2. **mDNS Discovery**: Finds peers on local network (LAN)
-3. **Peer Exchange**: Bootstrap nodes share their peer list
-4. **Gossipsub**: Subscribes to mesh network topics
-
-After initial bootstrap, nodes discover each other organically through the DHT. Bootstrap nodes are no longer needed for that session.
-
-### [Needs Revalidation] Security Considerations
-
-- **Bootstrap nodes see connection attempts** but cannot decrypt messages (end-to-end encryption)
-- **Bootstrap nodes cannot impersonate peers** (cryptographic identities)
-- **Bootstrap nodes can go rogue** (malicious node can refuse connections or provide bad peer info)
-  - Mitigation: Multiple bootstrap nodes, automatic failover
-- **DDoS risk**: Bootstrap nodes are public and may be targeted
-  - Mitigation: Rate limiting, connection limits, use a CDN or DDoS protection
-
-## [Needs Revalidation] Testing
-
-### [Needs Revalidation] Test Bootstrap Configuration
+## [Current] Verifying Peer Discovery
 
 ```bash
-# Check embedded defaults (in source)
-cat cli/src/bootstrap.rs | grep DEFAULT_BOOTSTRAP_NODES -A 10
+# What seed addresses does this install have?
+scmessenger-cli config get bootstrap_nodes
 
-# Check runtime config (after start)
-scmessenger-cli config bootstrap list
-```
+# Full config dump
+scmessenger-cli config list
 
-### [Needs Revalidation] Test Bootstrap Connection
-
-```bash
-# Start node with verbose logging
+# Watch discovery with verbose logging
 RUST_LOG=debug scmessenger-cli start
 
-# Watch for bootstrap connection logs:
-# [CONFIG] Connecting to bootstrap nodes...
-#   1. Dialing /ip4/1.2.3.4/tcp/9001/p2p/12D3Koo... ...
-#   [OK] Connected to bootstrap node 1
+# Peer count and connection state
+scmessenger-cli status
 ```
 
-### [Needs Revalidation] Test Bootstrap Merging
+The persisted ledger is the real evidence that discovery is working. Check that
+`peers.json` (CLI) or `ledger.json` (core/mobile) is growing in the data
+directory across sessions.
+
+## [Current] Troubleshooting
+
+### Peer count stays at 0 on a LAN
+
+On desktop, libp2p mDNS should just work; it degrades gracefully to disabled in
+containers and cloud VMs without multicast. On Android the libp2p mDNS behaviour
+is compiled out and platform `NsdManager` discovery is used instead. Check:
 
 ```bash
-# Start node (creates config with defaults)
-scmessenger-cli start
-
-# Stop node (Ctrl+C)
-
-# Add custom bootstrap
-scmessenger-cli config bootstrap add /ip4/1.2.3.4/tcp/9001/p2p/12D3Koo...
-
-# Check - should have both default and custom
-scmessenger-cli config bootstrap list
+# Are we listening at all?
+scmessenger-cli status
+docker logs scmessenger | grep "Listening on"
 ```
 
-## [Needs Revalidation] Troubleshooting
+Then confirm the two hosts are on the same L2 segment and that mDNS/UDP 5353 is
+not blocked by a client-isolation setting on the access point. Guest Wi-Fi
+networks commonly block peer-to-peer traffic entirely.
 
-### [Needs Revalidation] "No bootstrap nodes configured"
+### Peer count stays at 0 with no local peers and an empty ledger
 
-**Cause**: Something went wrong during config initialization.
+Expected. This is the cold-start case -- supply one seed peer address (see
+above). There is no shipped default to fall back on, so a node in this state
+stays at 0 until a user provides an address or a local peer appears.
 
-**Fix**:
+### A supplied seed address does not connect
+
 ```bash
-# Regenerate config
-rm ~/.config/scmessenger/config.json
-scmessenger-cli start
-```
+# Reachability
+nc -zv <NODE_IP> 9001
 
-### [Needs Revalidation] "Failed to connect to bootstrap nodes"
+# Format check -- must be /ip4/<IP>/tcp/<PORT>/p2p/<PEER_ID>
+scmessenger-cli config get bootstrap_nodes
 
-**Causes**:
-1. Bootstrap node is down
-2. Firewall blocking connection
-3. Invalid multiaddress
-
-**Debug**:
-```bash
-# Test connectivity
-nc -zv 1.2.3.4 9001
-
-# Check firewall
+# Firewall
 # Linux: sudo ufw status
 # macOS: /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate
-
-# Verify multiaddress format
-scmessenger-cli config bootstrap list
-# Should be: /ip4/<IP>/tcp/9001/p2p/12D3Koo...
 ```
 
-### [Needs Revalidation] "Peer count stays at 0"
+Causes, in order of likelihood: the address is stale (the operator's IP or
+PeerId changed), the port is not open inbound on the remote host, or the
+multiaddr is malformed.
 
-**Possible causes**:
-1. All bootstrap nodes are down
-2. Your ports (9000, 9001) are not open to internet
-3. You're behind strict NAT without relay
+### Our own node is unreachable from outside
 
-**Debug**:
 ```bash
-# Check bootstrap connection
-docker logs scmessenger | grep -i bootstrap
-
-# Check listening addresses
-docker logs scmessenger | grep "Listening on"
-
-# Test your own port accessibility
-# From another machine:
+# From a different machine
 nc -zv <YOUR_PUBLIC_IP> 9001
 ```
 
-**Fix**:
+Open inbound on both ports. GCP example:
+
 ```bash
-# Ensure firewall allows inbound on 9001
-# GCP example:
 gcloud compute firewall-rules create allow-scmessenger \
   --allow tcp:9000,tcp:9001,udp:9001 \
   --direction=INGRESS
 ```
 
-## [Needs Revalidation] Contributing Bootstrap Nodes
+A node behind strict NAT with no UPnP can still participate: it reaches others
+through relay circuits provided by whichever peers it can reach. It just cannot
+serve as an entry point for anyone else.
 
-If you run a stable node with good uptime, consider contributing it as a default bootstrap node:
+### PeerId changed after a restart
 
-1. Run your node for at least 1 week with >99% uptime
-2. Ensure ports are open and accessible from internet
-3. Get your multiaddress: `scmessenger-cli identity`
-4. Submit a PR adding it to `cli/src/bootstrap.rs`
-5. Include location, provider, and your contact info in PR description
-
-**Example PR**:
-
-```rust
-pub const DEFAULT_BOOTSTRAP_NODES: &[&str] = &[
-    // North America - GCP (maintained by @user1)
-    "/ip4/1.2.3.4/tcp/9001/p2p/12D3KooW...",
-
-    // Europe - AWS (maintained by @user2)
-    "/ip4/1.2.3.4/tcp/9001/p2p/12D3KooW...",
-
-    // Asia - DigitalOcean (maintained by @user3)
-    "/ip4/5.6.7.8/tcp/9001/p2p/12D3KooW...",
-];
-```
+The data directory was not persisted. In Docker, check the volume mount; the
+network keypair lives under the data directory and must survive restarts, or
+every previously-shared ledger entry pointing at this node goes stale.
 
 ---
 
-**Key Insight**: Bootstrap nodes are just friendly entry points. The mesh is the network. Every node strengthens the whole.
+**Key point:** the mesh has no entry tier. Every node relays; peers propagate by
+ledger exchange and local discovery; the single manual step is one user-supplied
+address on a cold start with no neighbours.

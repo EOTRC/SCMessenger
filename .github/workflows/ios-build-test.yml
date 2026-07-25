@@ -2,17 +2,41 @@
 # SCMessenger iOS Build & Test Workflow
 # ==============================================================================
 #
-# Dispatchable workflow that builds the Rust core for iOS targets, generates
-# the XCFramework, and runs the iOS test suite on a simulator. Results are
-# reported back to the orchestrator via callback URL.
+# Builds the Rust core for iOS targets, generates the XCFramework, and runs the
+# iOS test suite on a simulator. Results are reported back to the orchestrator
+# via callback URL when one is configured.
 #
 # Triggers: Manual dispatch with sprint_id and git_branch inputs
 #           Plus push and pull_request on iOS/**, core/src/api.udl, and mobile/**
 #
 # Jobs:
-#   build-ios:       Cross-compile Rust → iOS, build XCFramework, run XCTest
+#   build-ios:         Cross-compile Rust -> iOS, build XCFramework, run XCTest
 #   test-macos-native: Native macOS cargo test + CLI build verification
 #
+# WHY THIS FILE LOOKS THE WAY IT DOES
+# -----------------------------------
+# Measured from run 30154609526 (build-ios, cancelled at the 30min cap):
+#   Cache Rust dependencies ............ 0.0min   <- restore MISS, every run
+#   Build Rust core for iOS device ..... 5.5min
+#   Build Rust core for iOS Simulator .. 5.6min
+#   Build host native library .......... 8.7min
+#   Verify Swift bindings .............. 4.3min
+#   Build XCFramework .................. 3.0min
+#   Build for testing (iOS Simulator) .. killed at 2.9min (27.1min already spent)
+#
+# Root cause: the job never had a warm Rust cache and never could get one.
+# actions/cache only saves in its post step when the job succeeded
+# (post-if: success()) - the log for that run shows "Post Cache Rust
+# dependencies: skipped". The job was always cancelled at 30min, so the cache
+# was never written, so the next run was cold again, so it was cancelled again.
+# A self-sustaining loop, not a code failure. Compare mobile.yml (green): its
+# iOS job does the same XCFramework build in 8.2min because Swatinem/rust-cache
+# is warm there.
+#
+# Fixes: Swatinem/rust-cache with cache-on-failure so a cold/failed run still
+# persists what it compiled, a timeout that actually fits one cold run so the
+# cache can be populated in the first place, one less cargo feature-set flip,
+# and a simulator destination resolved from the runner instead of hardcoded.
 # ==============================================================================
 
 name: iOS Build & Test
@@ -40,6 +64,15 @@ on:
       - 'core/src/api.udl'
       - 'mobile/**'
 
+permissions:
+  contents: read
+
+# push and pull_request both fire for branch pushes that touch iOS/**; without
+# this, superseded macOS runs keep burning the full timeout in parallel.
+concurrency:
+  group: ios-build-test-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -51,7 +84,11 @@ jobs:
   build-ios:
     name: iOS Build & Simulator Test
     runs-on: macos-14  # Apple Silicon M1 runner
-    timeout-minutes: 30
+    # A cold run needs ~27min of Rust compilation before Xcode starts, plus the
+    # Swift build and the simulator test run. 90min lets the first cold run
+    # finish and populate the Rust cache; warm runs land around 20min (see
+    # mobile.yml's green iOS job for the warm-cache reference).
+    timeout-minutes: 90
 
     steps:
       # --- Checkout ---
@@ -66,36 +103,36 @@ jobs:
         with:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
 
+      # Replaces actions/cache. Two reasons this matters more than the raw cache
+      # hit rate: (1) cache-on-failure means a run that times out or fails still
+      # saves its compiled artifacts, which is what breaks the cold-cache loop
+      # described in the header; (2) rust-cache prunes the target directory
+      # before saving, so this job stops pushing multi-GB raw `target` tarballs
+      # into the repository's 10GB cache budget and evicting ci.yml/mobile.yml.
       - name: Cache Rust dependencies
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-ios-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-ios-
+          key: ios-build-test
+          cache-on-failure: true
 
       # --- Build Rust Core for iOS ---
+      # These two are the same invocations scripts/build_xcframework.sh makes,
+      # kept as explicit steps so the log shows where the time goes; they are
+      # no-ops by the time the script runs. The former standalone
+      # "Build host native library" step was dropped: the script already does
+      # that build, and having it here forced an extra default-features <->
+      # gen-bindings feature flip, each of which recompiles scmessenger-core and
+      # everything downstream of it.
       - name: Build Rust core for iOS device (aarch64-apple-ios)
         run: cargo build --release --target aarch64-apple-ios -p scmessenger-core
 
       - name: Build Rust core for iOS Simulator (aarch64-apple-ios-sim)
         run: cargo build --release --target aarch64-apple-ios-sim -p scmessenger-core
 
-      # --- Host Native Build for Bindings Generation ---
-      - name: Build host native library for bindings generation
-        run: cargo build -p scmessenger-core
-
-      # --- Swift Bindings Drift Check ---
-      - name: Verify Swift bindings are up to date
-        # Known bindings drift until PQC-10 regen; non-blocking until then (see TASK_CI_IOS_MACOS_RUNNER_FIX.md)
-        continue-on-error: true
-        run: |
-          ./scripts/verify_ios_bindings.sh
-
       # --- XCFramework ---
+      # Required on CI: only the headers of iOS/SCMessengerCore.xcframework are
+      # committed. The static libraries are excluded by the `*.a` rule in
+      # .gitignore, so a fresh clone cannot link without this step.
       - name: Build XCFramework
         run: |
           chmod +x scripts/build_xcframework.sh
@@ -104,14 +141,116 @@ jobs:
       - name: Verify XCFramework exists
         run: |
           if [ ! -d "iOS/SCMessengerCore.xcframework" ]; then
-            echo "ERROR: XCFramework not found at iOS/SCMessengerCore.xcframework"
+            echo "[ERROR] XCFramework not found at iOS/SCMessengerCore.xcframework"
             ls -la iOS/
             exit 1
           fi
-          echo "XCFramework generated successfully:"
+          echo "[OK] XCFramework generated:"
           ls -la iOS/SCMessengerCore.xcframework/
 
+      # --- Swift Bindings Drift Check ---
+      # Runs after the XCFramework build so gen_swift is already warm at the
+      # gen-bindings feature set instead of triggering another rebuild.
+      - name: Verify Swift bindings are up to date
+        # Known bindings drift until PQC-10 regen; non-blocking until then (see TASK_CI_IOS_MACOS_RUNNER_FIX.md)
+        continue-on-error: true
+        run: |
+          ./scripts/verify_ios_bindings.sh
+
+      # --- Xcode project sanity check ---
+      # There is no shared scheme committed under
+      # iOS/SCMessenger/SCMessenger.xcodeproj/xcshareddata/xcschemes/, so
+      # `-scheme SCMessenger` relies on xcodebuild's implicit scheme generation.
+      # That does work for `build` (mobile.yml is green using exactly that), but
+      # printing the resolved schemes/targets here turns any future scheme
+      # resolution problem into an immediate, obvious error instead of a
+      # 30-minute mystery inside a build step.
+      - name: List Xcode schemes and targets
+        working-directory: iOS
+        run: |
+          set -o pipefail
+          xcodebuild -list -project SCMessenger/SCMessenger.xcodeproj
+
+      # --- iOS Simulator ---
+      # The previous hardcoded 'name=iPhone 15' destination is a latent failure:
+      # the device set shipped with the runner's Xcode changes over time and a
+      # name that is not pre-created makes xcodebuild fail to resolve the
+      # destination. Resolve an actually-available iPhone from the runner,
+      # create one if the runtime has none, and address it by UDID.
+      - name: Select and boot iOS simulator
+        id: sim
+        run: |
+          set -euo pipefail
+          xcrun simctl list runtimes
+          xcrun simctl list --json > "$RUNNER_TEMP/simctl.json"
+          PICK="$(python3 - "$RUNNER_TEMP/simctl.json" <<'PY'
+          import json
+          import sys
+
+          data = json.load(open(sys.argv[1]))
+
+
+          def version(identifier):
+              tail = identifier.rsplit(".iOS-", 1)[-1]
+              parts = [int(p) if p.isdigit() else 0 for p in tail.split("-")]
+              return tuple(parts + [0] * (3 - len(parts)))
+
+
+          runtimes = [
+              r for r in data.get("runtimes", [])
+              if r.get("isAvailable") and ".SimRuntime.iOS-" in r.get("identifier", "")
+          ]
+          runtimes.sort(key=lambda r: version(r["identifier"]))
+          if not runtimes:
+              print("none")
+              sys.exit(0)
+
+          devices = data.get("devices", {})
+          for runtime in reversed(runtimes):
+              available = [
+                  d for d in devices.get(runtime["identifier"], [])
+                  if d.get("isAvailable") and "iPhone" in d.get("name", "")
+              ]
+              if available:
+                  print("udid " + available[-1]["udid"])
+                  sys.exit(0)
+
+          iphone_types = [
+              t for t in data.get("devicetypes", [])
+              if "iPhone" in t.get("name", "")
+          ]
+          if iphone_types:
+              print("create %s %s" % (iphone_types[-1]["identifier"], runtimes[-1]["identifier"]))
+          else:
+              print("none")
+          PY
+          )"
+          echo "[INFO] simulator selection: $PICK"
+          # shellcheck disable=SC2086
+          set -- ${PICK:-none}
+          case "$1" in
+            udid)
+              UDID="$2"
+              ;;
+            create)
+              UDID="$(xcrun simctl create scm-ci-iphone "$2" "$3")"
+              echo "[INFO] created simulator $UDID"
+              ;;
+            *)
+              echo "[ERROR] No usable iOS simulator runtime on this runner"
+              xcrun simctl list devices available
+              exit 1
+              ;;
+          esac
+          # bootstatus boots the device if needed and blocks until it is ready.
+          # xcodebuild will otherwise spend its own timeout waiting on first boot.
+          xcrun simctl bootstatus "$UDID" -b
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
       # --- iOS Simulator Test ---
+      # Split build from run: build once against the generic simulator SDK (the
+      # destination mobile.yml proves resolves on a clean CI clone), then run the
+      # produced test bundle on the concrete booted device by UDID.
       - name: Build for testing (iOS Simulator)
         working-directory: iOS
         run: |
@@ -119,8 +258,9 @@ jobs:
           xcodebuild build-for-testing \
             -project SCMessenger/SCMessenger.xcodeproj \
             -scheme SCMessenger \
-            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            -destination 'generic/platform=iOS Simulator' \
             -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             | (xcpretty 2>/dev/null || cat)
 
@@ -129,11 +269,12 @@ jobs:
         run: |
           # NOTE: CoreBluetooth, Multipeer/AWDL, APNs, and background modes are hardware-waived and not covered by simulator
           set -o pipefail
-          xcodebuild test \
+          xcodebuild test-without-building \
             -project SCMessenger/SCMessenger.xcodeproj \
             -scheme SCMessenger \
-            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
             -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             -resultBundlePath ../test-results/ios-test-results.xcresult \
             CODE_SIGNING_ALLOWED=NO \
             | (xcpretty 2>/dev/null || cat)
@@ -143,16 +284,23 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-test-results-${{ github.event.inputs.sprint_id }}
+          name: ios-test-results-${{ github.event.inputs.sprint_id || github.run_id }}
           path: test-results/
           retention-days: 30
+          if-no-files-found: ignore
 
       # --- Orchestrator Callback ---
       - name: Notify orchestrator
         if: always()
         env:
           ORCHESTRATOR_URL: ${{ secrets.ORCHESTRATOR_URL }}
+          ORCHESTRATOR_TOKEN: ${{ secrets.ORCHESTRATOR_TOKEN }}
         run: |
+          if [ -z "${ORCHESTRATOR_URL}" ]; then
+            echo "[INFO] ORCHESTRATOR_URL not configured; skipping callback"
+            exit 0
+          fi
+
           # Determine job status
           if [ "${{ job.status }}" = "success" ]; then
             STATUS="passed"
@@ -163,7 +311,7 @@ jobs:
           # Send results to orchestrator
           curl -sf -X POST "${ORCHESTRATOR_URL}/api/v1/build-results" \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${{ secrets.ORCHESTRATOR_TOKEN }}" \
+            -H "Authorization: Bearer ${ORCHESTRATOR_TOKEN}" \
             -d "{
               \"sprint_id\": \"${{ github.event.inputs.sprint_id }}\",
               \"workflow\": \"ios-build-test\",
@@ -174,7 +322,7 @@ jobs:
               \"run_id\": \"${{ github.run_id }}\",
               \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",
               \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"
-            }" || echo "WARNING: Failed to notify orchestrator (non-fatal)"
+            }" || echo "[WARNING] Failed to notify orchestrator (non-fatal)"
 
   # ============================================================================
   # Job 2: Native macOS Test & CLI Build
@@ -182,11 +330,11 @@ jobs:
   test-macos-native:
     name: macOS Native Tests
     runs-on: macos-14  # Apple Silicon M1 runner
-    # `cargo test --workspace` compiles the complete Rust workspace before the
-    # release CLI build below. A cold macOS runner can exceed 15 minutes before
-    # tests even begin, so keep the native gate bounded but give it enough time
-    # to run its intended verification.
-    timeout-minutes: 45
+    # This job already passes (28.9min in run 30154609526: 18.1min for
+    # `cargo test --workspace`, 9.8min for the release CLI build) - the workflow
+    # was only ever red because build-ios timed out. 60min keeps headroom for a
+    # cold cache without inviting an hour-long hang.
+    timeout-minutes: 60
 
     steps:
       # --- Checkout ---
@@ -199,16 +347,13 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Same reasoning as build-ios: prunes before saving, and saves even when
+      # the job fails so a timed-out run still leaves a usable cache behind.
       - name: Cache Rust dependencies
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-native-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-native-
+          key: macos-native
+          cache-on-failure: true
 
       # --- Test ---
       - name: Run workspace tests

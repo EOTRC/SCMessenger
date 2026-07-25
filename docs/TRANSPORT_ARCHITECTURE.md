@@ -69,9 +69,31 @@ The SCMessenger transport layer implements a fully decentralized, self-healing p
 
 **Problem**: Traditional P2P requires hardcoded "bootstrap nodes".
 
-**Solution**: Any node can help others bootstrap via Kademlia DHT.
+**Solution**: Peers propagate through the mesh itself, so no address list needs
+to be shipped. Two complementary mechanisms:
 
-**Result**: Network entry possible via any peer; no single point of failure.
+- **Ledger exchange** (`/sc/ledger-exchange/1.0.0`) -- the mechanism that
+  replaced static bootstrap lists for learning about *remote* peers. Nodes gossip
+  the peer records they already hold to the peers they are connected to, and
+  persist what they receive. Records are gained from `PeerIdentified` and
+  `LedgerReceived` events and shared via `to_shared_entries()` / `share_ledger()`.
+- **Local discovery** -- mDNS on the LAN (desktop; `NsdManager` on Android), plus
+  BLE, Wi-Fi Aware / Wi-Fi Direct, and Multipeer. Finds neighbours with no
+  configuration and no internet.
+
+Kademlia DHT lookups and libp2p `identify` then extend reach once at least one
+connection exists. Any node can serve as an entry point, because every node is a
+full relay -- there is no privileged entry tier.
+
+**Result**: All compiled-in address lists are empty (`CORE_BOOTSTRAP_NODES`,
+`DEFAULT_BOOTSTRAP_NODES`). Network entry is possible via any peer; no single
+point of failure and no shipped infrastructure dependency. The only manual step
+is one user-supplied address on a cold start with an empty ledger and no local
+peers.
+
+**Code**: `core/src/transport/behaviour.rs` (protocol registration),
+`core/src/store/ledger_entry.rs` (`LedgerManager`), `cli/src/ledger.rs`.
+Joining model: `docs/BOOTSTRAP.md`.
 
 ---
 
@@ -151,5 +173,5 @@ The SCMessenger transport layer implements a fully decentralized, self-healing p
 
 ---
 
-**Last Updated:** March 9, 2026
-**Status:**  100% COMPLETE
+**Status:** Seven-phase transport implementation complete
+**Last updated:** 2026-07-25

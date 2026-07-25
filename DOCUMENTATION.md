@@ -31,7 +31,8 @@ see the [Document Status Index](docs/DOCUMENT_STATUS_INDEX.md).
 - CLI per-OS guides: [Windows](docs/CLI_WINDOWS.md) |
   [Linux](docs/CLI_LINUX.md) | [macOS](docs/CLI_MACOS.md)
 - [Docker Quickstart](docs/platform/DOCKER_QUICKSTART.md)
-- [Bootstrap Nodes](docs/BOOTSTRAP.md) -- bootstrap/relay configuration
+- [Joining the Mesh](docs/BOOTSTRAP.md) -- peer discovery, ledger exchange, and
+  supplying a cold-start peer address
 - [Deployment](docs/DEPLOYMENT.md)
 
 ## Protocol and internals
@@ -84,7 +85,8 @@ Farm validator: [Farm Final Plan](HANDOFF/plans/FARM_FINAL_PLAN.md).
 
 ## Operations
 
-- [Relay Operator Guide](docs/RELAY_OPERATOR_GUIDE.md)
+- [Node Operator Guide](docs/RELAY_OPERATOR_GUIDE.md) -- running a publicly
+  reachable node (not a distinct role; every node is a full relay)
 - [Log Extraction Standard](docs/ops/LOG_EXTRACTION_STANDARD.md) -- mandatory for
   iOS/Android log capture
 - [Log Extraction Quick Reference](docs/ops/LOG_EXTRACTION_QUICK_REF.md)
