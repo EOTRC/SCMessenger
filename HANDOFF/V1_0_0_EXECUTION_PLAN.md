@@ -2,8 +2,11 @@
 
 **Generated:** 2026-07-04
 **Author:** Claude (native Cowork session), on operator direction (Lucas)
+**Status:** Active — long-horizon v1.0.0 sequencing authority (scope and two-phase DAG).
+**Last amended:** 2026-07-25 (Section 0A; planning unity pass with code/HANDOFF verification)
 **Supersedes:** `HANDOFF/V1_0_0_UNIFICATION_PLAN.md` for sequencing and scope. That doc remains the audit record; its findings are re-verified in Section 0 below.
 **Backlog anchor:** `docs/release-readiness-2026-07-02.md` — the verified-vs-claimed ledger. Every task here closes only with recorded command output or device evidence, in that doc's style.
+**Live dispatch:** `HANDOFF/todo/_QUEUE.md` (status-correction header) + `HANDOFF/plans/MILESTONE_RELEASE_PLAN.md` (release slicing). Section 0 is a frozen audit snapshot; Section 0A is current operator truth.
 
 ## Operator-settled inputs (do not relitigate in future sessions)
 
@@ -17,7 +20,52 @@
 
 ---
 
+## 0A. Operator amendments (2026-07-11 through 2026-07-25)
+
+These amend settled inputs 1–7 and Section 0 where noted. Do not relitigate scope;
+update this section when the operator settles a new decision.
+
+1. **Phase 1 exit:** Signed off **2026-07-10** (`P1-19`). Transport parity work for
+   Android↔Windows is **complete** with recorded waivers (WiFi Direct → v1.1 /
+   Android↔Android [BLOCKED-HW]; mDNS/LAN+TCP covers Android↔Windows). **P1-14** and
+   **P1-18** remain **post-exit verification debt** (hostile-network + relay cells),
+   planned on the AWS docker rig when infra is re-opened.
+2. **Verification regime:** Local Windows + Android **emulator** (`scm_pixel_34`) is
+   the default lab; physical Pixel 6a when available. **GitHub Actions** supplements
+   local gates (Enterprise trial unblocked billing **2026-07-23**); it does not replace
+   device/emulator evidence for transport.
+3. **AWS / internet relay:** Approved **2026-07-11** for P1-14/P1-18 verification and
+   farm-sim extension (`infra/aws/` committed; operator may PAUSE provisioning — see
+   `_QUEUE.md`). This reverses original input 5 ("AWS excluded") **only** for that
+   verification rig, not as a general cloud dependency for daily dev.
+4. **WiFi Aware (Phase 2 WS-B B3):** Closed **2026-07-11** as **not orphaned**
+   (loopback TCP proxy path). Follow-up: WiFi Aware PMK hardening flagged in
+   `_QUEUE.md` (separate from B3). Phase 2 sketch item "orphaned instantiation" is
+   **superseded** by that closure.
+5. **iOS in v1.0.0:** Farm-gating per operator **2026-07-13** (`FARM_FINAL_PLAN.md`
+   AD-7 / WS-FARM-C). TestFlight / Apple Developer account remains **[HUMAN]** before
+   farm pilot (F3).
+6. **Release slicing:** Near-term milestone is **v0.4.0** (Josh alpha), then **v0.5.0**,
+   then **v1.0.0 GA** — see `HANDOFF/plans/MILESTONE_RELEASE_PLAN.md`. Alpha tag:
+   **`v0.4.0-alpha.1`** (not `v1.0.0-alpha.1`).
+7. **E-00 ratchet wiring:** **DONE 2026-07-17** (`HANDOFF/done/CRITICAL_RATCHET_SUBSYSTEM_NOT_WIRED_INTO_IRONCORE.md`;
+   kill switch `SCM_RATCHET_DISABLE`; `core/tests/integration_e00_ratchet_wiring.rs`).
+8. **Outbox delivery (2026-07-12 finding):** Closed **2026-07-17** (Sites 2+3;
+   `HANDOFF/done/CRITICAL_OUTBOX_NEVER_FLUSHES_DESPITE_ACTIVE_CONNECTION.md`). Farm P0
+   still requires **re-proving** CLI↔emulator end-to-end delivery under current HEAD
+   (see `_QUEUE.md` farm transport-continuity item).
+9. **PQC depth:** PQC-02..PQC-13 largely in `HANDOFF/done/` per `_QUEUE.md`
+   **2026-07-23** header; **PQC-14** (docs + risk register) remains open in
+   `HANDOFF/todo/`. PQC-09 onion wiring stays parked (not on live path).
+10. **Orchestration:** Single launcher **`/orchestrate`** + `docs/ORCHESTRATION.md`
+    (archived per-backend commands are BACKENDS only).
+
+---
+
 ## 0. Ground truth as of 2026-07-04 (verified this session)
+
+Historical audit snapshot — retain for traceability. For current status use Section 0A,
+`_QUEUE.md`, and `MILESTONE_RELEASE_PLAN.md`.
 
 Verification legend used throughout: **[V-RUN]** = a command was actually executed and output recorded. **[V-READ]** = verified by reading source/grep this session (this sandbox has no Rust/Android toolchain; every [V-READ] claim about builds/tests must be re-proven with a real run on the Windows machine before being trusted as done).
 

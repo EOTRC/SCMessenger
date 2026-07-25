@@ -1,14 +1,15 @@
 # SCMessenger Document Status Index
 
 Status: Active
-Last updated: 2026-07-11 (archive sweep: 25 stale docs moved to docs/historical/; see Section 9)
+Last updated: 2026-07-25 (planning unity pass; precedence + chain corrected)
 
-NOTE (2026-07-11): rows in Sections 2-5 that reference files now under
+NOTE: rows in Sections 2-5 that reference files now under
 `docs/historical/` are Historical regardless of what the row says -- Section 9
 lists the moves. The active canonical chain for execution decisions is:
-`DOCUMENTATION.md` -> `docs/CURRENT_STATE.md` -> `REMAINING_WORK_TRACKING.md`
--> `HANDOFF/V1_0_0_EXECUTION_PLAN.md` -> `docs/ORCHESTRATION.md` (orchestration
-protocol) -> `docs/V0.2.0_RESIDUAL_RISK_REGISTER.md`.
+`DOCUMENTATION.md` -> `HANDOFF/todo/_QUEUE.md` (header corrections) ->
+`HANDOFF/plans/MILESTONE_RELEASE_PLAN.md` -> `HANDOFF/V1_0_0_EXECUTION_PLAN.md`
+(Section 0A) -> `HANDOFF/plans/FARM_FINAL_PLAN.md` -> `REMAINING_WORK_TRACKING.md`
+-> `docs/CURRENT_STATE.md` -> `docs/ORCHESTRATION.md`.
 
 Purpose: classify documentation by lifecycle state so execution decisions use authoritative files and historical content remains discoverable without causing drift.
 
@@ -42,9 +43,14 @@ Purpose: classify documentation by lifecycle state so execution decisions use au
 | `docs/CURRENT_STATE.md`                               | Active | Verified current runtime/build state + ID management           |
 | `docs/ID_MANAGEMENT_ANALYSIS.md`                     | Active | Comprehensive ID system analysis and verification              |
 | `docs/DEVICE_PEER_RELATIONSHIP_ANALYSIS.md`          | Active | Device-peer binding and tight-pair enforcement analysis        |
-| `REMAINING_WORK_TRACKING.md`                          | Active | Backlog and active work tracking                               |
-| `docs/WS12.29_KNOWN_ISSUES_BURNDOWN_PLAN.md`          | Active | Consolidated known-issues ledger and remediation sequence      |
-| `docs/MILESTONE_PLAN_V0.2.0_ALPHA.md`                 | Active | v0.2.0 milestone definition and sequencing                     |
+| `REMAINING_WORK_TRACKING.md`                          | Active | Session backlog narrative (not dispatch order)                 |
+| `HANDOFF/todo/_QUEUE.md`                              | Active | Live dispatch order; status-correction headers override body   |
+| `HANDOFF/plans/MILESTONE_RELEASE_PLAN.md`             | Active | v0.3.5 -> v0.4.0 -> v0.5.0 -> v1.0.0 release slicing           |
+| `HANDOFF/V1_0_0_EXECUTION_PLAN.md`                    | Active | v1.0.0 two-phase DAG; Section 0A = current amendments          |
+| `HANDOFF/plans/FARM_FINAL_PLAN.md`                    | Active | Farm validator topology and gap ledger                         |
+| `docs/ORCHESTRATION.md`                               | Active | Orchestration protocol (`/orchestrate`)                        |
+| `docs/WS12.29_KNOWN_ISSUES_BURNDOWN_PLAN.md`          | Historical | Moved to `docs/historical/` (2026-07-11); see Section 8a   |
+| `docs/MILESTONE_PLAN_V0.2.0_ALPHA.md`                 | Active | v0.2.0 era milestone (context; superseded for v1 sequencing) |
 | `docs/V0.2.0_PHASE_EXECUTION_PROMPTS.md`              | Active | Execution prompts per phase                                    |
 | `docs/V0.2.0_RESIDUAL_RISK_REGISTER.md`               | Active | Residual-risk source of truth                                  |
 | `docs/PLATFORM_SUPPORT_MATRIX.md`                     | Active | Platform support baseline                                      |
@@ -65,9 +71,10 @@ Purpose: classify documentation by lifecycle state so execution decisions use au
 
 ## 3) Active supporting audits and execution plans
 
-| Document                                                     | Status | Purpose                                                                 |
-| ------------------------------------------------------------ | ------ | ----------------------------------------------------------------------- |
-| `docs/REPO_GITHUB_REALIGNMENT_FIRST_PASS_2026-03-07.md`      | Active | Planning-only GitHub/repo operating-model audit and execution blueprint |
+| Document                                                     | Status     | Purpose                                                                 |
+| ------------------------------------------------------------ | ---------- | ----------------------------------------------------------------------- |
+| `HANDOFF/plans/V040_ORCHESTRATION_PLAN.md`                   | Superseded | 2026-07-19 Josh alpha table; use `_QUEUE.md` + MILESTONE_RELEASE_PLAN   |
+| `docs/REPO_GITHUB_REALIGNMENT_FIRST_PASS_2026-03-07.md`      | Active     | Planning-only GitHub/repo operating-model audit and execution blueprint |
 | `docs/global_viability_audit.md`                             | Active | Supporting viability audit; context for execution, not canonical truth  |
 | `docs/implementation_cheatsheet_3.4.2026.md`                 | Active | Supporting implementation reference derived from audit findings         |
 | `docs/DEEP_ARCHITECTURAL_REASONING_DHT_OPTIMIZATION.md`      | Active | Deep architectural analysis for DHT peer discovery latency optimization |
@@ -119,12 +126,23 @@ These documents may contain both current and historical sections; verify section
    - move or classify the old file as `Historical`/`Superseded`,
    - add or update links in `DOCUMENTATION.md` and this index.
 3. If active docs conflict, precedence is:
-   1. `docs/V0.2.0_RESIDUAL_RISK_REGISTER.md` (risk posture),
-   2. `docs/MILESTONE_PLAN_V0.2.0_ALPHA.md` (scope/order),
-   3. `REMAINING_WORK_TRACKING.md` (backlog),
-   4. `docs/CURRENT_STATE.md` (verified baseline),
-   5. `docs/REPO_CONTEXT.md` (architecture context).
+   1. Operator direction recorded in `HANDOFF/V1_0_0_EXECUTION_PLAN.md` Section 0A
+      and `HANDOFF/todo/_QUEUE.md` status-correction headers (dispatch truth),
+   2. `HANDOFF/plans/MILESTONE_RELEASE_PLAN.md` (release scope for v0.4.0+),
+   3. `HANDOFF/plans/FARM_FINAL_PLAN.md` (farm validator re-ranking),
+   4. `REMAINING_WORK_TRACKING.md` (session narrative; may contain historical sections),
+   5. `docs/CURRENT_STATE.md` (verified baseline snapshot),
+   6. `docs/V0.2.0_RESIDUAL_RISK_REGISTER.md` / `docs/MILESTONE_PLAN_V0.2.0_ALPHA.md`
+      (v0.2.0 era — use only when working that line or cited by an active task),
+   7. `docs/REPO_CONTEXT.md` (architecture context).
 4. `scripts/docs_sync_check.sh` (Unix / Git Bash) or `scripts/docs_sync_check.ps1` (Windows PowerShell) should pass before finalizing implementation work or documentation-only changes.
+
+## 8b) 2026-07-25 planning unity
+
+Doc stack aligned across `HANDOFF/V1_0_0_EXECUTION_PLAN.md` Section 0A,
+`_QUEUE.md`, `MILESTONE_RELEASE_PLAN.md`, `REMAINING_WORK_TRACKING.md`,
+`docs/CURRENT_STATE.md`, `DOCUMENTATION.md`; `V040_ORCHESTRATION_PLAN.md`
+marked Superseded. Details: `REMAINING_WORK_TRACKING.md` (2026-07-25 section).
 
 ## 8a) 2026-07-11 archive sweep (all now Historical, under docs/historical/)
 

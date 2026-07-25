@@ -225,5 +225,5 @@ without removing the five inheriting member lines fails the manifest load).
 9. `REMAINING_WORK_TRACKING.md`'s top section still presents E-00 (ratchet/PQ
    not wired) as `NEW CRITICAL`, but the ticket is `HANDOFF/done/` with
    `Status: DONE 2026-07-17`, build-verified with a unanimous adversarial pass.
-   The tracker's framing is stale; the code is fine. Worth a header correction
-   so nobody re-opens it.
+   **[ADDRESSED 2026-07-25]** Planning unity pass added a 2026-07-25 header;
+   historical 2026-07-17 section marked historical.

@@ -1,11 +1,32 @@
 # _QUEUE -- Dispatch Order for the Full v1.0.0 Backlog
 
 Status: Active
-Last updated: 2026-07-21 (status-correction header reflecting early morning Kimi-K3 OpenCode session)
+Last updated: 2026-07-25 (planning unity pass; reconciled with code + HANDOFF/done/)
+
+## 2026-07-25 PLANNING UNITY (read before the 2026-07-21 header)
+
+- **Authority stack:** Sequencing = `HANDOFF/V1_0_0_EXECUTION_PLAN.md` (Section 0A).
+  Release slicing = `HANDOFF/plans/MILESTONE_RELEASE_PLAN.md`. **This file's
+  status-correction headers** override stale body text. Orchestration =
+  `docs/ORCHESTRATION.md` (`/orchestrate` only; archived `/scmorc`, `/scmqwen` are BACKENDS).
+- **v0.4.0 plan:** `HANDOFF/plans/V040_ORCHESTRATION_PLAN.md` is **Superseded** — use
+  this queue + MILESTONE_RELEASE_PLAN for Josh alpha work.
+- **NEXT_ITER_04 / outbox:** Transport pairing PASS **2026-07-10** (`HANDOFF/done/NEXT_ITER_04_*`).
+  Outbox-never-flushes CRITICAL found **2026-07-12**, closed **2026-07-17** (Sites 2+3;
+  `HANDOFF/done/CRITICAL_OUTBOX_*`). Do not treat either as "open" — farm P0 still needs
+  a **fresh** CLI↔emulator delivery proof on current HEAD.
+- **PQC-10..13:** Done per **2026-07-21/23** headers below; **`PQC_14`** remains in
+  `HANDOFF/todo/`. Stale todo `PQC_10_MLDSA_MODULE_MISSING.md` conflicts with landed
+  `core/src/crypto/pq/mldsa.rs` — do not dispatch; retire or move to done/ separately.
+- **Open verification (2026-07-25 session handoff):** NAT bootstrap relay dial may log
+  success on **queued** dial, not `ConnectionEstablished` — see
+  `HANDOFF/SESSION_HANDOFF_2026-07-25.md` before closing transport tasks.
 
 ## 2026-07-21 STATUS CORRECTIONS (authoritative over the body below)
 
-- **v0.4.0 EXECUTION PLAN**: Active authority is `HANDOFF/plans/V040_ORCHESTRATION_PLAN.md` + `docs/historical/KIMI_K3_V040_ORCHESTRATION_PROMPT.md`.
+- **v0.4.0 EXECUTION PLAN**: Active authority is `HANDOFF/plans/MILESTONE_RELEASE_PLAN.md`
+  + this file's status-correction headers (not the superseded `V040_ORCHESTRATION_PLAN.md`).
+  Historical prompt: `docs/historical/KIMI_K3_V040_ORCHESTRATION_PROMPT.md`.
 - **PROVE_SECOND_REAL_ENDPOINT_DELIVERY**: COMPLETED & VERIFIED (`HANDOFF/PROOF_TWO_ENDPOINT_DELIVERY_2026-07-20.md`, moved to `HANDOFF/done/`). Alice and Bob CLI instances exchanged bidirectional messages & receipts over real alpha relay (`100.56.248.69:9001`).
 - **GRACEFUL_AF_DIAL_POLICY (Items 3+4 & Audit Fixes)**: COMPLETED in `cli/src/ledger.rs` & `cli/src/main.rs`. Implemented per-peer backoff state, max 3 concurrent outbound dials, circuit-relay preference after connection established, plus peer spoofing & relay liveness audit hardening.
 - **A-04 ANDROID RECEIPT UNIFICATION**: COMPLETED. `core/src/iron_core.rs` replaced serde_json calls with `encode_receipt`/`decode_receipt`. `android/app/build.gradle` updated with test JNA dependency. `ReceiptUnificationTest.kt` added with native-aware `@BeforeClass` probe.
@@ -27,7 +48,8 @@ Last updated: 2026-07-21 (status-correction header reflecting early morning Kimi
 
 0b. **U4 Receipt encoding unified** [SONNET] — `encode_receipt()` / `decode_receipt()`
    in core, JSON format canonical. Blocks A2 (CRITICAL delivery bug fix).
-   (UNIFICATION U4.)
+   (UNIFICATION U4.) **DONE** (`HANDOFF/done/U4_RECEIPT_ENCODING_UNIFIED.md`; A-04
+   Android receipt unification per 2026-07-21 header.)
 
 0c. **U2 Topic constants** [HAIKU] — define `TOPIC_LOBBY`, `TOPIC_MESH` once
    in core/lib.rs, import everywhere (today hardcoded in 3+ places).
@@ -74,18 +96,17 @@ relitigate). This file is the LIVE pick list: pull from the top, respect the
 dependency notes, update statuses as tasks move to done/.
 
 Rules of engagement:
-- Phase 1 (Windows/Android transport parity) fully drains before any Phase 2
-  fine-planning. Phase 2 tasks (PQC_*, TASK_KMP_*, WS-A/B items) are NOT
-  dispatchable until P1-19 exit review passes -- treat them as frozen.
-- [DEVICE] tasks now run on the Android emulator (operator's phone is broken,
-  see memory `project_verification_via_emulator.md`). Orchestrator drives
-  emulator-based tests; the operator's Pixel can be substituted if available.
+- **Phase 1:** COMPLETE (P1-19 signed off 2026-07-10). Phase 2 / farm / v0.4.0 items
+  are dispatchable per the headers above and `MILESTONE_RELEASE_PLAN.md`.
+- [DEVICE] tasks default to the Android emulator (`scm_pixel_34`); substitute a physical
+  Pixel when available. Operator may gate specific runs.
 - Anything touching core/src/{crypto,transport,routing,privacy} carries the
   mandatory adversarial-review gate before done.
-- Tier tags ([HAIKU]/[SONNET]/[OPUS+]) come from the execution plan. For
-  /scmqwen dispatch: [HAIKU]->[FLASH], [SONNET]->[CODER], [OPUS+]->[THINK/MAX].
-- Orchestrator modes available: `/scmorc` (Claude native), `/scmqwen`
-  (Qwen/DashScope, zero Anthropic cost, round-robin model selection).
+- Tier tags ([HAIKU]/[SONNET]/[OPUS+]) come from the execution plan. Lake tier mapping:
+  see `docs/ORCHESTRATION.md` and `scripts/delegate_task.py`.
+- Orchestrator entrypoint: **`/orchestrate`** (`.claude/commands/orchestrate.md`).
+  Per-backend commands are archived; behaviour lives as selectable BACKENDS in
+  `docs/ORCHESTRATION.md`.
 
 ## Farm Use Case -- Primary v1.0.0 Validator (operator directive, 2026-07-11)
 
@@ -153,7 +174,12 @@ NOT-orphaned per B3) -- it re-ranks what happens next:
 
 2. `ESC_ANDROID_DNS_RESOLVER_FIX.md` [ESCALATION] **COMPLETE 2026-07-10** — Solved hickory-dns crash on Android by implementing custom DNS fallback configuration (Option A) with Google Public DNS nameservers. Bypasses file system lookup while preserving WAN-dial capability.
 
-3. `NEXT_ITER_04_Live_Device_Retest_Pairing.md` [DEVICE][OPUS+ driving] **RE-VERIFIED 2026-07-12, PARTIALLY REGRESSED/NEVER FULLY TRUE** — this entry's "Full E2E synchronization and messaging verified" claim does NOT hold as stated. Live re-test 2026-07-12: found the Android emulator had been stuck at `peersDiscovered=0`/`Bootstrap all-failed` for 100+ consecutive attempts BEFORE this re-test (contradicting "verified"). Root-caused and fixed the connectivity gap this session (config.json `bootstrap_nodes` entry + `adb forward`, NOT `SC_BOOTSTRAP_NODES` which doesn't wire into the CLI's `start` path - see below) - CLI<->Android transport connection now genuinely confirmed live for the first time (`peersDiscovered` 0->1, stable 11+ hours). BUT actual message delivery is separately, critically broken - see `CRITICAL_OUTBOX_NEVER_FLUSHES_DESPITE_ACTIVE_CONNECTION.md` (todo/): a sent message sat in the outbox with `attempts=0` for 11 hours despite a continuously active direct connection to the exact recipient. Whatever produced the original "COMPLETE... messaging verified" claim either tested something narrower than real message delivery, or has since regressed - do not trust prior "COMPLETE" claims on this task class without re-proving them live, per the operator's standing caution this session.
+3. `NEXT_ITER_04_Live_Device_Retest_Pairing.md` [DEVICE] — **CLOSED in done/**.
+   **2026-07-10:** transport/pairing matrix PASS (see ticket). **2026-07-12:** separate
+   outbox-never-flushes CRITICAL (not a NEXT_ITER_04 failure) — fixed **2026-07-17**
+   (`HANDOFF/done/CRITICAL_OUTBOX_NEVER_FLUSHES_DESPITE_ACTIVE_CONNECTION.md`). Re-run
+   end-to-end delivery on current HEAD for farm P0; do not duplicate contradictory
+   DONE/FAIL lines elsewhere in this file.
 
 ~~3. `P1-17_Windows_WiFi_Direct_Legacy_Client.md` [SONNET][AUDIT-GATE][DEVICE]~~ WAIVED (Emulator HW restriction)
 ~~   + `P1_CORE_WINDOWS_WIFI_DIRECT_Peer_Absent.md` (same cell).~~
@@ -211,7 +237,8 @@ NOT-orphaned per B3) -- it re-ranks what happens next:
 ~~Adaptive TTL test fix~~ DONE
 ~~TASK_INFRA_CLAUDE_PATH_FIX~~ DONE (C:\Users\SCM\.local\bin added to User PATH)
 ~~ESC_ANDROID_DNS_RESOLVER_FIX~~ DONE (Custom DNS fallback on Android target)
-~~NEXT_ITER_04_Live_Device_Retest_Pairing~~ DONE (E2E pairing verification PASS)
+~~NEXT_ITER_04_Live_Device_Retest_Pairing~~ DONE (transport/pairing 2026-07-10;
+  outbox CRITICAL tracked separately, closed 2026-07-17 — see 2026-07-25 unity note)
 
 ### F1/F2 Platform unification (after C-lane iOS building)
 
@@ -273,12 +300,11 @@ queue + 7 new unification tasks as of 2026-07-14).
    lands - this is exactly the kind of gap the "second adversarial pass"
    note below was meant to catch.
 
-7a. ~~[AUDIT-GATE][BLOCKING] PQC-05/06/07 adversarial review checkpoint~~ -- the
-   master-plan rule "auditor pass after PQC-05 before waves 2+ stack up" has NOT
-   run: HANDOFF/review/ has no PQC verdicts. Must complete before PQC-09+ work.
-   NOW DISPATCHABLE: task file `PQC_REVIEW_CHECKPOINT_05_06_07.md` contains the
-   exact read-only Qwen thinking command; verdict lands at
-   HANDOFF/review/PQC_05_06_07_ADVERSARIAL_REVIEW.md. Zero Anthropic cost.
+7a. ~~[AUDIT-GATE][BLOCKING] PQC-05/06/07 adversarial review checkpoint~~ — **Historical
+   contradiction (2026-07-11 body vs item 7 above).** Verdict file exists at
+   `HANDOFF/review/PQC_05_06_07_ADVERSARIAL_REVIEW.md`; follow-ups including
+   `PQC_07_PQ_SECRET_NEVER_MIXED_INTO_ROOT_KEY.md` are in **done/** per 2026-07-23
+   dispatch header. Ignore the "no PQC verdicts" claim in the strikethrough block below.
 
 8. ~~`PQC_08_LEGACY_PATH_RETIREMENT.md`~~ DONE (see item 4 above - this
    entry was also stale, same ticket, same verified-complete status).
@@ -321,8 +347,8 @@ Fine-planning happens as P2-00 after Phase 1 exit, per the execution plan.
 
 1. ~~WiFi Direct scope~~ RESOLVED: waived 2026-07-09, v1.1.
 2. **Internet relay live proof** -- AWS approved 2026-07-11; needs the rig
-   built (P1-14/P1-18 entries above). Record the plan revision in
-   HANDOFF/V1_0_0_EXECUTION_PLAN.md when the rig lands.
+   built (P1-14/P1-18 entries above). Plan revision recorded in
+   `HANDOFF/V1_0_0_EXECUTION_PLAN.md` Section 0A (2026-07-25).
 3. ~~GitHub billing unlock~~ **RESOLVED 2026-07-23**: Enterprise trial covers Actions. Mac runners and all CI are unblocked.
 4. ~~iOS scope~~ **RESOLVED 2026-07-13**: half or more of the farm's users
    carry iPhones (operator-confirmed), so iOS parity is IN v1.0.0 scope and

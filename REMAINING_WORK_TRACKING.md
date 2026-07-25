@@ -1,7 +1,32 @@
 # SCMessenger Remaining Work Tracking
 
 Status: Active
-Last updated: 2026-07-24 (iOS v0.4.0 parity audit & fixes)
+Last updated: 2026-07-25 (planning unity pass)
+
+## 2026-07-25 PLANNING UNITY — canonical doc stack aligned
+
+Session reference: `HANDOFF/SESSION_HANDOFF_2026-07-25.md`. Full pass:
+`HANDOFF/V1_0_0_EXECUTION_PLAN.md` Section 0A, `HANDOFF/todo/_QUEUE.md`,
+`docs/CURRENT_STATE.md`, `docs/DOCUMENT_STATUS_INDEX.md`, `DOCUMENTATION.md`.
+
+- **Dispatch order:** `_QUEUE.md` status-correction headers (2026-07-21 + 2026-07-25)
+  over stale body text. Release slicing: `HANDOFF/plans/MILESTONE_RELEASE_PLAN.md`.
+- **E-00 ratchet wiring:** **CLOSED 2026-07-17** — ticket in
+  `HANDOFF/done/CRITICAL_RATCHET_SUBSYSTEM_NOT_WIRED_INTO_IRONCORE.md` (not todo/).
+  Code: `SCM_RATCHET_DISABLE`, `integration_e00_ratchet_wiring.rs`. The 2026-07-17
+  section below is **historical**; do not re-open E-00 from that framing.
+- **Phase 1 transport parity:** Signed off P1-19 (2026-07-10). P1-11/12 adaptive ports
+  **done** (commits in `_QUEUE.md`). P1-14/P1-18 = post-exit verification debt.
+- **Outbox delivery CRITICAL (2026-07-12):** Closed 2026-07-17 — see
+  `HANDOFF/done/CRITICAL_OUTBOX_NEVER_FLUSHES_DESPITE_ACTIVE_CONNECTION.md`.
+- **PQC:** PQC-02..PQC-13 in done/ per queue; **PQC-14** open (`HANDOFF/todo/`).
+  Stale `PQC_10_MLDSA_MODULE_MISSING.md` vs landed `core/src/crypto/pq/mldsa.rs` — ignore
+  until HANDOFF hygiene moves it.
+- **v0.4.0 alpha:** Tag **`v0.4.0-alpha.1`**; `V040_ORCHESTRATION_PLAN.md` superseded.
+- **CI (H1):** Resolved per queue 2026-07-23 (Enterprise trial); still run local gates
+  on Windows as authoritative.
+- **Open verification:** Bootstrap relay dial queued-vs-connected (`SESSION_HANDOFF_2026-07-25`);
+  farm P0 needs fresh CLI↔emulator delivery proof on current HEAD.
 
 ## 2026-07-24 iOS V0.4.0 PARITY SPRINT — Core Parity Implemented
 
@@ -13,6 +38,9 @@ Last updated: 2026-07-24 (iOS v0.4.0 parity audit & fixes)
 - **Verification Status**: `iOS/verify-local-transport.sh`, `iOS/verify-role-mode.sh`, generated-binding drift verification, and the Rust ledger-convergence compile gate pass. A full iPhone 17 Pro simulator build and XCTest run passes all three outbox retry-policy tests. Physical two-peer relay/receipt validation remains a hardware-only gate, not a known implementation blocker.
 
 ## 2026-07-17 72-HOUR AUDIT + ORCHESTRATION UNIFICATION — E-00 CRITICAL filed, queue corrected, lanes smoke-tested
+
+**Historical (2026-07-17).** E-00 was filed this session and **closed 2026-07-17**; see
+2026-07-25 PLANNING UNITY above. Retain for audit trace only.
 
 Sprint plan: `docs/orchestration/unified-v1-orchestration-plan.md` (with 2026-07-17 audit
 amendment table). Machine queue: `scm_v1_farm_queue.jsonl`. Dispatch order:

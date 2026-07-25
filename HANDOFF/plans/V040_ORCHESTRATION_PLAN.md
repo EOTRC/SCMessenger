@@ -1,16 +1,27 @@
 # v0.4.0 Orchestration Plan — Josh Alpha Test
 
-Status: Active. Authority: scmorc orchestrator.
+Status: **Superseded** (2026-07-25 planning unity pass).
 Last updated: 2026-07-19 (Bob planning session). Corrections applied 2026-07-19 after subagent verification pass.
-Sequencing source: HANDOFF/plans/MILESTONE_RELEASE_PLAN.md,
+
+**Use instead (in order):**
+
+1. `HANDOFF/todo/_QUEUE.md` — **status-correction header** (authoritative v0.4.0 next actions)
+2. `HANDOFF/plans/MILESTONE_RELEASE_PLAN.md` — release scope and done/open lists
+3. `docs/ORCHESTRATION.md` — orchestration protocol (`/orchestrate`, not archived `/scmorc`)
+
+This file is kept for traceability (2026-07-19 ground truth and task table). Do not
+dispatch from the task table below without reconciling against the queue header.
+
+Sequencing source (historical): HANDOFF/plans/MILESTONE_RELEASE_PLAN.md,
   HANDOFF/ALPHA_TEST_SESSION_FINDINGS_2026-07-19.md,
   HANDOFF/SESSION_HANDOFF_2026-07-20_CI_FIX.md.
 
 Goal: Two independent identities (Lucas + Josh) successfully exchange
 messages over the internet via the alpha relay
 (`/ip4/100.56.248.69/tcp/9001`), with real receipts confirming delivery
-both directions. Version tag `v1.0.0-alpha.1` published as a GitHub
-Release with a downloadable Windows CLI + Android APK.
+both directions. Version tag **`v0.4.0-alpha.1`** published as a GitHub
+Release with a downloadable Windows CLI + Android APK. (This file originally
+said `v1.0.0-alpha.1`; release slicing uses v0.4.0 per MILESTONE_RELEASE_PLAN.)
 
 ---
 

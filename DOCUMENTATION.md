@@ -1,7 +1,7 @@
 # SCMessenger Documentation Hub
 
 Status: Active
-Last updated: 2026-07-24
+Last updated: 2026-07-25
 Applies to: v0.3.5 (alpha, working toward v1.0.0)
 
 This is the documentation entrypoint. Start here.
@@ -69,8 +69,14 @@ see the [Document Status Index](docs/DOCUMENT_STATUS_INDEX.md).
 
 ## Planning and status
 
-- [Remaining Work Tracking](REMAINING_WORK_TRACKING.md) -- the active backlog
+Read **`HANDOFF/todo/_QUEUE.md` status-correction headers first** for what to dispatch next.
+Sequencing scope: [v1.0.0 Execution Plan](HANDOFF/V1_0_0_EXECUTION_PLAN.md) (Section 0A).
+Release milestones: [Milestone Release Plan](HANDOFF/plans/MILESTONE_RELEASE_PLAN.md).
+Farm validator: [Farm Final Plan](HANDOFF/plans/FARM_FINAL_PLAN.md).
+
+- [Remaining Work Tracking](REMAINING_WORK_TRACKING.md) -- session backlog narrative
 - [v1.0.0 Execution Plan](HANDOFF/V1_0_0_EXECUTION_PLAN.md) -- the road to 1.0
+- [Dispatch queue](HANDOFF/todo/_QUEUE.md) -- live pick list
 - [Edge-Case Readiness Matrix](docs/EDGE_CASE_READINESS_MATRIX.md)
 - [Release Readiness (2026-07-02)](docs/release-readiness-2026-07-02.md)
 - [CHANGELOG.md](CHANGELOG.md)

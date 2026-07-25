@@ -1,26 +1,32 @@
 # SCMessenger Current State (Verified Snapshot)
 
 Status: Active
-Last updated: 2026-07-21 (Unified version roadmap v0.3.5 -> v0.4.0 -> v0.5.0 -> v1.0.0; added simple install guides)
-Last verified: **2026-07-21** (Workspace build gates clean; docs-sync verified PASS)
+Last updated: 2026-07-25 (planning unity pass; executive summary refreshed)
+Last verified: **2026-07-21** (Workspace build gates clean on host; re-run gates after
+2026-07-25 transport edits per `HANDOFF/SESSION_HANDOFF_2026-07-25.md`)
 
 ---
 
 ## 1. Executive Summary & Release Roadmap
 
-SCMessenger is currently on release line **v0.3.5** (`Cargo.toml`). The project is actively executing towards **v0.4.0** under the Two-Phase DAG (`HANDOFF/V1_0_0_EXECUTION_PLAN.md`).
+SCMessenger is on release line **v0.3.5** (`Cargo.toml`). **v0.4.0** (Josh alpha) is the
+in-flight milestone. Long-horizon sequencing remains the two-phase DAG in
+`HANDOFF/V1_0_0_EXECUTION_PLAN.md` (**Section 0A** = current operator truth).
+
+**Planning entrypoints:** `_QUEUE.md` (dispatch) -> `MILESTONE_RELEASE_PLAN.md` (releases)
+-> `V1_0_0_EXECUTION_PLAN.md` (v1.0.0 scope) -> `FARM_FINAL_PLAN.md` (validator).
 
 ```
   v0.3.5 (Active Codebase)
-     │
-     ▼
-  v0.4.0 [NEXT RELEASE] ──► E-00 Ratchet Wiring, Outbox Flush Fixes, Android/Windows Transport Parity
-     │
-     ▼
-  v0.5.0 [FEATURE COMPLETE] ──► PQC Suite Negotiation (PQC-04+), Mobile UI/UX Parity & Multi-Device
-     │
-     ▼
-  v1.0.0 [PRODUCTION GA] ──► Final Hardware Mesh Verification & Formal Release Audit
+     |
+     v
+  v0.4.0 [NEXT RELEASE] -- Josh alpha: relay E2E, receipts, CI tag v0.4.0-alpha.1
+     |                      (E-00 done 2026-07-17; outbox Sites 2+3 done 2026-07-17)
+     v
+  v0.5.0 [FEATURE COMPLETE] -- PQC-14 close-out, farm drills, KMP/meeting mode depth
+     |
+     v
+  v1.0.0 [PRODUCTION GA] -- Phase 2 WS-A..F remainder + hardware mesh sign-off (P1-19 done)
 ```
 
 ---
@@ -30,20 +36,21 @@ SCMessenger is currently on release line **v0.3.5** (`Cargo.toml`). The project 
 | Subsystem / Layer | Current Status | Primary Architectural Entry / Contract | Verified Evidence |
 | :--- | :--- | :--- | :--- |
 | **Rust Core (`core/`)** | **v0.3.5 Verified** | `IronCore` (`core/src/iron_core.rs`) | Cargo workspace compiles cleanly (`cargo check --workspace`). 1100+ lib unit tests pass. |
-| **Transport Layer** | **v0.3.5 / v0.4.0 Prep** | `SwarmBridge` (`core/src/transport/swarm.rs`) | mDNS, TCP, QUIC active. CLI BLE Outbound TX wired. Relay bootstrap active (`100.56.248.69:9001`). |
-| **PQC & Ratchet** | **v0.4.0 Blocked (E-00)** | `DoubleRatchet` & `IdentityKeys` | PQC-02 (Envelope v2) & PQC-03 (Keybundle v2) complete. E-00 Ratchet wiring ticket active. |
+| **Transport Layer** | **v0.3.5 / v0.4.0 Prep** | `SwarmBridge` (`core/src/transport/swarm.rs`) | Phase 1 parity signed off; mDNS/TCP/QUIC/WS/BLE paths landed. Re-verify bootstrap relay dial semantics (2026-07-25 handoff). |
+| **PQC & Ratchet** | **v0.4.0+ / v1.0.0 track** | `DoubleRatchet` & `IdentityKeys` | E-00 wiring **done** (2026-07-17). PQC-02..13 in done/; **PQC-14** open. PQ root-key mixing in `ratchet.rs` (suite 0x02). |
 | **Android Client** | **v0.3.5 Active** | `MeshRepository.kt` (`android/app/...`) | Kotlin UniFFI async bindings active. Pre-built APK installer ([install-apk.bat](../android/install-apk.bat)) verified. |
 | **iOS Client** | **v0.3.5 Active** | `MeshRepository.swift` (`iOS/SCMessenger/...`) | Swift UniFFI bindings active with WS12.22+ crash fixes. Cable installer ([install-device.sh](../iOS/install-device.sh)) verified. |
 | **WASM / Web** | **v0.3.5 Active** | `scmessenger-wasm` (`wasm/`) | Binds loopback WebSocket RPC on port 9002. Web asset server integrated in CLI daemon. |
-| **Documentation** | **100% Synchronized** | [DOCUMENTATION.md](../DOCUMENTATION.md) | `scripts/docs_sync_check.ps1` returns `PASS`. Standalone install guides active. |
+| **Documentation** | **Synchronized (2026-07-25 pass)** | [DOCUMENTATION.md](../DOCUMENTATION.md) | Run `scripts/docs_sync_check.ps1` on Windows after further edits. |
 
 ---
 
 ## 3. Milestone Execution Progress Log
 
 ### v0.4.0 Release Preparation (Current In-Flight Milestone)
+- **Planning unity (2026-07-25)**: Doc stack aligned; see `REMAINING_WORK_TRACKING.md` top section.
 - **Simple Install Guides (2026-07-21)**: Created standalone, zero-toolchain pre-built install guides for Android ([SIMPLE_INSTALL_ANDROID.md](SIMPLE_INSTALL_ANDROID.md)) and iOS ([SIMPLE_INSTALL_IOS.md](SIMPLE_INSTALL_IOS.md)) alongside 1-click batch installer ([install-apk.bat](../android/install-apk.bat)).
-- **72-Hour Audit & Orchestration Unification (2026-07-17)**: E-00 Critical filed (Ratchet subsystem wiring to IronCore). Outbox flush sites 2+3 and DriftFrame custody wrapping completed.
+- **72-Hour Audit & Orchestration Unification (2026-07-17)**: E-00 ratchet wiring **completed** (ticket in `HANDOFF/done/`). Outbox flush sites 2+3 and DriftFrame custody wrapping completed.
 - **Farm v1.0.0 Backlog & Delivery Truth (2026-07-13)**: A1 (Outbox Flush-on-Connect), A2 (Receipt Round-Trip), and E3 (PQC Skipped Keys Persistence) completed with regression test coverage.
 
 ### Prior Verified Milestones
