@@ -47,8 +47,8 @@ class MainViewModel @Inject constructor(
         !ready && !choiceCompleted
     }.stateIn(
         scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = true
+        started = SharingStarted.Eagerly,
+        initialValue = !_isReady.value && !_installChoiceCompleted.value
     )
 
     val isCreatingIdentity: StateFlow<Boolean> = identityCreationCoordinator.identityState.map {
