@@ -487,6 +487,14 @@ class SettingsViewModel @Inject constructor(
      */
     fun updateSettings(settings: uniffi.api.MeshSettings) {
         debouncedUpdateSettings(settings)
+        _settings.value?.let { current ->
+            if (current.wifiAwareEnabled != settings.wifiAwareEnabled ||
+                current.wifiDirectEnabled != settings.wifiDirectEnabled ||
+                current.bleEnabled != settings.bleEnabled ||
+                current.internetEnabled != settings.internetEnabled) {
+                meshRepository.applyTransportSettings(settings)
+            }
+        }
     }
 
     /**

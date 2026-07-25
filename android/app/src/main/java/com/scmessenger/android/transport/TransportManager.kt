@@ -496,9 +496,15 @@ class TransportManager @JvmOverloads constructor(
                 bleAdvertiser?.startAdvertising()
             }
             TransportType.WIFI_AWARE -> {
+                if (wifiAware == null) {
+                    initializeWifiAware()
+                }
                 wifiAware?.start()
             }
             TransportType.WIFI_DIRECT -> {
+                if (wifiDirect == null) {
+                    initializeWifiDirect()
+                }
                 wifiDirect?.start()
             }
             TransportType.INTERNET -> {

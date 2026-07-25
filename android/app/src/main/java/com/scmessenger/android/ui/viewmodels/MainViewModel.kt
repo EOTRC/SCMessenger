@@ -29,7 +29,7 @@ class MainViewModel @Inject constructor(
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
-    private val _isReady = MutableStateFlow(meshRepository.getIdentityInfoNonBlocking() != null)
+    private val _isReady = MutableStateFlow(false)
     val isReady = _isReady.asStateFlow()
     val hasIdentity = _isReady.asStateFlow()
 

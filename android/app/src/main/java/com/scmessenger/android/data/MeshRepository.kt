@@ -2376,6 +2376,11 @@ open class MeshRepository(
                 try {
                     ensureTransportManager()
                     val settings = loadSettings()
+                    transportManager?.initialize(
+                        bleEnabled = settings.bleEnabled,
+                        wifiAwareEnabled = settings.wifiAwareEnabled,
+                        wifiDirectEnabled = settings.wifiDirectEnabled
+                    )
                     transportManager?.startAll(enableMdns = settings.internetEnabled)
                 } catch (e: Exception) {
                     Timber.w(e, "TransportManager startAll failed; continuing with individual transports")
@@ -2945,7 +2950,11 @@ open class MeshRepository(
             }
             lastBleBeaconPayload = beaconJson.copyOf()
             lastBleBeaconPayloadPublishedAtMillis = publishedAt
-            bleAdvertiser?.updateIdentityBeacon(beaconJson)
+
+            // Create compact BLE beacon (≤24 bytes) for advertising
+            // Full identity is served via GATT for detailed discovery
+            val compactBeacon = createCompactBleBeacon(identity, publicKeyHex)
+            bleAdvertiser?.updateIdentityBeacon(compactBeacon)
             bleGattServer?.setIdentityData(beaconJson)
             identityData = beaconJson // Store for immediate use by GATT server
             Timber.i(
@@ -2955,6 +2964,30 @@ open class MeshRepository(
             )
         } catch (e: Exception) {
             Timber.w("Failed to set BLE GATT identity beacon: ${e.message}")
+        }
+    }
+
+    private fun createCompactBleBeacon(identity: uniffi.api.IdentityInfo, publicKeyHex: String): ByteArray {
+        try {
+            val beacon = org.json.JSONObject()
+            // Compact beacon: only essential discovery data, <=24 bytes total
+            // Full identity is served via GATT for devices that connect
+            beacon.put("p", identity.libp2pPeerId?.take(8) ?: "")
+            beacon.put("k", publicKeyHex.take(16))
+            beacon.put("n", (identity.nickname ?: "").take(12))
+            val beaconBytes = beacon.toString().toByteArray()
+
+            return if (beaconBytes.size <= 24) {
+                beaconBytes
+            } else {
+                // If still too large, use ultra-compact format: peer_id hash only
+                val hash = publicKeyHex.take(8).toByteArray()
+                hash.take(16).toByteArray().plus(byteArrayOf(0, 0, 0, 0, 0, 0, 0, 0))
+            }
+        } catch (e: Exception) {
+            Timber.w("Failed to create compact BLE beacon: ${e.message}")
+            // Fallback: just the peer ID
+            return (identity.libp2pPeerId ?: "").take(16).toByteArray()
         }
     }
 
@@ -5167,8 +5200,8 @@ open class MeshRepository(
                     maxRelayBudget = 200u,
                     batteryFloor = 20u,
                     bleEnabled = true,
-                    wifiAwareEnabled = false,
-                    wifiDirectEnabled = false,
+                    wifiAwareEnabled = true,
+                    wifiDirectEnabled = true,
                     internetEnabled = true,
                     discoveryMode = uniffi.api.DiscoveryMode.NORMAL,
                     onionRouting = false,
@@ -5789,7 +5822,25 @@ open class MeshRepository(
             null
         }
 
-        return loaded ?: getDefaultSettings()
+        val settings = loaded ?: getDefaultSettings()
+
+        // Auto-upgrade WiFi settings for existing identities
+        // (P0_TRANSPORT_002: Enable WiFi Aware/Direct discovery on all installations)
+        if (!settings.wifiAwareEnabled || !settings.wifiDirectEnabled) {
+            val upgraded = settings.copy(
+                wifiAwareEnabled = true,
+                wifiDirectEnabled = true
+            )
+            try {
+                settingsManager?.save(upgraded)
+                Timber.i("Auto-upgraded settings: WiFi Aware/Direct now enabled")
+            } catch (e: Exception) {
+                Timber.w("Failed to save upgraded settings: ${e.message}")
+            }
+            return upgraded
+        }
+
+        return settings
     }
 
     /**
@@ -5802,8 +5853,8 @@ open class MeshRepository(
                 maxRelayBudget = 200u,
                 batteryFloor = 20u,
                 bleEnabled = true,
-                wifiAwareEnabled = false,
-                wifiDirectEnabled = false,
+                wifiAwareEnabled = true,
+                wifiDirectEnabled = true,
                 internetEnabled = true,
                 discoveryMode = uniffi.api.DiscoveryMode.NORMAL,
                 onionRouting = false,
