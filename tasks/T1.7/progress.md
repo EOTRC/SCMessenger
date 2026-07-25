@@ -18,5 +18,5 @@
 - Don't break existing BLE-only flows during migration: feature-flag via `MeshSettings`
 
 ## Verification
-- [x] Rust unit tests: given (battery, link set, payload size) -> deterministic transport pick matching a documented decision table in `ARCHITECTURE.md`
+- [x] Rust unit tests: given (battery, link set, payload size) -> deterministic transport pick matching a documented decision table in `docs/ARCHITECTURE_MODULE_MAP.md`
 - [x] Grep proves Swift/Kotlin routers no longer contain independent preference ordering (only availability checks)

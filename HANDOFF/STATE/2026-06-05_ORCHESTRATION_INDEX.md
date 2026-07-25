@@ -49,7 +49,7 @@ All Claude Code sessions on this workspace must read `HANDOFF/CLAUDE_CODE_PROTOC
 | Relay filter | `MeshRepository.kt` | `addContact()` filters relay peers (P0_ANDROID_022) |
 
 **Env fixes (not features):**
-- `OllamaQuotaScraper.ps1` baseDir → `E:\SCMessenger-Github-Repo\SCMessenger`
+- `scripts/OllamaQuotaScraper.ps1` baseDir → `E:\SCMessenger-Github-Repo\SCMessenger`
 - `android/gradle.properties` for WSL JDK 17 toolchain
 - Linux NDK r26b at `/home/scemessenger/android-sdk/ndk/26.1.10909125/`
 - WSL source at `/home/scemessenger/scmessenger-build/`

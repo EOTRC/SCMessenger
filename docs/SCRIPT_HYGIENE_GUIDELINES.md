@@ -295,7 +295,7 @@ Scripts must align with the testing pyramid levels:
 | L1 | Unit test runners | `cargo test --workspace` |
 | L2 | Platform smoke | `live-smoke.sh`, `verify_ws12_matrix.sh` |
 | L3 | Live verification | `run5-live-feedback.sh` |
-| L4 | Full mesh | `run5.sh` |
+| L4 | Full mesh | `scripts/run5.sh` |
 
 ---
 

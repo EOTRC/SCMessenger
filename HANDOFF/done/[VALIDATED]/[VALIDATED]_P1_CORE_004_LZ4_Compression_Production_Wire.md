@@ -21,14 +21,14 @@ fixed," this is part of the ~30-ticket remaining backlog.
 **Agent:** rust-coder
 **Budget:** 1200s (MIXED tier)
 **Phase:** v0.2.1 P1 wire dormant modules
-**Source:** PRODUCTION_ROADMAP.md P2.15 (No bandwidth-adaptive compression) + planfromclaudeforhermes 2 Phase C.5
+**Source:** docs/historical/plans/PRODUCTION_ROADMAP.md P2.15 (No bandwidth-adaptive compression) + planfromclaudeforhermes 2 Phase C.5
 **Depends on:** P1_CORE_001 (Drift wire)
 
 ---
 
 ## Verified Gap
 
-Per `PRODUCTION_ROADMAP.md` P2.15: "No bandwidth-adaptive compression  `drift/compress.rs` exists (LZ4) but is never used in the production send path. Messages are sent uncompressed."
+Per `docs/historical/plans/PRODUCTION_ROADMAP.md` P2.15: "No bandwidth-adaptive compression  `drift/compress.rs` exists (LZ4) but is never used in the production send path. Messages are sent uncompressed."
 
 `drift::compress::lz4_encode` is unit-tested but not called from `swarm.rs`.
 

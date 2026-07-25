@@ -39,7 +39,7 @@
 - `docs/MILESTONE_PLAN_V0.2.0_ALPHA.md`  historical doc, untouched.
 - `docs/V0.2.1_*.md` (4 plan files)  named after the v0.2.1 version, treated as historical. Untouched.
 - `HANDOFF/IN_PROGRESS/IN_PROGRESS_*`  active handoff state, untouched (this file is the only new IN_PROGRESS).
-- `core/tests/integration_contact_block.rs`, `iOS_BUILD_DEPLOY_GUIDE.md`, `MASTER_BUG_TRACKER.md`, `iOS/SCMessenger/SCMessenger/Info.plist` source-build configs, `scripts/burndown_issues.sh`  all contain `0.2.1` references but are documentation/build context, not canonical version sources. Untouched.
+- `core/tests/integration_contact_block.rs`, `docs/historical/iOS/iOS_BUILD_DEPLOY_GUIDE.md`, `docs/historical/MASTER_BUG_TRACKER.md`, `iOS/SCMessenger/SCMessenger/Info.plist` source-build configs, `scripts/burndown_issues.sh`  all contain `0.2.1` references but are documentation/build context, not canonical version sources. Untouched.
 - `Cargo.lock`  not present (no Rust lockfile committed in this repo; workspace lock is local).
 
 ## What was NOT run (per scope)

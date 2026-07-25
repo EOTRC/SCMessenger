@@ -158,8 +158,8 @@ The third node will discover both nodes through the DHT!
 
 ## [Needs Revalidation] Next Steps
 
-- [Docker Quick Start](DOCKER_QUICKSTART.md) - Complete Docker guide
-- [Native Install](INSTALL.md) - Build from source
+- [Docker Quick Start](../../platform/DOCKER_QUICKSTART.md) - Complete Docker guide
+- [Native Install](../../INSTALL.md) - Build from source
 - [README](README.md) - Architecture and philosophy
 
 ---

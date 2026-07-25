@@ -14,7 +14,7 @@ Last updated: 2026-07-24 (iOS v0.4.0 parity audit & fixes)
 
 ## 2026-07-17 72-HOUR AUDIT + ORCHESTRATION UNIFICATION — E-00 CRITICAL filed, queue corrected, lanes smoke-tested
 
-Sprint plan: `unified-v1-orchestration-plan.md` (with 2026-07-17 audit
+Sprint plan: `docs/orchestration/unified-v1-orchestration-plan.md` (with 2026-07-17 audit
 amendment table). Machine queue: `scm_v1_farm_queue.jsonl`. Dispatch order:
 `HANDOFF/todo/_QUEUE.md` (status-correction header is authoritative over its
 stale body). Batch-dispatch rules: `docs/ORCHESTRATION.md` Section 9

@@ -56,7 +56,7 @@ decisions.
 
 All agent API lakes available to any orchestrator. Full endpoint + model + quota
 registry, the ranked free-tier and tokens/$ comparison, and the rotation strategy:
-**`SCM_UNIFIED_LAKE_ORCHESTRATION.md`**.
+**`docs/orchestration/SCM_UNIFIED_LAKE_ORCHESTRATION.md`**.
 
 ### Active lakes (wired in `scripts/delegate_task.py` today -- valid `--provider` values)
 
@@ -85,7 +85,7 @@ first. They are researched and ready to wire, nothing more.
 | deepseek    | DeepSeek (paid)   | Cheapest capable coder/$: V4 Flash, 98% cache discount | CODER/THINK       |
 
 Note: full quotas, endpoints, key files, and the free vs paid tokens/$ comparison
-live in `SCM_UNIFIED_LAKE_ORCHESTRATION.md`. Standing reality (2026-07-20):
+live in `docs/orchestration/SCM_UNIFIED_LAKE_ORCHESTRATION.md`. Standing reality (2026-07-20):
 Ollama Cloud Pro is NOT currently subscribed (purchase candidate); OpenRouter sits
 at 1,000 req/day thanks to the one-time $10 lifetime topup. Groq's small per-minute
 token cap means prompts over ~6K tokens must be micro-chunked (Section 6);
@@ -105,7 +105,7 @@ orchestration by reading the queue and ledger.
 | `scm_v1_farm_queue.jsonl`         | Machine-readable task queue (one JSON per line)          |
 | `tmp/lakes/ledger.jsonl`          | Quota ledger -- append-only, one entry per dispatch      |
 | `tmp/lakes/round_robin_state.json`| Per-lake per-tier model rotation counters                |
-| `tmp/lakes/registry.json`         | Lake registry snapshot (seed from SCM_UNIFIED_LAKE_ORCHESTRATION.md) |
+| `tmp/lakes/registry.json`         | Lake registry snapshot (seed from docs/orchestration/SCM_UNIFIED_LAKE_ORCHESTRATION.md) |
 | `tmp/scmorc/dispatch_log.md`      | Human dispatch log (all orchestrators append here)       |
 
 ---
@@ -283,8 +283,8 @@ Zero-diff worker responses are re-queued, not marked done.
 
 State is file-backed; resumption requires only: this document, the JSONL
 queue, the ledger, and the HANDOFF tree. No model memory is required.
-Follow `API_LIMIT_MANAGEMENT_PLAN.md` and the routing/ledger sections of
-`SCM_UNIFIED_LAKE_ORCHESTRATION.md` (Section 3) for per-lake exhaustion and
+Follow `docs/historical/plans/API_LIMIT_MANAGEMENT_PLAN.md` and the routing/ledger sections of
+`docs/orchestration/SCM_UNIFIED_LAKE_ORCHESTRATION.md` (Section 3) for per-lake exhaustion and
 cooldown handling.
 
 ---
@@ -315,12 +315,12 @@ by 23960b35/8da8cc90 after audit; do not repeat their failure modes.
    batch runner "fail" them against a nonexistent toolchain.
 5. **One build at a time on Windows.** Never run two concurrent
    `delegate_task.py --verify` jobs (2 concurrent cargo/gradle builds risk
-   rlib lock corruption; see .claude/rules/build.md). `run_tasks.ps1` v2 is
+   rlib lock corruption; see .claude/rules/build.md). `scripts/run_tasks.ps1` v2 is
    strictly sequential for this reason.
 6. **Batch runners NEVER auto-commit and NEVER move tickets.** Workers
    implement; the orchestrator reviews (adversarial gate for
    `core/src/{crypto,transport,routing,privacy}/`), moves tickets, and
-   commits. `run_tasks.ps1` v2 writes `tmp/swarm_report.md` only.
+   commits. `scripts/run_tasks.ps1` v2 writes `tmp/swarm_report.md` only.
 7. **Hallucinated Target Files are real.** On D-03 the file-deducer emitted
    three nonexistent `SCMessengerTests/*.swift` paths, which would have
    become the worker's write allowlist. `scripts/deduce_files.py` now drops

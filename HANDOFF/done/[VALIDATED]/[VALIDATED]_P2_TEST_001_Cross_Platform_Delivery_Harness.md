@@ -21,14 +21,14 @@ fixed," this is part of the ~30-ticket remaining backlog.
 **Agent:** worker
 **Budget:** 1800s (MIXED tier)
 **Phase:** v0.2.1 P2 cross-platform verification
-**Source:** PRODUCTION_ROADMAP.md 1.4 (Cross-Platform Delivery) + planfromclaudeforhermes 2 Phase F.1
+**Source:** docs/historical/plans/PRODUCTION_ROADMAP.md 1.4 (Cross-Platform Delivery) + planfromclaudeforhermes 2 Phase F.1
 **Depends on:** P1_CORE_001, P1_CORE_002 (need production routing + drift to exercise)
 
 ---
 
 ## Verified Gap
 
-Per `PRODUCTION_ROADMAP.md` 1.4: "Synchronized AndroidiOS physical device delivery + receipt validation, BLE-only pairing send/receipt validation, Relay circuit delivery under cellular network conditions"  listed but no automated harness exists.
+Per `docs/historical/plans/PRODUCTION_ROADMAP.md` 1.4: "Synchronized AndroidiOS physical device delivery + receipt validation, BLE-only pairing send/receipt validation, Relay circuit delivery under cellular network conditions"  listed but no automated harness exists.
 
 ## Scope (~150 LoC, 1 file + dependencies)
 

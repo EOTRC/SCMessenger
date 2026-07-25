@@ -16,10 +16,10 @@ Verify that the Lead Orchestrator and worker agents are correctly reading `.clau
 
 ## Requirements
 1. **Quota Check**: Before executing, you MUST read `.claude/quota_state.json` and report the current 'Weekly' and '5-hour' usage percentages.
-2. **Token Self-Audit**: Use the `API_EFFICIENCY_LEDGER.md` format to log your current session's estimated token burn.
+2. **Token Self-Audit**: Use the `docs/orchestration/API_EFFICIENCY_LEDGER.md` format to log your current session's estimated token burn.
 3. **Execution**: Run `git status` and check if `scripts/ensure_models.sh` is present.
 4. **Failure Condition**: If the 'Weekly' usage in the state file is >90%, you must move this task to `HANDOFF/todo/BLOCKED_BY_QUOTA.md` instead of completing it.
 
 ## Success Criteria
-- [ ] Log entry added to `API_EFFICIENCY_LEDGER.md` with format: `[Date] - Fire Drill - Tokens: Y/1500`.
-- [ ] Evidence that `OllamaQuotaScraper.ps1` successfully polled the usage via the session cookie.
+- [ ] Log entry added to `docs/orchestration/API_EFFICIENCY_LEDGER.md` with format: `[Date] - Fire Drill - Tokens: Y/1500`.
+- [ ] Evidence that `scripts/OllamaQuotaScraper.ps1` successfully polled the usage via the session cookie.

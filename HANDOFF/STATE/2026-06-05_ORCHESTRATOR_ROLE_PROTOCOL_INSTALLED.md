@@ -45,7 +45,7 @@
 - The pre-existing branch (`integration/v0.2.2-pre-android-push-2026-06-05`)
   had ~6 unstaged modifications and 19 untracked files unrelated to this
   ticket (android build.gradle, BleScanner.kt, ContactsViewModelTest.kt
-  variants, `WORKSPACE.md`, `.hermes-tmp.94124`, many untracked tickets). I
+  variants, `docs/ops/WORKSPACE.md`, `.hermes-tmp.94124`, many untracked tickets). I
   staged ONLY the 3 in-repo files I own; the other changes are untouched and
   still sitting in the working tree for the Overseer to review.
 - Did NOT push. Local commit only.

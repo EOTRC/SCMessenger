@@ -152,7 +152,7 @@ CLOUD_MIN_CONTEXT=8193   # ≥8K tokens → consider cloud
 # QUOTA-AWARE DISPATCH RULES
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Quota state file (updated by OllamaQuotaScraper.ps1)
+# Quota state file (updated by scripts/OllamaQuotaScraper.ps1)
 QUOTA_STATE_FILE=".claude/quota_state.json"
 
 # Quota thresholds (percentage of 5-hour window):

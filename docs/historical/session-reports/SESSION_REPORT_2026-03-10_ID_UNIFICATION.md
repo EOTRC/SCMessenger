@@ -92,7 +92,7 @@ ironCore?.isIdentityBlocked(publicKey)
 - Blocking only affects direct message receipt
 
 ### 5. Full Mesh Testing
-**Script:** `run5.sh`
+**Script:** `scripts/run5.sh`
 **Duration:** 3 minutes
 **Results:**
 
@@ -362,7 +362,7 @@ viewModel.sendMessage(conversationId, text)
 
 4. **Nickname Display:** UI code correctly implements nickname fallback, but backend data population needs verification.
 
-5. **Test Harness:** `run5.sh` is excellent for comprehensive testing, catches issues that unit tests miss.
+5. **Test Harness:** `scripts/run5.sh` is excellent for comprehensive testing, catches issues that unit tests miss.
 
 ---
 

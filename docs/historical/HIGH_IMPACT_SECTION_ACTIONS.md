@@ -14,9 +14,9 @@ Action key:
 
 | File | Section(s) | Action | Target | Status |
 | --- | --- | --- | --- | --- |
-| `FEATURE_PARITY.md` | parity status claims, rollout checklist | `move` + `rewrite` | `REMAINING_WORK_TRACKING.md`, `docs/CURRENT_STATE.md` | done |
-| `FEATURE_WORKFLOW.md` | workflow/checklist steps | `rewrite` | keep in file, aligned to tri-platform | done |
-| `BOOTSTRAP.md` | bootstrap model + strategy | `rewrite` + `move` | `docs/UNIFIED_GLOBAL_APP_PLAN.md`, `REMAINING_WORK_TRACKING.md` | done |
+| `docs/FEATURE_PARITY.md` | parity status claims, rollout checklist | `move` + `rewrite` | `REMAINING_WORK_TRACKING.md`, `docs/CURRENT_STATE.md` | done |
+| `docs/FEATURE_WORKFLOW.md` | workflow/checklist steps | `rewrite` | keep in file, aligned to tri-platform | done |
+| `docs/BOOTSTRAP.md` | bootstrap model + strategy | `rewrite` + `move` | `docs/UNIFIED_GLOBAL_APP_PLAN.md`, `REMAINING_WORK_TRACKING.md` | done |
 | `iOS/IMPLEMENTATION_SUMMARY.md` | untagged snapshot sections | `delete/replace` (usage) | `docs/CURRENT_STATE.md`, `iOS/README.md` | done |
 | `iOS/FINAL_STATUS.md` | untagged snapshot sections | `delete/replace` (usage) | `docs/CURRENT_STATE.md`, `iOS/README.md` | done |
 | `iOS/COMPLETE_STATUS.md` | untagged snapshot sections | `delete/replace` (usage) | `docs/CURRENT_STATE.md`, `iOS/README.md` | done |
@@ -26,7 +26,7 @@ Action key:
 | `INTEGRATION_VERIFICATION.md` | phase activation claims | `move` + `delete/replace` | `docs/CURRENT_STATE.md`, `docs/REPO_CONTEXT.md` | done |
 | `DOCKER_TEST_SETUP_COMPLETE.md` | setup-complete and CI claims | `rewrite` + `move` | `docker/README.md`, `docs/CURRENT_STATE.md` | done |
 | `DOCKER_TEST_QUICKREF.md` | command/reference card | `rewrite` | `docker/README.md`, `docs/CURRENT_STATE.md` | done |
-| `DOCKER_QUICKSTART.md` | cloud/bootstrap quickstart | `rewrite` + `move` | `docs/UNIFIED_GLOBAL_APP_PLAN.md`, `docs/CURRENT_STATE.md` | done |
+| `docs/platform/DOCKER_QUICKSTART.md` | cloud/bootstrap quickstart | `rewrite` + `move` | `docs/UNIFIED_GLOBAL_APP_PLAN.md`, `docs/CURRENT_STATE.md` | done |
 | `docs/REMEDIATION_PLAN.md` | remediation roadmap checkpoints | `move` + `delete/replace` | `REMAINING_WORK_TRACKING.md`, `docs/GLOBAL_ROLLOUT_PLAN.md` | done |
 | `SECURITY_AUDIT_NOTES.md` | audit findings and actions | `rewrite` + `move` | `SECURITY.md`, `docs/CURRENT_STATE.md` | done |
 | `android/IMPLEMENTATION_STATUS.md` | implementation checkpoint claims | `move` + `delete/replace` | `docs/CURRENT_STATE.md`, `android/README.md` | done |

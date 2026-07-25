@@ -205,7 +205,7 @@ Android ← Relay → iOS
 
 ## Test Scripts Status
 
-- **run5.sh:**  Verified working in Phase 2
+- **scripts/run5.sh:**  Verified working in Phase 2
 - **Doc verify script:** ⏳ NOT RUN (per user request, still pending)
 
 ## Session Statistics

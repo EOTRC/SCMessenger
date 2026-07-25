@@ -56,7 +56,7 @@ cargo --version
 
 ```bash
 # Clone the repository
-git clone https://github.com/treystu/SCMessenger.git
+git clone https://github.com/Sovereign-Communication/SCMessenger.git
 cd SCMessenger
 
 # Build release version
@@ -73,7 +73,7 @@ scm --version
 
 ```bash
 # Clone the repository
-git clone https://github.com/treystu/SCMessenger.git
+git clone https://github.com/Sovereign-Communication/SCMessenger.git
 cd SCMessenger
 
 # Build debug version (faster compilation, slower runtime)
@@ -168,7 +168,7 @@ du -sh ~/Library/Application\ Support/scmessenger
 
 ### [Needs Revalidation] Backing Up Your Identity
 
-️ **IMPORTANT**: Back up your identity to prevent data loss!
+**IMPORTANT**: Back up your identity to prevent data loss.
 
 ```bash
 # Create backup directory
@@ -581,9 +581,9 @@ scm status
 ```
 
 For more help:
-- **GitHub Issues**: https://github.com/treystu/SCMessenger/issues
-- **Documentation**: https://scmessenger.org/docs
-- **Community**: #scmessenger on Matrix
+- **GitHub Issues**: https://github.com/Sovereign-Communication/SCMessenger/issues
+- **Documentation**: [DOCUMENTATION.md](../DOCUMENTATION.md) and the `docs/` directory
+- **Support routing**: [SUPPORT.md](../SUPPORT.md)
 
 ## [Needs Revalidation] Updates
 

@@ -641,7 +641,7 @@ Planned in this pass:
 
 Completed in this pass:
 
-1. [x] Reviewed updated `run5.sh` plus associated runtime artifacts to diagnose why older pending entries stay undelivered while queue activity remains high.
+1. [x] Reviewed updated `scripts/run5.sh` plus associated runtime artifacts to diagnose why older pending entries stay undelivered while queue activity remains high.
    - Key evidence set:
      - `logs/5mesh/latest/android.log` (repeated `forwarding -> stored`, core/relay failures, local fallback accepts, repeated flush triggers),
      - `logs/pairwise/ios-debug-detach-20260303-014559/pending_outbox.json` (same-peer queued items retaining stale route/address hints).
@@ -765,7 +765,7 @@ Still open after this pass:
 
 Completed in this pass:
 
-1. [x] Added dedicated iterative harness copy for step-gated 5-node verification without modifying `run5.sh`:
+1. [x] Added dedicated iterative harness copy for step-gated 5-node verification without modifying `scripts/run5.sh`:
    - `scripts/run5-live-feedback.sh`
 2. [x] Added strict sequential gate flow in harness:
    - build/deploy phase (optional skip),
@@ -893,7 +893,7 @@ This is the current "burn-down" slate combining all active deferred/runtime clos
    - prove old pending entries drain once peer route is active (post-WS12.25 fix),
    - prove sender state converges to `delivered` when recipient ingest is confirmed.
 3. Environment validation debt:
-   - provision Docker and run `bash ./verify_simulation.sh` (`WS12.15.3`),
+   - provision Docker and run `bash scripts/verify_simulation.sh` (`WS12.15.3`),
    - execute live network matrix validation and ACK-safe path-switch validation (`WS12.15.4`, `WS12.15.5`),
    - execute app-update/reinstall continuity evidence capture on real Android+iOS (`WS12.15.6`),
    - capture iOS power-settings runtime evidence on real device (`WS12.15.7`).
@@ -905,7 +905,7 @@ This is the current "burn-down" slate combining all active deferred/runtime clos
 
 ##  2026-04-12 COMPREHENSIVE GAP ANALYSIS — v1.0 Production Roadmap
 
-**Status:**  CRITICAL GAPS IDENTIFIED — See `PRODUCTION_ROADMAP.md` for full details
+**Status:**  CRITICAL GAPS IDENTIFIED — See `docs/historical/plans/PRODUCTION_ROADMAP.md` for full details
 
 ### 28 Gaps Found (6 P0, 5 P1, 8 P2, 9 P3)
 
@@ -946,7 +946,7 @@ This is the current "burn-down" slate combining all active deferred/runtime clos
 6. Anti-abuse (Phase 3.4) — PHIL-009
 7. Platform parity (Phase 4) — PHIL-006/010
 
-See **`PRODUCTION_ROADMAP.md`** for the complete 6-phase plan with LOC estimates.
+See **`docs/historical/plans/PRODUCTION_ROADMAP.md`** for the complete 6-phase plan with LOC estimates.
 
 ---
 

@@ -20,7 +20,7 @@ The orchestrator framework is warm and live: Overseer Claude Code session (PID 1
 
 - `HANDOFF/todo/[META]_ORCHESTRATOR_WORKER_POOL_WARMUP.md` — 5-step worker-pool warm-up procedure (quota refresh, orchestrator activate, dir creation, log bootstrap, pool health check). 600s budget, qwen3-coder:cloud. **[META] [TIER: 1-2] [BLOCKS: ALL_P0_DISPATCH] [SLOTS_AVAILABLE: 1]**
 - `HANDOFF/todo/[VALIDATED]_P0_ANDROID_024_DISPATCH.md` — dispatch contract for the existing P0 spec at `HANDOFF/todo/P0_ANDROID_024_IDENTITY_GENERATION_REGRESSION.md`. 1800s budget, implementer agent (`qwen3-coder-next:cloud`). **[P0] [TIER: 2-3] [DEPENDS_ON: worker-pool-warmup]**
-- `HANDOFF/todo/[META]_QUOTA_LEDGER_REPAIR.md` — 3-step doc-only repair of the 16-day-stale quota pipeline and missing/stale `API_EFFICIENCY_LEDGER.md`. 300s budget, gemma4:31b:cloud via worker. **[META] [TIER: 1] [LOW_PRIORITY_DOCS]**
+- `HANDOFF/todo/[META]_QUOTA_LEDGER_REPAIR.md` — 3-step doc-only repair of the 16-day-stale quota pipeline and missing/stale `docs/orchestration/API_EFFICIENCY_LEDGER.md`. 300s budget, gemma4:31b:cloud via worker. **[META] [TIER: 1] [LOW_PRIORITY_DOCS]**
 
 ## Cold-start state observed vs recovered state
 
@@ -62,7 +62,7 @@ When the next Claude Code session (or the Overseer's first action in a new windo
 
 2. **`[VALIDATED]_P0_ANDROID_024_DISPATCH`** — **Priority 2, depends on #1.** The P0 spec is complete; this ticket is the dispatch contract. Pre-flight quota check (abort on HARDLOCK) → pre-flight pool check (free slot) → `pool launch implementer` → tail agent log → on COMPLETE run `cargo check --workspace` + `./gradlew :app:assembleDebug -x lint --quiet` → `git mv` P0 spec and this ticket to `done/` → write `HANDOFF/STATE/2026-06-05_P0_ANDROID_024_RESOLVED.md`. 1800s budget. **Sequential after #1 — the P0 is user-blocking.**
 
-3. **`[META]_QUOTA_LEDGER_REPAIR`** — **Priority 3, can run in parallel with #2.** Doc-only repair of the 16-day-stale quota accounting pipeline. Re-scrape quota → verify/create `API_EFFICIENCY_LEDGER.md` with the `[2026-06-05]` wake-cycle line → write 3-line note to `HANDOFF/STATE/2026-06-05_QUOTA_LEDGER_REPAIR.md`. 300s budget. **No dependencies, parallel-safe with #2 once #1 is done.**
+3. **`[META]_QUOTA_LEDGER_REPAIR`** — **Priority 3, can run in parallel with #2.** Doc-only repair of the 16-day-stale quota accounting pipeline. Re-scrape quota → verify/create `docs/orchestration/API_EFFICIENCY_LEDGER.md` with the `[2026-06-05]` wake-cycle line → write 3-line note to `HANDOFF/STATE/2026-06-05_QUOTA_LEDGER_REPAIR.md`. 300s budget. **No dependencies, parallel-safe with #2 once #1 is done.**
 
 ### Dependency graph
 

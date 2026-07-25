@@ -176,7 +176,7 @@ cd core && cargo build --lib
 cd android && ./gradlew assembleDebug
 # Result: SUCCESS (44s) 
 
-./rebuild_ios_core.sh
+scripts/rebuild_ios_core.sh
 # Result: SUCCESS (2m 25s) 
 ```
 

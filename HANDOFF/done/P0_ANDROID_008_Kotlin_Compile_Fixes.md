@@ -3,7 +3,7 @@
 **Priority:** P0 (Build Blocking)  
 **Platform:** Android  
 **Estimated LoC Impact:** 150250 LoC  
-**Source:** PRODUCTION_ROADMAP_PRIORITIZED.md  P0 Blocker #1  
+**Source:** docs/historical/plans/PRODUCTION_ROADMAP_PRIORITIZED.md  P0 Blocker #1  
 **Status:** COMPLETED  
 **Completion Commit:** fd5bbee7e4fa4746c4d82a30e7b85354c7b4f1d1  
 **Completion Date:** 2026-04-22

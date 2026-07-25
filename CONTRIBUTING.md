@@ -1,11 +1,11 @@
 # Contributing to SCMessenger
 
 **Status**: Active  
-**Last updated**: 2026-03-07
+**Last updated**: 2026-07-24
 
 Thank you for considering contributing to SCMessenger! This document provides guidelines and instructions for contributing.
 
-Current release line: **v0.2.1 is the active alpha baseline** for repository work and bug reporting. Planned follow-on workstreams `WS13` and `WS14` remain future scope and should not be treated as part of the current alpha closeout unless maintainers explicitly retarget them.
+Current release line: **v0.3.5 is the active alpha baseline** for repository work and bug reporting. Work is sequenced toward v1.0.0 by [HANDOFF/V1_0_0_EXECUTION_PLAN.md](HANDOFF/V1_0_0_EXECUTION_PLAN.md).
 
 ## Table of Contents
 
@@ -42,20 +42,20 @@ We are committed to providing a welcoming and inspiring community for all. Pleas
 ### Prerequisites
 
 **Required:**
-- Rust 1.75.0 or later (see `rust-toolchain.toml`)
+- Rust stable (pinned as `channel = "stable"` in `rust-toolchain.toml`)
 - Cargo (comes with Rust)
 - Git 2.30+
 
 **Platform-Specific:**
 - **Android**: Android SDK, NDK r26b, Java 17+ - See [Android Setup Guide](docs/platform/ANDROID_SETUP.md)
-- **iOS**: macOS, Xcode 15+, CocoaPods - See [iOS Setup Guide](docs/platform/IOS_SETUP.md)
-- **WASM**: Node.js 20+, wasm-pack - See [WASM Setup Guide](docs/platform/WASM_SETUP.md)
+- **iOS**: macOS, Xcode 15+ - See [iOS Setup Guide](docs/platform/IOS_SETUP.md)
+- **WASM**: `wasm32-unknown-unknown` target (`rustup target add wasm32-unknown-unknown`) - See [WASM Setup Guide](docs/platform/WASM_SETUP.md)
 
 ### Setting Up Development Environment
 
 ```bash
 # Clone the repository
-git clone https://github.com/Treystu/SCMessenger.git
+git clone https://github.com/Sovereign-Communication/SCMessenger.git
 cd SCMessenger
 
 # Install pre-commit hooks (recommended)
@@ -89,17 +89,11 @@ The `main` branch is protected with the following rules to ensure code quality:
    - Prevents accidental branch deletion
    
 3. **Require status checks to pass before merging** — Enabled
-   - Required checks:
-     - `ci / rust-core` — Core Rust tests
-     - `ci / rust-android` — Android build (if android/ changed)
-     - `ci / rust-ios` — iOS build (if iOS/ changed)
-     - `ci / rust-wasm` — WASM build (if wasm/ changed)
-     - `ci / rust-cli` — CLI build (if cli/ changed)
-
-**Note:** On GitHub Free tier, we cannot enforce:
-- Required reviewers (requires GitHub Pro)
-- CODEOWNERS enforcement (requires GitHub Pro)
-- Private security advisories (requires GitHub Pro)
+   - Required checks — the four jobs defined in `.github/workflows/ci.yml`:
+     - `lint` — `cargo fmt --check`, `cargo clippy --workspace --all-features -- -D warnings`, `cargo deny check`
+     - `test` — `cargo test --workspace --features test-utils` on Linux, macOS, and Windows
+     - `docs` — `cargo doc --workspace --no-deps`
+     - `ffi-surface` — regenerates the Kotlin/Swift UniFFI bindings and runs `scripts/ffi_surface.sh`
 
 **To configure branch protection:**
 1. Go to: `Settings → Branches → Add branch protection rule`
@@ -116,7 +110,7 @@ The `main` branch is protected with the following rules to ensure code quality:
 # Fork the repository on GitHub, then:
 git clone https://github.com/YOUR_USERNAME/SCMessenger.git
 cd SCMessenger
-git remote add upstream https://github.com/Treystu/SCMessenger.git
+git remote add upstream https://github.com/Sovereign-Communication/SCMessenger.git
 
 # Create a feature branch
 git checkout -b feat/your-feature-name
@@ -140,7 +134,7 @@ Rust is the primary implementation language for shared/core logic, but this repo
 - Use `tracing` for logging (not `println!` in library code)
 - Use `parking_lot::RwLock` over `std::sync::RwLock`
 - Async runtime is `tokio`
-- Network layer is `libp2p` 0.53
+- Network layer is `libp2p` 0.56
 - Serialization: `bincode` for wire format, `serde_json` for human-readable
 - Tests go in `#[cfg(test)] mod tests` in the same file
 
@@ -193,18 +187,14 @@ cd iOS
 swiftlint lint
 ```
 
-#### JavaScript/TypeScript Style (WASM)
+#### WASM (`scmessenger-wasm`)
 
-- Follow [Airbnb JavaScript Style Guide](https://github.com/airbnb/javascript)
-- Use 2 spaces for indentation
-- Maximum line length: 100 characters
-- Use camelCase for variables and functions
-- Use PascalCase for classes
+The browser bindings are a Rust crate (`wasm/`), not an npm project — there is no
+`package.json` and no JavaScript lint step. Verify changes by building for the
+wasm target:
 
-**Linting:**
 ```bash
-cd wasm
-npm run lint
+cargo build -p scmessenger-wasm --target wasm32-unknown-unknown
 ```
 
 ### 4. Commit Messages
@@ -299,10 +289,13 @@ cargo test -p scmessenger-core --test integration_offline_partition_matrix
 # Android
 cd android && ./gradlew test
 
-# iOS
-cd iOS && xcodebuild test -workspace SCMessenger.xcworkspace -scheme SCMessenger -destination 'platform=iOS Simulator,name=iPhone 15'
+# iOS (there is no .xcworkspace -- the project is iOS/SCMessenger/SCMessenger.xcodeproj)
+xcodebuild test -project iOS/SCMessenger/SCMessenger.xcodeproj -scheme SCMessenger -destination 'platform=iOS Simulator,name=iPhone 17'
 
-# WASM
+# WASM: build gate
+cargo build -p scmessenger-wasm --target wasm32-unknown-unknown
+
+# WASM: in-browser tests (wasm-bindgen-test, configured with run_in_browser)
 cd wasm && wasm-pack test --headless --firefox
 ```
 
@@ -390,7 +383,7 @@ Before submitting a PR, ensure all tests pass:
 cargo fmt --all -- --check
 
 # Linting
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace -- -D warnings -A clippy::empty_line_after_doc_comments
 
 # Unit tests
 cargo test --workspace
@@ -422,7 +415,7 @@ cargo test --workspace --test '*'
 
 ```
 SCMessenger/
-├── core/           # scmessenger-core - Rust library (~29K LoC)
+├── core/           # scmessenger-core - Rust library
 │   ├── src/
 │   │   ├── identity/      # Ed25519 keys, Blake3 hashing
 │   │   ├── crypto/        # X25519 ECDH + XChaCha20-Poly1305
@@ -433,11 +426,10 @@ SCMessenger/
 │   │   ├── routing/       # Mycorrhizal routing engine
 │   │   ├── relay/         # Self-relay network
 │   │   └── privacy/       # Onion routing, cover traffic
-│   └── tests/
-│       ├── unit/          # Fast unit tests
-│       ├── integration/   # Integration tests
+│   └── tests/             # Flat integration_*.rs files, one per scenario
 │       ├── property/      # Property-based tests
-│       └── regression/    # Bug-specific regression tests
+│       ├── mocks/         # Shared test doubles
+│       └── kani/          # Kani proof harnesses
 ├── mobile/         # scmessenger-mobile - UniFFI bindings
 ├── cli/            # scmessenger-cli - Interactive CLI
 ├── wasm/           # scmessenger-wasm - Browser bindings
@@ -508,9 +500,9 @@ If you discover a security vulnerability, please follow our [Security Policy](SE
 
 **DO NOT** open a public issue for security vulnerabilities.
 
-**Reporting:**
-- Use GitHub Security Advisories (private disclosure)
-- Or email: security@scmessenger.org (if available)
+**Reporting:** Use GitHub Security Advisories (private disclosure) —
+Security > Advisories > **Report a vulnerability**. That is the only security
+reporting channel; there is no security mailing address.
 
 See [SECURITY.md](SECURITY.md) for details on:
 - Supported versions
@@ -524,8 +516,7 @@ See [SECURITY.md](SECURITY.md) for details on:
 - **Build Issues**: Check [Build Issues Guide](docs/troubleshooting/BUILD_ISSUES.md)
 - **CI Failures**: Check [CI Failures Guide](docs/troubleshooting/CI_FAILURES.md)
 - **Runtime Issues**: Check [Runtime Issues Guide](docs/troubleshooting/RUNTIME_ISSUES.md)
-- **GitHub Issues**: Search existing issues or create a new one
-- **GitHub Discussions**: For questions and general discussion
+- **GitHub Issues**: Search existing issues or create a new one — this is also where questions go, since GitHub Discussions is not enabled on this repository
 - **Support**: See [SUPPORT.md](SUPPORT.md) for routing guidance
 
 ## License
@@ -534,6 +525,6 @@ By contributing, you agree that your contributions will be licensed under The Un
 
 ---
 
-**Thank you for making SCMessenger better!** 🚀
+**Thank you for making SCMessenger better!**
 
 For the current verified workspace snapshot and implementation status, see [docs/CURRENT_STATE.md](docs/CURRENT_STATE.md).

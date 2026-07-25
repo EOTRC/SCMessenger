@@ -241,7 +241,7 @@ For each completed batch, validate parity across:
 - WASM adapter wiring
 - CLI access (if applicable)
 
-Use `FEATURE_PARITY.md` as canonical state table update point.
+Use `docs/FEATURE_PARITY.md` as canonical state table update point.
 
 ---
 

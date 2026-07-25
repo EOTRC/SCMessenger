@@ -3,7 +3,6 @@ name = "scmessenger-mobile"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-authors.workspace = true
 
 [lib]
 crate-type = ["lib", "cdylib", "staticlib"]

@@ -13,7 +13,7 @@
 - **Current iOS status** - Stable, running 2+ hours without issues
 
 ###  VERIFIED
-- **run5.sh test harness** - All 5 nodes (GCP, OSX, Android, iOS Device, iOS Sim) operational
+- **scripts/run5.sh test harness** - All 5 nodes (GCP, OSX, Android, iOS Device, iOS Sim) operational
 - **Multi-platform messaging** - Peer discovery and message relay working
 - **Stability** - No crashes, hangs, or critical errors
 
@@ -46,7 +46,7 @@
 - Logging active
 - No crashes detected
 
-### Test Harness (run5.sh) 
+### Test Harness (scripts/run5.sh) 
 - All 5 nodes launched successfully
 - Logs collected: 11MB total
 - Peer connectivity verified

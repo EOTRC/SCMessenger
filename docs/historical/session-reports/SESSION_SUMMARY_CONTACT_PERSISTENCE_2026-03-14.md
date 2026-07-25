@@ -16,7 +16,7 @@ Successfully debugged and fixed critical Android contact persistence issues that
 ###  Documentation Created
 1. **ANDROID_FIXES_2026-03-14.md** - Complete fix documentation
 2. **DEBUG_REMAINING_ISSUES_2026-03-14.md** - Debug analysis & next steps
-3. **CONTACT_PERSISTENCE_FIX_PLAN.md** - Implementation roadmap
+3. **docs/historical/plans/CONTACT_PERSISTENCE_FIX_PLAN.md** - Implementation roadmap
 4. **This file** - Session summary
 
 ###  Issues FIXED
@@ -51,7 +51,7 @@ Successfully debugged and fixed critical Android contact persistence issues that
 - **Issue:** 9+ permission dialogs in 700ms window
 - **Status:** Root cause identified - multiple unsynchronized request sources
 - **Next:** Implement atomic flag + debounce quick fix
-- **Documentation:** CONTACT_PERSISTENCE_FIX_PLAN.md (lines 120-200)
+- **Documentation:** docs/historical/plans/CONTACT_PERSISTENCE_FIX_PLAN.md (lines 120-200)
 
 ---
 
@@ -238,7 +238,7 @@ adb shell am start -n "com.scmessenger.android/.ui.MainActivity"
 ### Current Session
 - `ANDROID_FIXES_2026-03-14.md` - Complete fix documentation
 - `DEBUG_REMAINING_ISSUES_2026-03-14.md` - Investigation details
-- `CONTACT_PERSISTENCE_FIX_PLAN.md` - Implementation roadmap
+- `docs/historical/plans/CONTACT_PERSISTENCE_FIX_PLAN.md` - Implementation roadmap
 - `This file` - Session summary
 
 ### Canonical Docs (To Update)

@@ -1,5 +1,5 @@
 # UniFFI configuration for SCMessenger Core bindings generation
-# Fixes: https://github.com/Treystu/SCMessenger/issues/42 (Domain 5)
+# Fixes: https://github.com/Sovereign-Communication/SCMessenger/issues/42 (Domain 5)
 
 [bindings.kotlin]
 package_name = "uniffi.api"

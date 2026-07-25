@@ -75,7 +75,7 @@ These files in `HANDOFF/done/` still carry incomplete status and must be re-queu
 ### task_fire_drill_audit.md  VALIDATED
 - **Reason:** Simple, well-scoped git status check. Budget (250 tokens) realistic. Model (gemma3:4b:cloud) appropriate for Tier 4.
 - **Action:** Added Watchdog Warning block, verified frontmatter, renamed to `[VALIDATED]_task_fire_drill_audit.md`
-- **Justification:** Repo has uncommitted changes (SwarmHeartbeat.ps1, TaskGovernor.ps1) and untracked files (API_EFFICIENCY_LEDGER.md)  the git status snapshot is still needed for swarm health monitoring
+- **Justification:** Repo has uncommitted changes (scripts/SwarmHeartbeat.ps1, scripts/TaskGovernor.ps1) and untracked files (docs/orchestration/API_EFFICIENCY_LEDGER.md)  the git status snapshot is still needed for swarm health monitoring
 
 ### ORCHESTRATOR_SESSION.md  MOVED
 - **Reason:** NOT a task file. It is orchestration session documentation / runbook with stale state (references 1/2 pool slots from a past session, 98-task queue in todo/ that no longer exists).

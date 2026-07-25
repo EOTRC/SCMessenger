@@ -31,8 +31,8 @@ The orchestrator framework is warm and live: Overseer Claude Code session (PID 1
 5 sub-tasks, in order. All commands must run on the `integration/v0.2.2-pre-android-push-2026-06-05` branch from `/mnt/e/SCMessenger-Github-Repo/SCMessenger`.
 
 1. **Refresh quota state.**
-   - Windows: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./OllamaQuotaScraper.ps1 -Quiet`
-   - WSL/Unix: `bash ./OllamaQuotaScraper.sh` (if present; PowerShell Core works on Linux too)
+   - Windows: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/OllamaQuotaScraper.ps1 -Quiet`
+   - WSL/Unix: `bash scripts/OllamaQuotaScraper.sh` (if present; PowerShell Core works on Linux too)
    - Verify: `jq -r .timestamp .claude/quota_state.json` returns a value within 5 minutes of `date -u +%Y-%m-%dT%H:%M:%SZ`. If the scraper is missing or fails, log the error to `HANDOFF/ORCHESTRATOR_LOG.md` and proceed  do not silently bypass.
 
 2. **Activate the orchestrator.**

@@ -118,7 +118,7 @@ delivery_state msg=15496c61... attempt=169
 
 ## Test Scripts Run
 
-- `run5.sh` - 5-node mesh test harness  VERIFIED WORKING
+- `scripts/run5.sh` - 5-node mesh test harness  VERIFIED WORKING
   - All nodes launched successfully
   - Peer discovery functional
   - Log collection working
@@ -175,7 +175,7 @@ delivery_state msg=15496c61... attempt=169
  iOS build process
  Peer discovery (both platforms)
  Case-insensitive peer lookups (Android)
- Multi-platform test harness (run5.sh)
+ Multi-platform test harness (scripts/run5.sh)
  iOS stability (no recent crashes)
  Basic mesh connectivity
 

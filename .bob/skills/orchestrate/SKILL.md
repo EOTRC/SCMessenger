@@ -24,7 +24,7 @@ If that directory is missing or `.claude/orchestrator_manager.sh` is absent, **S
 
 ## Mandatory Pre-Flight Check: API Efficiency Ledger
 
-BEFORE generating any tasks or doing any work, you MUST read `.claude/quota_state.json` and append a strictly formatted line to `API_EFFICIENCY_LEDGER.md`. Format: `[YYYY-MM-DD] - Wake Cycle (Model) - State: [Tripped/Idle/Triage] - Tokens: X/Y`
+BEFORE generating any tasks or doing any work, you MUST read `.claude/quota_state.json` and append a strictly formatted line to `docs/orchestration/API_EFFICIENCY_LEDGER.md`. Format: `[YYYY-MM-DD] - Wake Cycle (Model) - State: [Tripped/Idle/Triage] - Tokens: X/Y`
 
 ## Autonomous Drive & Philosophy Enforcement
 
@@ -57,7 +57,7 @@ BEFORE generating any tasks or doing any work, you MUST read `.claude/quota_stat
 
 # CRITICAL SYSTEM OVERRIDE: 6-TIER DYNAMIC QUOTA GOVERNOR
 You are operating under rolling API limits (5-hour and 7-day windows). The
-lazy-refresh-on-read pattern in `SwarmHeartbeat.ps1` and the bash quota_lib.sh
+lazy-refresh-on-read pattern in `scripts/SwarmHeartbeat.ps1` and the bash quota_lib.sh
 ensures quota data is never more than 5 minutes old when read.
 
 **Step 1: Just-In-Time (JIT) Polling**
@@ -69,7 +69,7 @@ if the data is over 5 minutes old, trigger a forced re-scrape before proceeding.
 **Step 2: 6-Tier Dynamic Task Routing**
 Evaluate `fiveHour` and `sevenDay` from `quota_state.json` and route tasks based
 on these strict tiers. This is the same tier system that drives
-`SwarmHeartbeat.ps1`:
+`scripts/SwarmHeartbeat.ps1`:
 
 - **TIER 1 -- HEAVY-LIFT** [fiveHour <= 25%]: 3 slots, no budget cap. Use flagship
   models (`qwen3-coder:480b:cloud`, `glm-5.1:cloud`) for multi-file wiring,

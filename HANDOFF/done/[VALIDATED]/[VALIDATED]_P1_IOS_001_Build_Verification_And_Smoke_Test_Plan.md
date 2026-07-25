@@ -21,7 +21,7 @@ fixed," this is part of the ~30-ticket remaining backlog.
 **Agent:** worker
 **Budget:** 600s (MICRO tier)
 **Phase:** v0.2.1 P1 iOS verification
-**Source:** PRODUCTION_ROADMAP.md 1.3 (iOS Stability) + planfromclaudeforhermes 2 Phase E.1-E.2
+**Source:** docs/historical/plans/PRODUCTION_ROADMAP.md 1.3 (iOS Stability) + planfromclaudeforhermes 2 Phase E.1-E.2
 **Depends on:** P0_BUILD_001 (cross-platform compilation check)
 
 ---

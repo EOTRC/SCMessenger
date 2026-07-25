@@ -12,7 +12,7 @@ slash-command anymore.
 - **One brain:** `docs/ORCHESTRATION.md` -- the canonical loop, dispatch ladder,
   worker contract, security gates, and the Operating Contract (Section 0:
   delegation is mandatory; the protocol is model-agnostic).
-- **One lake registry:** `SCM_UNIFIED_LAKE_ORCHESTRATION.md` -- endpoints,
+- **One lake registry:** `docs/orchestration/SCM_UNIFIED_LAKE_ORCHESTRATION.md` -- endpoints,
   quotas, and the free vs paid tokens/$ comparison.
 
 Everything these commands used to do is preserved as a selectable BACKEND in

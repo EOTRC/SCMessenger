@@ -312,7 +312,7 @@ QUOTA CONTEXT (auto-injected by launch_agent.sh):
 
 CRITICAL: If the above data was scraped more than 5 minutes ago, trigger a
 forced re-check by running:
-  powershell -NoProfile -ExecutionPolicy Bypass -File ./OllamaQuotaScraper.ps1 -Quiet
+  powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/OllamaQuotaScraper.ps1 -Quiet
 Do NOT make quota-dependent decisions on stale data.
 
 PARTIAL COMPLETION IS ACCEPTABLE. If you cannot finish within budget, write what

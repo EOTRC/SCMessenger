@@ -8,7 +8,7 @@
 > only as a Gemini-specific runbook for the `lanes` backend
 > (`scripts/delegate_task.py`); where it conflicts with ORCHESTRATION.md,
 > ORCHESTRATION.md wins. Model names and quotas below are historical -- the live
-> lake fleet is `SCM_UNIFIED_LAKE_ORCHESTRATION.md`.
+> lake fleet is `docs/orchestration/SCM_UNIFIED_LAKE_ORCHESTRATION.md`.
 
 This document is a Gemini-specific runbook for orchestrating the SCMessenger
 backlog via the `lanes` backend. Read `docs/ORCHESTRATION.md` first, then use the

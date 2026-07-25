@@ -3,7 +3,7 @@
 
 
 Stance: Zero-regression, gate-verified incremental transformation
-Source of Truth: https://github.com/Treystu/SCMessenger/tree/main
+Source of Truth: https://github.com/Sovereign-Communication/SCMessenger/tree/main
 
 
 CONTEXT & CONSTRAINTS

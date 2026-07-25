@@ -8,7 +8,7 @@
 
 > **Core thesis:** Hermes, we are both minimax-m3. You orchestrate; I plan. We are NOT the implementer — we delegate to subagents. This plan tells you exactly which tasks to dispatch, in what order, with LOC magnitudes (NOT time). The repo's `.clinerules` line 79 is explicit: "Banned Behavior: Never use time-based estimates. Use LOC magnitudes instead." Every estimate in this document is LoC.
 
-> **Subagent role model (per `ORCHESTRATOR_DIRECTIVE.md`):** Hermes spawns the swarm via the Python framework (`AgentSwarmCline/scmessenger_swarm/swarm.py --task-file task.json`). 8 agents, max 2 concurrent. The swarm folds task files `todo/ → done/`. Subagents receive `MODEL:`, `BUDGET:` (token), and `TARGET:` headers. Hermes runs OODA — stops on any issue, never silent-retries.
+> **Subagent role model (per `docs/orchestration/ORCHESTRATOR_DIRECTIVE.md`):** Hermes spawns the swarm via the Python framework (`AgentSwarmCline/scmessenger_swarm/swarm.py --task-file task.json`). 8 agents, max 2 concurrent. The swarm folds task files `todo/ → done/`. Subagents receive `MODEL:`, `BUDGET:` (token), and `TARGET:` headers. Hermes runs OODA — stops on any issue, never silent-retries.
 
 ---
 
@@ -20,13 +20,13 @@ Audit found **two active Hermes installs** and **zero Ollama models**. These are
 |---|---|---|---|
 | **Dual Hermes config** | `E:\.hermes` (active, gateway PID 1384, kimi-k2.6:cloud, 64K ctx, full toolset, `customs.custom_providers.local-ollama`) vs `E:\hermes-home` (stale, deepseek-v4-pro:cloud, no tool platforms, 2KB kanban.db, gateway.lock from 2026-05-26) | `mv /e/hermes-home /e/hermes-home.archive-2026-06-02` | ~5 |
 | **Zero Ollama models** | 3 ollama.exe processes alive (PIDs 2440, 16664, 3436), `ollama list` empty, `E:\.ollama\models\` empty | `ollama pull` × 4 models | ~10 |
-| **Stale Ollama path in MEMORY.md** | Line 22 says `/mnt/e/local_models`; actual is `E:\.ollama\models\` | Edit `E:\MEMORY.md` line 22 | ~25 |
+| **Stale Ollama path in docs/historical/MEMORY.md** | Line 22 says `/mnt/e/local_models`; actual is `E:\.ollama\models\` | Edit `E:\MEMORY.md` line 22 | ~25 |
 | **Ollama config missing** | `E:\.ollama\config.json` does not exist | Write new file (5 keys) | ~15 |
 | **Hermes provider list stale** | `E:\.hermes\config.yaml` `providers.ollama-launch.models` lacks the new 4 model tags | Edit YAML, add 4 entries | ~30 |
 | **HANDOFF REJECTED/ stale** | 4 stale batches in `HANDOFF/todo/REJECTED/` from 2026-05-14 | `mv HANDOFF/todo/REJECTED/* HANDOFF/retired/` | ~5 |
 | **Stale review item** | `HANDOFF/review/IN_PROGRESS_task_security_tooling.md` from 2026-05-01 (32 days old, partial cargo-audit done) | `mv` to `done/` with note | ~5 |
 | **Wiring index count stale** | `WIRING_TASK_INDEX.md` claims 350 tasks; actual `ls HANDOFF/todo/task_wire_*.md | wc -l` is 0 (all moved to `done/` already) | Rewrite header line | ~10 |
-| **Duplicate cargo home** | `E:\cargo-home` and `E:\cargohome` both exist; only one is referenced in MEMORY.md as `E:\build-tools\.cargo` | Verify unused, `mv` to archive | ~5 |
+| **Duplicate cargo home** | `E:\cargo-home` and `E:\cargohome` both exist; only one is referenced in docs/historical/MEMORY.md as `E:\build-tools\.cargo` | Verify unused, `mv` to archive | ~5 |
 | **2KB kanban.db in stale Hermes** | `E:\hermes-home\kanban.db` is empty placeholder | Goes away with archive `mv` | 0 |
 
 **Cleanup total LoC: ~120** (edits + 1 config file write). Dispatch as one `worker` task: `[VALIDATED]_P0_SETUP_001_Workstation_Cleanup_And_Model_Install.md` (already authored, see §5 row 1).
@@ -68,7 +68,7 @@ Audit found **two active Hermes installs** and **zero Ollama models**. These are
 
 ## §2. The Real Plan — 7 LOC-scoped phases for v0.2.1-complete
 
-The user asked: *"plan the rest of this major revision through 0.2.1 complete."* That means finish the v0.2.1 alpha properly — close the residual risks, fix the broken test gate, wire dormant modules, and ship. NOT a v1.0 push (that's `PRODUCTION_ROADMAP.md`'s separate scope).
+The user asked: *"plan the rest of this major revision through 0.2.1 complete."* That means finish the v0.2.1 alpha properly — close the residual risks, fix the broken test gate, wire dormant modules, and ship. NOT a v1.0 push (that's `docs/historical/plans/PRODUCTION_ROADMAP.md`'s separate scope).
 
 ### Phase A — P0: Gate Restoration (LOC: ~80)
 
@@ -92,7 +92,7 @@ cargo clippy --workspace --lib --bins --examples -- -D warnings -A clippy::empty
 
 ### Phase B — P0: Security Quick Wins (LOC: ~480)
 
-These close the 4 P0 security gaps from `PRODUCTION_ROADMAP.md` that don't require crypto redesign. All implementations have analogues in the existing code (e.g., audit-log already has `validate_audit_chain`).
+These close the 4 P0 security gaps from `docs/historical/plans/PRODUCTION_ROADMAP.md` that don't require crypto redesign. All implementations have analogues in the existing code (e.g., audit-log already has `validate_audit_chain`).
 
 | # | Action | File Targets | LOC | Agent / Model |
 |---|---|---|---|---|
@@ -139,7 +139,7 @@ These close the 4 P0 security gaps from `PRODUCTION_ROADMAP.md` that don't requi
 
 ### Phase D — P1: Android Stability (LOC: ~420)
 
-Per `ANDROID_PIXEL_6A_AUDIT_2026-04-17` (5 critical issues from real-device logs) and `MASTER_BUG_TRACKER.md`.
+Per `ANDROID_PIXEL_6A_AUDIT_2026-04-17` (5 critical issues from real-device logs) and `docs/historical/MASTER_BUG_TRACKER.md`.
 
 | # | Action | File Targets | LOC | Agent / Model |
 |---|---|---|---|---|
@@ -159,7 +159,7 @@ Per `ANDROID_PIXEL_6A_AUDIT_2026-04-17` (5 critical issues from real-device logs
 
 ### Phase E — P1: iOS Verification (LOC: ~200, but mostly non-code verification)
 
-iOS is at the "scaffolding + bug fixes applied" stage per `PRODUCTION_ROADMAP.md`. Don't re-scaffold. Verify on real device.
+iOS is at the "scaffolding + bug fixes applied" stage per `docs/historical/plans/PRODUCTION_ROADMAP.md`. Don't re-scaffold. Verify on real device.
 
 | # | Action | File Targets | LOC | Agent / Model |
 |---|---|---|---|---|
@@ -196,7 +196,7 @@ iOS is at the "scaffolding + bug fixes applied" stage per `PRODUCTION_ROADMAP.md
 | G1 | Tag `v0.2.1-complete` on `main` after all phases pass | git | ~5 | `orchestrator` (Hermes) |
 | G2 | Build release artifacts: `./gradlew :app:bundleRelease`, `xcodebuild -configuration Release`, `wasm-pack build --release` | n/a (build commands) | 0 | `worker` / `gemma4:31b:cloud` |
 | G3 | Write `RELEASE_NOTES_v0.2.1.md` summarizing what shipped, bug fixes, known issues | `RELEASE_NOTES_v0.2.1.md` [NEW] | ~100 | `gatekeeper-reviewer` / `kimi-k2-thinking:cloud` |
-| G4 | Update `PRODUCTION_ROADMAP.md`: mark v0.2.1 items done, move v0.3 alpha items to top, link release notes | `PRODUCTION_ROADMAP.md` [EDIT] | ~45 | `architect-planner` / `qwen3-coder:480b:cloud` |
+| G4 | Update `docs/historical/plans/PRODUCTION_ROADMAP.md`: mark v0.2.1 items done, move v0.3 alpha items to top, link release notes | `docs/historical/plans/PRODUCTION_ROADMAP.md` [EDIT] | ~45 | `architect-planner` / `qwen3-coder:480b:cloud` |
 
 **Total v0.2.1-complete LoC: ~2,800 across all 7 phases** (1,150 of which is Phase C — dormant module wiring, the most consequential work).
 
@@ -338,7 +338,7 @@ Each row = one task file in `HANDOFF/todo/`. Each task is independently dispatch
 ### 5.1 Day 0 — workstation setup (LOC: ~120)
 | # | Action | Agent | Model | LoC | Task file |
 |---|---|---|---|---|---|
-| 1 | §0 cleanup script: archive Hermes, install 4 Ollama models, update configs, MEMORY.md, HANDOFF triage, regen wiring index | `worker` | local GPU 7B | ~120 | `[VALIDATED]_P0_SETUP_001_Workstation_Cleanup_And_Model_Install.md` (drafted) |
+| 1 | §0 cleanup script: archive Hermes, install 4 Ollama models, update configs, docs/historical/MEMORY.md, HANDOFF triage, regen wiring index | `worker` | local GPU 7B | ~120 | `[VALIDATED]_P0_SETUP_001_Workstation_Cleanup_And_Model_Install.md` (drafted) |
 
 ### 5.2 Phase A — gate restoration (LOC: ~80)
 | # | Action | Agent | Model | LoC | Task file |
@@ -392,7 +392,7 @@ Each row = one task file in `HANDOFF/todo/`. Each task is independently dispatch
 |---|---|---|---|---|---|
 | 23 | Tag `v0.2.1-complete` + build release artifacts (APK/AAB/iOS/WASM) | `orchestrator` (you, Hermes) + `worker` | kimi-k2.6:cloud + gemma4:31b:cloud | ~5 | (orchestrator command) |
 | 24 | Write `RELEASE_NOTES_v0.2.1.md` | `gatekeeper-reviewer` | `kimi-k2-thinking:cloud` | ~100 | `[VALIDATED]_P0_RELEASE_001_v0.2.1_Complete_Notes.md` |
-| 25 | Update `PRODUCTION_ROADMAP.md` (close v0.2.1, move v0.3 to top) | `architect-planner` | `qwen3-coder:480b:cloud` | ~45 | `[VALIDATED]_P0_DOC_002_Promotion_Roadmap_v0.3.md` |
+| 25 | Update `docs/historical/plans/PRODUCTION_ROADMAP.md` (close v0.2.1, move v0.3 to top) | `architect-planner` | `qwen3-coder:480b:cloud` | ~45 | `[VALIDATED]_P0_DOC_002_Promotion_Roadmap_v0.3.md` |
 
 **Total: 25 task files, ~2,800 LoC across the 7 phases.**
 
@@ -442,7 +442,7 @@ Each row = one task file in `HANDOFF/todo/`. Each task is independently dispatch
 - [ ] First-run consent gate enforced at API level (`initialize_identity()` returns `ConsentRequired` until confirmed)
 - [ ] Android: no permission spam, no ANR, no relay peers in contacts, no stale peer cache
 - [ ] Cross-platform: Android↔Android, Android↔iOS, Android↔WASM all deliver + receipt under BLE, WiFi Direct, and relay (verified via `scripts/cross_platform_delivery_test.py`)
-- [ ] Release APK, iOS build, WASM bundle all build cleanly; `RELEASE_NOTES_v0.2.1.md` published; `PRODUCTION_ROADMAP.md` updated
+- [ ] Release APK, iOS build, WASM bundle all build cleanly; `RELEASE_NOTES_v0.2.1.md` published; `docs/historical/plans/PRODUCTION_ROADMAP.md` updated
 
 **That's 17 boxes. Each is a verifiable gate. Don't declare v0.2.1-complete until all 17 are ticked.**
 
@@ -452,7 +452,7 @@ Each row = one task file in `HANDOFF/todo/`. Each task is independently dispatch
 
 Briefly, so we don't lose context after the release:
 
-v0.3 alpha = v0.2.1-complete + P2 global-scale items from `PRODUCTION_ROADMAP.md`:
+v0.3 alpha = v0.2.1-complete + P2 global-scale items from `docs/historical/plans/PRODUCTION_ROADMAP.md`:
 - STUN/TURN integration for NAT traversal
 - Mesh health monitoring + metrics
 - Persistent peer reputation
@@ -499,7 +499,7 @@ Three reasons, no hype:
 
 2. **The hardware is well-matched to the work.** 6GB VRAM + 32GB RAM is enough for a 7B Q4 on GPU and a 14B Q4 on CPU. Not huge, but enough for code generation quality on the 5-7B-parameter sweet spot. The 14B on CPU is slow but correct — and that's what you want for Rust planning.
 
-3. **The user has the discipline to do the slow part.** Telegram 6014795323 is the escalation channel. The OODA-loop "stop and ask" rule is in MEMORY.md. The user values sovereignty and won't accept sloppy work. We can take the cycles to do v0.2.1 right, and the user will wait because they're getting verifiable quality, not rushed releases.
+3. **The user has the discipline to do the slow part.** Telegram 6014795323 is the escalation channel. The OODA-loop "stop and ask" rule is in docs/historical/MEMORY.md. The user values sovereignty and won't accept sloppy work. We can take the cycles to do v0.2.1 right, and the user will wait because they're getting verifiable quality, not rushed releases.
 
 ## Appendix C — Acknowledgments
 

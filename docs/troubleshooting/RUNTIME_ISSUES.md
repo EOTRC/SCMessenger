@@ -616,9 +616,9 @@ If runtime issues persist:
 
 1. **Collect logs**: Capture detailed logs with debug logging enabled
 2. **Reproduce**: Document steps to reproduce the issue
-3. **Search issues**: https://github.com/Treystu/SCMessenger/issues
+3. **Search issues**: https://github.com/Sovereign-Communication/SCMessenger/issues
 4. **Report bug**: Create new issue with logs and reproduction steps
-5. **Ask for help**: https://github.com/Treystu/SCMessenger/discussions
+5. **Ask for help**: https://github.com/Sovereign-Communication/SCMessenger/discussions
 
 ### Bug Report Template
 

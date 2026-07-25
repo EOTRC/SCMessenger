@@ -5,9 +5,10 @@ Briefly describe the change.
 What problem does this PR solve? Link the issue, or explain why no issue exists.
 
 ## Release Scope
-- [ ] This change is part of the active `v0.2.0` alpha baseline
-- [ ] This change is deferred/follow-up scope for `v0.2.1` (`WS13` / `WS14` or later)
-- [ ] This change is repo-governance / documentation / tooling work
+- [ ] Fix or improvement on the current `v0.3.5` alpha baseline
+- [ ] `v1.0.0` Phase 1 scope (Windows/Android transport parity)
+- [ ] `v1.0.0` Phase 2 scope (everything else)
+- [ ] Repo-governance / documentation / tooling work
 
 ## Documentation Impact
 - [ ] Canonical docs updated
@@ -16,7 +17,7 @@ What problem does this PR solve? Link the issue, or explain why no issue exists.
 
 ## Validation
 - [ ] `cargo fmt --all -- --check`
-- [ ] `cargo clippy --workspace`
+- [ ] `cargo clippy --workspace -- -D warnings -A clippy::empty_line_after_doc_comments`
 - [ ] `cargo build --workspace`
 - [ ] `cargo test --workspace`
 - [ ] `./scripts/docs_sync_check.sh`

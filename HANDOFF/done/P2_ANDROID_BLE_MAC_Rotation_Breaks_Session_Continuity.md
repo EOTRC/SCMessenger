@@ -20,7 +20,7 @@ addresses** from what is presumably the same physical phone:
 This is consistent with Android's standard BLE privacy feature (randomized/
 rotating advertising MAC addresses, typically every ~15 minutes or on
 Bluetooth toggle) and matches the "DarkBLE rotating beacon" design
-referenced in `fable5plan.md`'s Track 1 section (`beacon.rs` rotation_epoch).
+referenced in `docs/historical/plans/fable5plan.md`'s Track 1 section (`beacon.rs` rotation_epoch).
 Each time the MAC rotates, the CLI logs a fresh "BLE found matching
 peripheral" and re-attempts the connect dance from scratch (including
 repeated `BLE subscribe failed ... Windows UWP threw error on subscribe:

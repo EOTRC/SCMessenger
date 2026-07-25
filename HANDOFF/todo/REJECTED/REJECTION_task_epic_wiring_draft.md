@@ -6,7 +6,7 @@
 
 The task body contains unresolved placeholder:
 ```
-[USER: INSERT YOUR PLANNING FILE NAMES HERE, e.g., ARCHITECTURE.md, ROADMAP.md]
+[USER: INSERT YOUR PLANNING FILE NAMES HERE, e.g., docs/ARCHITECTURE_MODULE_MAP.md, ROADMAP.md]
 ```
 
 This placeholder prevents any worker from executing Step 1 ("Read the core planning documents"). Without concrete file names, the task is ambiguous and cannot produce a valid IMPLEMENTATION_DRAFT.md.

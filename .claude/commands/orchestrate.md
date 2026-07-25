@@ -13,7 +13,7 @@ instruction-following model.
    - Section 2.1 dispatch ladder + Section 2.2 the loop.
    - Section 4 security gates and Section 5 backends.
    - Section 9 lessons (each was paid for in a bad commit or a burned quota).
-2. Read `SCM_UNIFIED_LAKE_ORCHESTRATION.md` for lake endpoints, quotas, and
+2. Read `docs/orchestration/SCM_UNIFIED_LAKE_ORCHESTRATION.md` for lake endpoints, quotas, and
    the rotation strategy.
 3. Read the shared state (ORCHESTRATION.md Section 2): `HANDOFF/todo/_QUEUE.md`,
    the JSONL queue, and `tmp/lakes/ledger.jsonl`. State lives in files, not in

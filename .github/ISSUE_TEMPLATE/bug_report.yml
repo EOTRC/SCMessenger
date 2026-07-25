@@ -5,15 +5,16 @@ body:
   - type: markdown
     attributes:
       value: |
-        `v0.2.0` is the active alpha baseline for this repository. If your report is really about planned `WS13` / `WS14` work, select the `v0.2.1` scope option below.
+        `v0.3.5` is the active alpha baseline for this repository. Work in progress toward `v1.0.0` is sequenced in `HANDOFF/V1_0_0_EXECUTION_PLAN.md`.
   - type: dropdown
     id: release_scope
     attributes:
       label: Release scope
       description: Which release line does this issue affect?
       options:
-        - v0.2.0 alpha (active baseline)
-        - v0.2.1 / WS13 / WS14 planned scope
+        - v0.3.5 alpha (active baseline)
+        - main (unreleased)
+        - v1.0.0 planned scope
         - Not sure
     validations:
       required: true
@@ -67,7 +68,7 @@ body:
     id: version
     attributes:
       label: SCMessenger version or commit
-      placeholder: "v0.2.0 alpha / main @ abc1234"
+      placeholder: "v0.3.5 alpha / main @ abc1234"
     validations:
       required: true
   - type: textarea

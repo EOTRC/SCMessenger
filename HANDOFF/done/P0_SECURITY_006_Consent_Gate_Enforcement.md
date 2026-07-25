@@ -3,7 +3,7 @@
 **Priority:** P0 (Security/Compliance)
 **Platform:** Core/Rust
 **Status:** Partially Implemented
-**Source:** PRODUCTION_ROADMAP.md - PHIL-004
+**Source:** docs/historical/plans/PRODUCTION_ROADMAP.md - PHIL-004
 
 ## Problem Description
 First-run consent gate is implemented at UI level (Android, iOS, WASM, CLI) but NOT enforced at Rust core API level. `initialize_identity()` can be called without consent verification.

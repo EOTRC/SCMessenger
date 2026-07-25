@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-RUN5_SCRIPT="${RUN5_SCRIPT:-$ROOT_DIR/run5.sh}"
+RUN5_SCRIPT="${RUN5_SCRIPT:-$SCRIPT_DIR/run5.sh}"
 DEPLOY_SCRIPT="$ROOT_DIR/scripts/deploy_to_device.sh"
 
 STEP_ID="adhoc"
@@ -40,7 +40,7 @@ Options:
   --require-receipt-gate      Treat receipt convergence verifier as required (default: warn-only)
   --android-diag=<path>       Use this Android diagnostics log for receipt gate
   --ios-diag=<path>           Use this iOS diagnostics log for receipt gate
-  --run5-script=<path>        Override run5 script path (default: ./run5.sh)
+  --run5-script=<path>        Override run5 script path (default: scripts/run5.sh)
   --output-root=<path>        Override output root (default: logs/live-verify)
   -h, --help                  Show this help text
 

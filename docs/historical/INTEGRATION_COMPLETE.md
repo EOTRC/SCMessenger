@@ -367,7 +367,7 @@ RUST_LOG=info ./target/release/sc-messenger
 
 1. **INTEGRATION_VERIFICATION.md** - Detailed phase-by-phase verification
 2. **INTEGRATION_TEST_PLAN.md** - Test suite documentation
-3. **verify_integration.sh** - Automated verification script
+3. **scripts/verify_integration.sh** - Automated verification script
 4. **integration_all_phases.rs** - Comprehensive test suite
 5. **INTEGRATION_COMPLETE.md** (this file) - Executive summary
 

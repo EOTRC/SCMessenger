@@ -21,14 +21,14 @@ fixed," this is part of the ~30-ticket remaining backlog.
 **Agent:** implementer
 **Budget:** 1800s (MIXED tier)
 **Phase:** v0.2.1 P1 wire dormant modules
-**Source:** PRODUCTION_ROADMAP.md P1.10 (Outbox flush on PeerDiscovered incomplete) + planfromclaudeforhermes 2 Phase C.4
+**Source:** docs/historical/plans/PRODUCTION_ROADMAP.md P1.10 (Outbox flush on PeerDiscovered incomplete) + planfromclaudeforhermes 2 Phase C.4
 **Depends on:** P1_CORE_001 (Drift wire provides the new envelope format)
 
 ---
 
 ## Verified Gap
 
-Per `PRODUCTION_ROADMAP.md` P1.10: "The CLI swarm loop has partial outbox drain logic, but mobile/WASM paths have NO outbox flush. Offlineonline delivery is unreliable without this."
+Per `docs/historical/plans/PRODUCTION_ROADMAP.md` P1.10: "The CLI swarm loop has partial outbox drain logic, but mobile/WASM paths have NO outbox flush. Offlineonline delivery is unreliable without this."
 
 `outbox` is in `core/src/store/outbox.rs`. CLI has it wired; Android (`MeshRepository.kt`) and WASM (`daemon_bridge.rs`) do not.
 

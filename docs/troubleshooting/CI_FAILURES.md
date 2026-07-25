@@ -541,8 +541,8 @@ If CI failures persist:
 
 1. **Check workflow logs**: Read full error messages
 2. **Reproduce locally**: Run same commands locally
-3. **Search issues**: https://github.com/Treystu/SCMessenger/issues
-4. **Ask for help**: https://github.com/Treystu/SCMessenger/discussions
+3. **Search issues**: https://github.com/Sovereign-Communication/SCMessenger/issues
+4. **Ask for help**: https://github.com/Sovereign-Communication/SCMessenger/discussions
 5. **Check GitHub Status**: https://www.githubstatus.com/
 
 ### Useful Commands

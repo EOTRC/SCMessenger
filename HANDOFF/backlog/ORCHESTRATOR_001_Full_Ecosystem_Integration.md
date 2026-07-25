@@ -18,10 +18,10 @@ Ensure the orchestrator is fully integrated with the entire SCMessenger ecosyste
 
 ### 2. Task Prioritization System
 - [ ] Verify orchestrator reads from all 4 master files:
-  - MASTER_BUG_TRACKER.md
+  - docs/historical/MASTER_BUG_TRACKER.md
   - REMAINING_WORK_TRACKING.md  
-  - FEATURE_PARITY.md
-  - WASM_TRANSPORT_PARITY_PLAN.md
+  - docs/FEATURE_PARITY.md
+  - docs/historical/plans/WASM_TRANSPORT_PARITY_PLAN.md
 - [ ] Confirm P0 bug prioritization is working
 - [ ] Test automatic task generation based on priority
 

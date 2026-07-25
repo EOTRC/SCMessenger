@@ -21,4 +21,4 @@
 ## Verification
 - [x] `cargo test --workspace --all-features` and `cargo build --target wasm32-unknown-unknown` both green
 - [x] `grep -rn "phase2_apis" core/` only in CHANGELOG
-- [x] One authoritative routing-reputation source asserted in ARCHITECTURE.md
+- [x] One authoritative routing-reputation source asserted in docs/ARCHITECTURE_MODULE_MAP.md

@@ -39,7 +39,7 @@ android/app/src/main/java/com/scmessenger/android/ui/viewmodels/MainViewModel.kt
 
 The 2 [VALIDATED] tickets in `HANDOFF/todo/` (`[VALIDATED]_P0_ANDROID_024_Identity_Generation_Reentrant_Guard.md` and `[VALIDATED]_P2_ANDROID_IDENTITY_QR_PRERENDER_AND_SCROLL.md`) document the same fixes in gateway-swarm-task form for the kanban.
 
-**NO commit by Overseer.** Commit gate is Lucas's per CLAUDE_CODE_PROTOCOL.md and MEMORY.md.
+**NO commit by Overseer.** Commit gate is Lucas's per CLAUDE_CODE_PROTOCOL.md and docs/historical/MEMORY.md.
 
 ---
 

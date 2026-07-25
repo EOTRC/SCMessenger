@@ -21,14 +21,14 @@ fixed," this is part of the ~30-ticket remaining backlog.
 **Agent:** worker
 **Budget:** 1200s (MIXED tier)
 **Phase:** v0.2.1 P1 iOS verification
-**Source:** PRODUCTION_ROADMAP.md 1.3 (background mode reliability) + planfromclaudeforhermes 2 Phase E.4
+**Source:** docs/historical/plans/PRODUCTION_ROADMAP.md 1.3 (background mode reliability) + planfromclaudeforhermes 2 Phase E.4
 **Depends on:** P1_IOS_001
 
 ---
 
 ## Verified Gap
 
-Per `PRODUCTION_ROADMAP.md` 1.3: "Verify background mode reliability for BLE/Multipeer".
+Per `docs/historical/plans/PRODUCTION_ROADMAP.md` 1.3: "Verify background mode reliability for BLE/Multipeer".
 
 iOS background BLE/Multipeer requires:
 1. `UIBackgroundModes` in Info.plist: `bluetooth-central`, `bluetooth-peripheral`, `multipeer`

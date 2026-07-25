@@ -31,10 +31,10 @@ fixed," this is part of the ~30-ticket remaining backlog.
 Audit of E drive on 2026-06-02 found:
 1. **Two Hermes installs.** `E:\.hermes` is the active one (gateway PID 1384, kimi-k2.6:cloud, full toolset). `E:\hermes-home` is stale (deepseek-v4-pro:cloud, missing platform toolsets, 2KB kanban.db, gateway.lock from 2026-05-26).
 2. **Ollama running with zero models.** 3 ollama.exe processes alive (PIDs 2440, 16664, 3436), `ollama list` returns empty, `E:\.ollama\models\` directory empty.
-3. **Stale Ollama path in MEMORY.md.** Line 22 references `/mnt/e/local_models`; actual path is `E:\.ollama\models\`.
+3. **Stale Ollama path in docs/historical/MEMORY.md.** Line 22 references `/mnt/e/local_models`; actual path is `E:\.ollama\models\`.
 4. **Missing Ollama config.** `E:\.ollama\config.json` does not exist; can't apply TurboQuant/OSCAR-KV principles.
 5. **HANDOFF state desync.** 4 stale batches in `HANDOFF\todo\REJECTED\`, 1 stale review item (32 days old), wiring task index claims 350 tasks but actual count is 0 in `todo/`.
-6. **Duplicate cargo home.** Both `E:\cargo-home` and `E:\cargohome` exist; only `E:\build-tools\.cargo` is the active one per MEMORY.md.
+6. **Duplicate cargo home.** Both `E:\cargo-home` and `E:\cargohome` exist; only `E:\build-tools\.cargo` is the active one per docs/historical/MEMORY.md.
 
 ## Scope
 
@@ -89,7 +89,7 @@ Edit `E:\.hermes\config.yaml`:
 - Add same 3 to `customs.custom_providers.local-ollama.models`
 - **DO NOT** change `model.default` (keep `kimi-k2.6:cloud`)
 
-### Part E: Update MEMORY.md (LOC: ~25)
+### Part E: Update docs/historical/MEMORY.md (LOC: ~25)
 
 Replace line 22 (Ollama models path) with the new model roster per `planfromclaudeforhermes` 3.4.
 

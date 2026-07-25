@@ -32,7 +32,7 @@ BACKENDS, not separate commands:
 Delegation is mandatory for every task and holds no matter which model is
 orchestrating (`docs/ORCHESTRATION.md` Section 0). The lake fleet — free/trial and
 cheap-paid providers, endpoints, quotas, tokens/$ — is in
-`SCM_UNIFIED_LAKE_ORCHESTRATION.md`.
+`docs/orchestration/SCM_UNIFIED_LAKE_ORCHESTRATION.md`.
 
 Cross-mode protocol (state machine, dispatcher, tier routing, commit
 authority, token-efficiency rules): `docs/ORCHESTRATION.md` — supersedes role

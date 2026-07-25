@@ -1,8 +1,8 @@
 # Security Policy
 
 Status: Active  
-Last updated: 2026-03-07  
-Version: v0.2.1 (alpha)
+Last updated: 2026-07-24  
+Version: v0.3.5 (alpha)
 
 SCMessenger is in active pre-release development. Security is a top priority, and we take all vulnerability reports seriously.
 
@@ -19,29 +19,28 @@ SCMessenger is in active pre-release development. Security is a top priority, an
 
 ## Supported Versions
 
+Released tags, in full: `v0.1.0`, `v0.1.1`, `v0.1.9`, `v0.2.1`, `v0.3.5`.
+
 | Version line | Supported for security reports | Status |
 | --- | --- | --- |
-| `main` / `v0.2.1` alpha baseline | :white_check_mark: | Active development |
-| Tagged `v0.2.0` releases | :white_check_mark: | Supported |
-| Tagged `v0.1.x` releases | :warning: | Historical only; verify against current `main` |
-| Older unsupported snapshots | :x: | Not supported |
-
-**Note:** `WS13` and `WS14` are planned follow-on workstreams for future releases; they are not the current alpha baseline.
+| `main` | Yes | Active development; fixes land here first |
+| `v0.3.5` | Yes | Current alpha baseline |
+| `v0.2.1` | Best effort | Superseded; please re-verify against current `main` |
+| `v0.1.x` (`v0.1.0`, `v0.1.1`, `v0.1.9`) | No | Historical only |
 
 ## Reporting a Vulnerability
 
 **IMPORTANT:** Please **do not** report security vulnerabilities in public GitHub issues.
 
-### Preferred Reporting Methods
+### How to Report
 
-1. **GitHub Security Advisories** (Recommended)
-   - Go to: https://github.com/Treystu/SCMessenger/security/advisories
-   - Click "Report a vulnerability"
-   - Fill out the advisory form with details
+GitHub's private vulnerability reporting is the only security reporting channel for this project. There is no security mailing address.
 
-2. **Private Maintainer Contact**
-   - If the advisory flow is unavailable, contact maintainers directly
-   - Use encrypted communication when possible
+1. Go to https://github.com/Sovereign-Communication/SCMessenger/security/advisories
+2. Click **Report a vulnerability**
+3. Fill out the advisory form with the details listed below and submit
+
+The report is visible only to you and the maintainers until an advisory is published. Private reporting is enabled on this repository and is free to use.
 
 ### What to Include
 
@@ -62,7 +61,7 @@ Please provide as much information as possible:
 
 ## Affected Components
 - Component: [e.g., core/crypto, android/app, iOS/SCMessenger]
-- Version: [e.g., v0.2.1, commit abc123]
+- Version: [e.g., v0.3.5, commit abc123]
 - Platform: [e.g., All, Android only, iOS only]
 
 ## Reproduction Steps
@@ -224,25 +223,27 @@ Security advisories include:
 
 SCMessenger is designed around end-to-end encryption, identity ownership, and infrastructure independence. However, as an alpha-stage project, the following caveats apply:
 
+Markers: `[OK]` implemented, `[PARTIAL]` implemented but incomplete or unreviewed, `[WIP]` in development, `[NO]` not implemented.
+
 **Cryptographic Design:**
-- ✅ Ed25519 for identity and signatures
-- ✅ X25519 ECDH for key exchange
-- ✅ XChaCha20-Poly1305 for encryption
-- ✅ Blake3 for hashing
-- ⚠️ Cryptographic implementation under active review
+- [OK] Ed25519 for identity and signatures
+- [OK] X25519 ECDH for key exchange
+- [OK] XChaCha20-Poly1305 for encryption
+- [OK] Blake3 for hashing
+- [PARTIAL] Cryptographic implementation under active review
 
 **Security Features:**
-- ✅ End-to-end encryption
-- ✅ Forward secrecy (planned)
-- ✅ Identity verification
-- ⚠️ Onion routing (in development)
-- ⚠️ Cover traffic (planned)
+- [OK] End-to-end encryption
+- [OK] Forward secrecy via double-ratchet session keys (`core/src/crypto/ratchet.rs`), including a post-quantum-augmented ratchet step
+- [OK] Identity verification
+- [WIP] Onion routing
+- [WIP] Cover traffic
 
 **Platform Security:**
-- ✅ Android: ProGuard/R8 enabled for release builds
-- ✅ iOS: App Transport Security (ATS) configured
-- ✅ WASM: Sandboxed execution
-- ⚠️ Secure key storage (platform-dependent)
+- [OK] Android: ProGuard/R8 enabled for release builds
+- [OK] iOS: App Transport Security (ATS) configured
+- [OK] WASM: Sandboxed execution
+- [PARTIAL] Secure key storage (platform-dependent)
 
 ### Known Limitations
 
@@ -256,8 +257,8 @@ SCMessenger is designed around end-to-end encryption, identity ownership, and in
 
 See current release and risk posture in:
 - [docs/CURRENT_STATE.md](docs/CURRENT_STATE.md)
-- [docs/MILESTONE_PLAN_V0.2.0_ALPHA.md](docs/MILESTONE_PLAN_V0.2.0_ALPHA.md)
-- [docs/V0.2.0_RESIDUAL_RISK_REGISTER.md](docs/V0.2.0_RESIDUAL_RISK_REGISTER.md)
+- [HANDOFF/V1_0_0_EXECUTION_PLAN.md](HANDOFF/V1_0_0_EXECUTION_PLAN.md) — sequencing toward v1.0.0
+- [docs/V0.2.0_RESIDUAL_RISK_REGISTER.md](docs/V0.2.0_RESIDUAL_RISK_REGISTER.md) — risk register, carried forward from the v0.2.0 cycle
 
 ## Security Best Practices
 
@@ -311,13 +312,12 @@ See current release and risk posture in:
 
 ### Security Team
 
-- **GitHub Security Advisories**: https://github.com/Treystu/SCMessenger/security/advisories
-- **Email**: security@scmessenger.org (if available)
+- **GitHub Security Advisories** (the only security reporting channel): https://github.com/Sovereign-Communication/SCMessenger/security/advisories
 
 ### General Support
 
 - **Bug Reports**: Use GitHub Issues (non-security bugs only)
-- **Questions**: Use GitHub Discussions
+- **Questions**: Use GitHub Issues (GitHub Discussions is not enabled on this repository)
 - **Support**: See [SUPPORT.md](SUPPORT.md)
 
 ---

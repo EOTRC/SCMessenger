@@ -8,7 +8,7 @@
 **Agent:** implementer
 **Budget:** 1200s (MIXED tier)
 **Phase:** v0.2.1 P0 Android stability
-**Source:** PRODUCTION_ROADMAP.md P1 Android partial (relay peers appearing as contacts) + planfromclaudeforhermes 2 Phase D.3
+**Source:** docs/historical/plans/PRODUCTION_ROADMAP.md P1 Android partial (relay peers appearing as contacts) + planfromclaudeforhermes 2 Phase D.3
 **Depends on:** P0_BUILD_001
 **Note:** Last commit (704338c0) added `isBootstrapRelayPeer()` dynamic detection. This task wires the UI filter that uses it.
 
@@ -16,7 +16,7 @@
 
 ## Verified Gap
 
-Bootstrap relay peers (used for NAT traversal) appear in the user's contacts list. They're infrastructure, not user contacts. Per `PRODUCTION_ROADMAP.md` 1.2: "Fix relay peers appearing as user contacts (add infrastructure flag/filter)".
+Bootstrap relay peers (used for NAT traversal) appear in the user's contacts list. They're infrastructure, not user contacts. Per `docs/historical/plans/PRODUCTION_ROADMAP.md` 1.2: "Fix relay peers appearing as user contacts (add infrastructure flag/filter)".
 
 HEAD `704338c0` added `isBootstrapRelayPeer()` that dynamically builds the known relay set from circuit breaker addresses + discovered relay peers. This task wires the UI filter.
 

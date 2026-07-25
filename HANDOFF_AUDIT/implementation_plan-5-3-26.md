@@ -5,7 +5,7 @@ Merge the Cartographer's pre-extracted code intelligence (`REPO_MAP.jsonl`) with
 ## Current State
 
 ### System A — Cartographer ("Perfection Engine")
-- [Run-Cartographer-Auto.ps1](file:///c:/Users/kanal/Documents/Github/SCMessenger/Run-Cartographer-Auto.ps1) scans the repo, chunks every logic file (350-line chunks), and dispatches each chunk to a local Ollama worker (qwen2.5-coder 1.5b/3b).
+- [scripts/Run-Cartographer-Auto.ps1](file:///c:/Users/kanal/Documents/Github/SCMessenger/Run-Cartographer-Auto.ps1) scans the repo, chunks every logic file (350-line chunks), and dispatches each chunk to a local Ollama worker (qwen2.5-coder 1.5b/3b).
 - Workers produce JSON chunks stored in `HANDOFF_AUDIT/output/*.jsonl`, aggregated into [REPO_MAP.jsonl](file:///c:/Users/kanal/Documents/Github/SCMessenger/HANDOFF_AUDIT/REPO_MAP.jsonl) (~228KB, 7542 lines, 203 output files).
 - Schema per chunk: `{ file, chunk, summary, structs_or_classes, imports, funcs[{name, line, calls_out_to}] }`
 - Quality gates: placeholder detection, line-number validation, summary length checks via [surgical_cleanup.py](file:///c:/Users/kanal/Documents/Github/SCMessenger/HANDOFF_AUDIT/surgical_cleanup.py).
@@ -195,7 +195,7 @@ When stale or missing files are detected, trigger a targeted re-index using the 
 
 #### [NEW] [targeted_reindex.ps1](file:///c:/Users/kanal/Documents/Github/SCMessenger/.claude/scripts/targeted_reindex.ps1)
 
-A lightweight variant of `Run-Cartographer-Auto.ps1` that re-indexes **specific files only**. Key differences from the full Cartographer:
+A lightweight variant of `scripts/Run-Cartographer-Auto.ps1` that re-indexes **specific files only**. Key differences from the full Cartographer:
 
 1. **Single-file targeting** — Accepts a comma-separated list of file paths instead of scanning the whole repo.
 2. **Purge-first** — Deletes existing output chunks and done tickets for the targeted files before re-indexing.
@@ -312,7 +312,7 @@ Before launching any agent that will touch source files:
 
 ---
 
-#### [MODIFY] [Run-Cartographer-Auto.ps1](file:///c:/Users/kanal/Documents/Github/SCMessenger/Run-Cartographer-Auto.ps1)
+#### [MODIFY] [scripts/Run-Cartographer-Auto.ps1](file:///c:/Users/kanal/Documents/Github/SCMessenger/Run-Cartographer-Auto.ps1)
 
 Add a post-completion hook at line 508 (after the "Swarm Audit Complete" message) to auto-build the index:
 
@@ -369,7 +369,7 @@ flowchart TD
     E --> H["Context injected into task file"]
     H --> I["Agent launched with rich context"]
     
-    J["Run-Cartographer-Auto.ps1 (Full Scan)"] --> K["HANDOFF_AUDIT/output/*.jsonl"]
+    J["scripts/Run-Cartographer-Auto.ps1 (Full Scan)"] --> K["HANDOFF_AUDIT/output/*.jsonl"]
     K --> L["REPO_MAP.jsonl"]
     K --> M["build_repo_index.py --full-rebuild"]
     M --> N["repo_map_index.json"]

@@ -58,6 +58,6 @@ graph TD
   - **Step 4.2 (Property-Based Tests)**: Integrated `proptest` assertions under `test_proptest_sync_reconciles_arbitrary_sets` inside [sync.rs](file:///c:/Users/kanal/Documents/Github/SCMessenger/core/src/drift/sync.rs) to verify set reconciliation correctness under arbitrary symmetric differences.
 
 ###  Phase 5: Canonical Docs & Polish (100% Complete)
-- **Status**: Verified against [ARCHITECTURE.md](file:///c:/Users/kanal/Documents/Github/SCMessenger/docs/ARCHITECTURE.md).
+- **Status**: Verified against [docs/ARCHITECTURE_MODULE_MAP.md](file:///c:/Users/kanal/Documents/Github/SCMessenger/docs/ARCHITECTURE.md).
 - **Milestones**:
   - Refactored the core system architecture documentation, detailing the hardened sync state machine, FxHashSet-based memory optimization, and WASM performance improvements.

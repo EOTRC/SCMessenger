@@ -177,7 +177,7 @@ cat android/app/build/test-results/testDebugUnitTest/TEST-com.scmessenger.androi
 
 Per handoff §2 Phase 4: "for every ticket that claims 'code change shipped' in the last 6 hours."
 
-- Last 6h commits (12h buffer to be safe): 8 commits, all in `HANDOFF/` or `API_EFFICIENCY_LEDGER.md` or `.claude/quota_state.json`. No code changes in the last 12h.
+- Last 6h commits (12h buffer to be safe): 8 commits, all in `HANDOFF/` or `docs/orchestration/API_EFFICIENCY_LEDGER.md` or `.claude/quota_state.json`. No code changes in the last 12h.
 - Last actual code commit on integration: `23174061` (2026-06-06 23:00 PT, "Merge fix/p0-android-024-identity and fix/p0-android-025-mdns-listener-collision, and align with sovereign philosophy"). 27h old.
 - The 2 SHIPPED tickets I moved to `done/` (P0_024 + P1_022) are verified: both fixes in `0fa8dea8` ("fix(android): re-entrancy guard on createIdentity + BLE peer cache cleanup"), merged at `23174061`. 3 source files: `MainViewModel.kt` (10 lines), `OnboardingScreen.kt` (5 lines), `BleScanner.kt` (11 lines). Per `HANDOFF/STATE/2026-06-05_ANDROID_P0_024_P1_022_BUILD_VERIFIED.md` the build was green at that time.
 - Worktrees `E:\SCMessenger-build-p0-024\` and `E:\SCMessenger-build-p0-025\` referenced by Hermes §4 — only p0-025 exists on disk and is an empty `android/` subdir. The actual fix commits are already on the main integration branch (the worktrees are stale mirrors). No additional verification needed.

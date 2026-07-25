@@ -91,7 +91,7 @@ docker run -it -p 9000:9000 scmessenger:latest scm start --port 9000
 docker compose -f docker/docker-compose.yml up -d --build
 
 # Verify connectivity
-./verify_simulation.sh
+scripts/verify_simulation.sh
 
 # Check node status
 docker exec -it scm-alice scm status

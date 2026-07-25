@@ -3,7 +3,7 @@
 **Priority:** P0 (Critical Release Blocker)
 **Platform:** iOS
 **Status:** Open
-**Source:** MASTER_BUG_TRACKER.md FIELD-BINARY-001
+**Source:** docs/historical/MASTER_BUG_TRACKER.md FIELD-BINARY-001
 
 ## Problem Description
 Field iOS binary version is stale vs current source hardening. Crash fixes exist in source but are not validated on deployed builds, preventing proper testing and validation of iOS functionality.
@@ -34,14 +34,14 @@ Deploy latest iOS binary containing WS12.22+ fixes and capture post-deploy crash
    - Document successful deployment and stability
 
 4. **Update Documentation**
-   - Update MASTER_BUG_TRACKER.md with deployment status
+   - Update docs/historical/MASTER_BUG_TRACKER.md with deployment status
    - Document binary version and build date
    - Capture evidence of crash-free operation
 
 ## Verification
 -  iOS binary deployed to all field devices
 -  No crashes observed in post-deploy testing  
--  MASTER_BUG_TRACKER.md updated with completion status
+-  docs/historical/MASTER_BUG_TRACKER.md updated with completion status
 -  Evidence captured and documented
 
 ## Priority

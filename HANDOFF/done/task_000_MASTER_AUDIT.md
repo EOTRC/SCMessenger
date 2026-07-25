@@ -67,7 +67,7 @@ Every validated task MUST include this block verbatim:
 ```
 ## WATCHDOG WARNING
 You are operating under a strict token budget as specified in the frontmatter Budget field.
-An OS-level watchdog (TaskGovernor.ps1) is monitoring your debug logs.
+An OS-level watchdog (scripts/TaskGovernor.ps1) is monitoring your debug logs.
 If you exceed this budget, your process will be terminated immediately.
 Optimize for minimal API calls. Batch your reads. Prefer targeted grep over full file reads.
 ```

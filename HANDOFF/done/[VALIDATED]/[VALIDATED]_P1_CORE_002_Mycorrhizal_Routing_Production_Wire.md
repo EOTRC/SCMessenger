@@ -28,7 +28,7 @@ fixed," this is part of the ~30-ticket remaining backlog.
 
 ## Verified Gap
 
-Per `PRODUCTION_ROADMAP.md` Module Status Matrix: "Routing:  Dormant,  Not wired".
+Per `docs/historical/plans/PRODUCTION_ROADMAP.md` Module Status Matrix: "Routing:  Dormant,  Not wired".
 
 Routing module: 12 files in `core/src/routing/` totaling ~5,170 LoC (adaptive_ttl, engine, global, local, multipath, negative_cache, neighborhood, optimized_engine, reputation, resume_prefetch, smart_retry, timeout_budget). All unit-tested.
 

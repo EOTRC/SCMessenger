@@ -21,14 +21,14 @@ fixed," this is part of the ~30-ticket remaining backlog.
 **Agent:** rust-coder
 **Budget:** 1800s (MIXED tier)
 **Phase:** v0.2.1 P0 security
-**Source:** PRODUCTION_ROADMAP.md P0.5 (Identity backup stores secret_key_hex in plaintext JSON) + planfromclaudeforhermes 2 Phase B.1
+**Source:** docs/historical/plans/PRODUCTION_ROADMAP.md P0.5 (Identity backup stores secret_key_hex in plaintext JSON) + planfromclaudeforhermes 2 Phase B.1
 **Depends on:** P0_BUILD_001 (test gate must be green)
 
 ---
 
 ## Verified Gap
 
-`IdentityBackupV1` serializes the Ed25519 secret key as raw hex in JSON. No passphrase encryption, no KDF. Per `PRODUCTION_ROADMAP.md` P0.5: "This is a critical security gap."
+`IdentityBackupV1` serializes the Ed25519 secret key as raw hex in JSON. No passphrase encryption, no KDF. Per `docs/historical/plans/PRODUCTION_ROADMAP.md` P0.5: "This is a critical security gap."
 
 Files involved:
 - `core/src/identity/backup.rs`  defines `IdentityBackupV1` struct

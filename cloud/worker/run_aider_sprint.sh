@@ -95,8 +95,8 @@ lint-cmd: 'cargo clippy --workspace -- -D warnings 2>&1 | tail -30'
 map-tokens: 2048
 map-refresh: auto
 read:
-  - ARCHITECTURE.md
-  - MEMORY.md
+  - docs/ARCHITECTURE_MODULE_MAP.md
+  - docs/historical/MEMORY.md
   - README.md
 CONF_EOF
 fi

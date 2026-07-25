@@ -3,7 +3,7 @@
 **Priority:** P1 (Core Functionality)
 **Platform:** Core/Rust
 **Status:** Dormant (Not Wired)
-**Source:** PRODUCTION_ROADMAP.md - Module Status Matrix
+**Source:** docs/historical/plans/PRODUCTION_ROADMAP.md - Module Status Matrix
 
 ## Problem Description
 Privacy modules (onion routing, cover traffic, padding, timing) are fully implemented but completely dormant - never called in production. This includes `privacy/onion.rs`, cover traffic, and timing obfuscation.

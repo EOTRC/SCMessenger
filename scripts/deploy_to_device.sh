@@ -102,10 +102,10 @@ deploy_ios() {
     # P5: Rebuild Rust Core + XCFramework before iOS app
     log_info "Rebuilding Rust core and updating XCFramework..."
     cd "$PROJECT_ROOT"
-    if [ -f "./rebuild_ios_core.sh" ]; then
-        ./rebuild_ios_core.sh
+    if [ -f "./scripts/rebuild_ios_core.sh" ]; then
+        ./scripts/rebuild_ios_core.sh
     else
-        log_warn "rebuild_ios_core.sh not found, skipping core rebuild..."
+        log_warn "scripts/rebuild_ios_core.sh not found, skipping core rebuild..."
     fi
     cd "$ios_dir"
 

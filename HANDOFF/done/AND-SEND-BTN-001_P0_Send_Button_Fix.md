@@ -3,7 +3,7 @@
 **Priority:** P0 (Critical)  
 **Platform:** Android
 **Status:** DONE
-**Source:** MASTER_BUG_TRACKER.md
+**Source:** docs/historical/MASTER_BUG_TRACKER.md
 **Completed:** 2026-04-15
 
 ## Problem Description

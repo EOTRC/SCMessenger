@@ -220,7 +220,7 @@ services:
 
 ## Deliverables & Checkpoints
 
-1. **Docker compose file** (farm-sim-compose.yml)
+1. **Docker compose file** (docker/farm-sim-compose.yml)
    - 7-service topology, all networks + netem profiles configured
    - Build: `docker-compose up -d`
 
@@ -255,7 +255,7 @@ services:
 ## Next Steps
 
 1. **Docker setup verification** (delegate to agent)
-   - Verify farm-sim-compose.yml structure
+   - Verify docker/farm-sim-compose.yml structure
    - Confirm all containers can build + start
    - Validate network isolation (bridge ≠ far-field ≠ dead-zone)
    - Check D-01 Farm API integration

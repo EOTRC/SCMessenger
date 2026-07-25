@@ -45,7 +45,7 @@ This document is the planning-first pass requested for `Treystu/SCMessenger`. It
 
 - Canonical-entry docs exist: `README.md`, `DOCUMENTATION.md`, `docs/DOCUMENT_STATUS_INDEX.md`, `docs/REPO_CONTEXT.md`, `docs/CURRENT_STATE.md`, and `REMAINING_WORK_TRACKING.md`.
 - Additional active execution docs also exist: `docs/MILESTONE_PLAN_V0.2.0_ALPHA.md`, `docs/V0.2.0_RESIDUAL_RISK_REGISTER.md`, `docs/TESTING_GUIDE.md`, `docs/PLATFORM_SUPPORT_MATRIX.md`, `docs/INTEROP_MATRIX_V0.2.0_ALPHA.md`, `docs/WS12.29_KNOWN_ISSUES_BURNDOWN_PLAN.md`, and `scripts/README.md`.
-- Many root-level docs remain mixed-status or audit-style artifacts: `INSTALL.md`, `NETWORK_TESTING.md`, `QUICKCONNECT.md`, `FEATURE_WORKFLOW.md`, `AUDIT_QUICK_REFERENCE.md`, `BRANCH_AUDIT_REPORT.md`, `AUDIT_RESOLUTIONS.md`, `PRODUCTION_READY.md`, `Latest_Updates.md`, `ANDROID_DISCOVERY_ISSUES.md`, `ANDROID_BUILD_RESOLUTION.md`, `FEATURE_PARITY.md`, `HANDOFF_NEARBY_PEERS.md`, and others.
+- Many root-level docs remain mixed-status or audit-style artifacts: `docs/INSTALL.md`, `NETWORK_TESTING.md`, `QUICKCONNECT.md`, `docs/FEATURE_WORKFLOW.md`, `AUDIT_QUICK_REFERENCE.md`, `docs/historical/audits/BRANCH_AUDIT_REPORT.md`, `AUDIT_RESOLUTIONS.md`, `PRODUCTION_READY.md`, `docs/historical/session-reports/Latest_Updates.md`, `ANDROID_DISCOVERY_ISSUES.md`, `ANDROID_BUILD_RESOLUTION.md`, `docs/FEATURE_PARITY.md`, `HANDOFF_NEARBY_PEERS.md`, and others.
 - `docs/historical/*` is populated and generally acting as the archive, but some newer audit-style documents still live in active root/doc locations.
 
 ### GitHub features in use
@@ -118,7 +118,7 @@ Missing or incomplete for a world-class public repo:
 | --- | --- | --- | --- | --- |
 | Canonical docs exist, but active navigation still mixes source-of-truth docs with audit artifacts and one-off plans. | High | `DOCUMENTATION.md` lists `docs/global_viability_audit.md` and `docs/implementation_cheatsheet_3.4.2026.md` alongside canonical current-state docs. | Readers cannot tell what is authoritative versus advisory. | Reduce canonical set to current-state + backlog + testing + repo-context docs; move audits/cheatsheets into supporting-audit classification. |
 | Entrypoint docs contain stale verified data. | High | `README.md` still shows a 2026-02-23 snapshot of `324 passed`; `docs/ARCHITECTURE.md` repeats `324 passed`; `docs/CURRENT_STATE.md` and `docs/TESTING_GUIDE.md` show `367 passed`. | New contributors and agents can trust the wrong baseline. | Refresh canonical entrypoints, then demote or rewrite stale supporting docs. |
-| Supporting and mixed-status docs still contain direct operational claims that should live in canonical docs. | High | `INSTALL.md`, `NETWORK_TESTING.md`, `QUICKCONNECT.md`, `FEATURE_WORKFLOW.md`, `AUDIT_QUICK_REFERENCE.md`, and `BRANCH_AUDIT_REPORT.md` all carry `[Needs Revalidation]` operational guidance. | Operators follow stale procedures; audit outputs masquerade as instructions. | Reclassify by purpose and rewrite only the runbooks that remain actively needed. |
+| Supporting and mixed-status docs still contain direct operational claims that should live in canonical docs. | High | `docs/INSTALL.md`, `NETWORK_TESTING.md`, `QUICKCONNECT.md`, `docs/FEATURE_WORKFLOW.md`, `AUDIT_QUICK_REFERENCE.md`, and `docs/historical/audits/BRANCH_AUDIT_REPORT.md` all carry `[Needs Revalidation]` operational guidance. | Operators follow stale procedures; audit outputs masquerade as instructions. | Reclassify by purpose and rewrite only the runbooks that remain actively needed. |
 | Doc-validation automation is too narrow. | Critical | `scripts/docs_sync_check.sh` validates headers for only 3 docs and link-checks only `README.md`, `DOCUMENTATION.md`, `docs/DOCUMENT_STATUS_INDEX.md`, and `docs/CURRENT_STATE.md`. | Drift in milestone, backlog, risk, contributor, and security docs can accumulate silently. | Expand doc-sync checks to cover the full canonical chain and reject absolute workstation paths. |
 | Some active docs contain machine-local absolute links. | High | `docs/V0.2.0_RESIDUAL_RISK_REGISTER.md` contains `/Users/...` file links in evidence sections. | Public docs are not portable and cannot be trusted outside one machine. | Convert all active-doc evidence links to repo-relative paths during execution pass. |
 
@@ -315,17 +315,17 @@ Do **not** use milestones for one-off automation noise or generic backlog dumpin
 - `docs/REPO_GITHUB_REALIGNMENT_FIRST_PASS_2026-03-07.md`
 
 #### Operational runbooks (keep only if revalidated)
-- `INSTALL.md`
+- `docs/INSTALL.md`
 - `QUICKCONNECT.md`
 - `NETWORK_TESTING.md`
-- `DOCKER_QUICKSTART.md`
+- `docs/platform/DOCKER_QUICKSTART.md`
 - `DOCKER_TEST_QUICKREF.md`
-- `GCP_DEPLOY_GUIDE.md`
-- `BOOTSTRAP.md`
+- `docs/ops/GCP_DEPLOY_GUIDE.md`
+- `docs/BOOTSTRAP.md`
 - `docs/RELAY_OPERATOR_GUIDE.md`
 - `docs/BOOTSTRAP_GOVERNANCE.md`
 - `docs/NAT_TRAVERSAL_GUIDE.md`
-- `FEATURE_WORKFLOW.md`
+- `docs/FEATURE_WORKFLOW.md`
 - component READMEs (`core/README.md`, `cli/README.md`, `mobile/README.md`, `wasm/README.md`, `android/README.md`, `iOS/README.md`)
 
 #### Contributor-facing guides (rewrite for clarity)
@@ -353,8 +353,8 @@ Do **not** use milestones for one-off automation noise or generic backlog dumpin
 - Root audit/history docs that should be archived or reclassified:
   - `AUDIT_QUICK_REFERENCE.md`
   - `AUDIT_RESOLUTIONS.md`
-  - `BRANCH_AUDIT_REPORT.md`
-  - `Latest_Updates.md`
+  - `docs/historical/audits/BRANCH_AUDIT_REPORT.md`
+  - `docs/historical/session-reports/Latest_Updates.md`
   - `PRODUCTION_READY.md`
   - `ANDROID_DISCOVERY_ISSUES.md`
   - `ANDROID_BUILD_RESOLUTION.md`
@@ -362,13 +362,13 @@ Do **not** use milestones for one-off automation noise or generic backlog dumpin
   - `GEMINI_UI_GUIDE.md`
   - `DRIFTNET_MESH_BLUEPRINT.md`
   - `INTEGRATION_VERIFICATION.md`
-  - `FEATURE_PARITY.md`
+  - `docs/FEATURE_PARITY.md`
 
 ### Docs to merge / remove / archive / rewrite
 
 - **Merge into canonical docs:** stale verification data from `README.md`, `docs/ARCHITECTURE.md`, `CONTRIBUTING.md`, and `SECURITY.md`.
-- **Archive or explicitly demote:** `docs/global_viability_audit.md`, `docs/implementation_cheatsheet_3.4.2026.md`, `AUDIT_QUICK_REFERENCE.md`, `BRANCH_AUDIT_REPORT.md`, `PRODUCTION_READY.md`.
-- **Rewrite as active runbooks:** `INSTALL.md`, `QUICKCONNECT.md`, `NETWORK_TESTING.md`.
+- **Archive or explicitly demote:** `docs/global_viability_audit.md`, `docs/implementation_cheatsheet_3.4.2026.md`, `AUDIT_QUICK_REFERENCE.md`, `docs/historical/audits/BRANCH_AUDIT_REPORT.md`, `PRODUCTION_READY.md`.
+- **Rewrite as active runbooks:** `docs/INSTALL.md`, `QUICKCONNECT.md`, `NETWORK_TESTING.md`.
 - **Rewrite contributor-facing:** `CONTRIBUTING.md`, `SECURITY.md`.
 - **Rewrite/replace agent docs:** `CLAUDE.md`, `SCMessengerSKILL.md`, `.github/workflows/README-SCM-TEST-WORKFLOW.md`.
 

@@ -106,7 +106,7 @@ Before finalizing any run or task completion, the following gates must pass:
 *   **iOS Path Casing**: Always refer to the iOS directory using an uppercase-I: `iOS/`. Lowercase `ios/` will fail path-governance checks during CI.
 *   **XCFramework Location**: Pre-compiled frameworks must reside at `iOS/SCMessengerCore.xcframework/`. Never place them in the root of the workspace.
 *   **No Root Python Scripts**: Python scripts are forbidden in the root directory; locate them under `scripts/`.
-*   **No Standalone mixed-state Files**: Always consult canonical documentation under `docs/` or `HANDOFF/` for the current execution state rather than relying solely on mixed-state files like `SCMessengerSKILL.md`.
+*   **No Standalone mixed-state Files**: Always consult canonical documentation under `docs/` or `HANDOFF/` for the current execution state rather than relying solely on mixed-state files like `docs/historical/SCMessengerSKILL.md`.
 
 ---
 

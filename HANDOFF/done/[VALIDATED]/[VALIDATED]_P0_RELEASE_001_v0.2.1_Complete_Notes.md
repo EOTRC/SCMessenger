@@ -102,11 +102,11 @@ Sovereign P2P messaging with full multi-transport routing, privacy (onion/cover/
 
 ##  Known Issues
 
-(Pulled from MASTER_BUG_TRACKER.md that are still open)
+(Pulled from docs/historical/MASTER_BUG_TRACKER.md that are still open)
 
 ##  Install
 
-(Pulled from INSTALL.md, current as of HEAD)
+(Pulled from docs/INSTALL.md, current as of HEAD)
 
 ##  Upgrade from v0.2.0
 

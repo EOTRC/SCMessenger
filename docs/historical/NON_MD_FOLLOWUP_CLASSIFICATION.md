@@ -262,7 +262,7 @@ Total files: **277**
 | `reference/shamir.ts` | `keep` | implementation/runtime source or required config |
 | `reference/storage.ts` | `keep` | implementation/runtime source or required config |
 | `reference/x3dh.ts` | `keep` | implementation/runtime source or required config |
-| `run_comprehensive_network_tests.sh` | `extract+keep` | operational policy/commands useful for canonical docs |
+| `scripts/run_comprehensive_network_tests.sh` | `extract+keep` | operational policy/commands useful for canonical docs |
 | `scripts/delete_merged_branches.sh` | `extract+keep` | operational policy/commands useful for canonical docs |
 | `scripts/deploy_gcp_node.sh` | `extract+keep` | operational policy/commands useful for canonical docs |
 | `scripts/get-node-info.sh` | `extract+keep` | operational policy/commands useful for canonical docs |
@@ -270,10 +270,10 @@ Total files: **277**
 | `scripts/scm.sh` | `extract+keep` | operational policy/commands useful for canonical docs |
 | `scripts/test_gcp_node.sh` | `extract+keep` | operational policy/commands useful for canonical docs |
 | `scripts/verify_branch_merges.sh` | `extract+keep` | operational policy/commands useful for canonical docs |
-| `test_network_scenarios.sh` | `extract+keep` | operational policy/commands useful for canonical docs |
+| `scripts/test_network_scenarios.sh` | `extract+keep` | operational policy/commands useful for canonical docs |
 | `ui/index.html` | `keep` | implementation/runtime source or required config |
-| `verify_integration.sh` | `extract+keep` | operational policy/commands useful for canonical docs |
-| `verify_simulation.sh` | `extract+keep` | operational policy/commands useful for canonical docs |
+| `scripts/verify_integration.sh` | `extract+keep` | operational policy/commands useful for canonical docs |
+| `scripts/verify_simulation.sh` | `extract+keep` | operational policy/commands useful for canonical docs |
 | `wasm/Cargo.toml` | `extract+keep` | operational policy/commands useful for canonical docs |
 | `wasm/src/connection_state.rs` | `keep` | implementation/runtime source or required config |
 | `wasm/src/lib.rs` | `keep` | implementation/runtime source or required config |

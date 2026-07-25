@@ -3,7 +3,7 @@
 **Priority:** P1 (Core Functionality)
 **Platform:** Core/Rust
 **Status:** Dormant (Not Wired)
-**Source:** PRODUCTION_ROADMAP.md - Module Status Matrix
+**Source:** docs/historical/plans/PRODUCTION_ROADMAP.md - Module Status Matrix
 
 ## Problem Description
 Mycorrhizal Routing (10 files in `core/src/routing/`) is fully unit-tested but completely dormant - not wired to production. Includes path selection, quality scoring, and transport optimization.

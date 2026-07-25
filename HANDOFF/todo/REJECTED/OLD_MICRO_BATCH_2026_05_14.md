@@ -51,8 +51,8 @@ Each task is <=50 LOC, <=600s budget, single-file scope where possible.
 - Budget: 60s
 - Model: gemini-3-flash-preview:cloud
 
-**MICRO-03:** Commit uncommitted TaskGovernor.ps1 + process_alive.sh + quota_state.json
-- Files: `TaskGovernor.ps1`, `.claude/scripts/process_alive.sh`, `.claude/quota_state.json`
+**MICRO-03:** Commit uncommitted scripts/TaskGovernor.ps1 + process_alive.sh + quota_state.json
+- Files: `scripts/TaskGovernor.ps1`, `.claude/scripts/process_alive.sh`, `.claude/quota_state.json`
 - Action: `git add` + commit
 - Budget: 60s
 - Model: gemini-3-flash-preview:cloud

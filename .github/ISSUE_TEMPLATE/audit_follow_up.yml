@@ -5,12 +5,12 @@ body:
   - type: markdown
     attributes:
       value: |
-        Use this for follow-up items from `docs/REPO_GITHUB_REALIGNMENT_FIRST_PASS_2026-03-07.md` or similar audit artifacts when the work is still current and actionable.
+        Use this to track a concrete follow-up item from an audit, security review, or realignment pass, when the work is still current and actionable. Cite the audit artifact you are working from and check that it has not been superseded (`docs/DOCUMENT_STATUS_INDEX.md` records document status; superseded artifacts live under `docs/historical/`).
   - type: input
     id: source_doc
     attributes:
       label: Source document/section
-      placeholder: "docs/REPO_GITHUB_REALIGNMENT_FIRST_PASS_2026-03-07.md §10"
+      placeholder: "path/to/audit-or-review-doc.md, section reference"
     validations:
       required: true
   - type: textarea

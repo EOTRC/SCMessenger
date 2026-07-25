@@ -21,14 +21,14 @@ fixed," this is part of the ~30-ticket remaining backlog.
 **Agent:** rust-coder
 **Budget:** 1200s (MIXED tier)
 **Phase:** v0.2.1 P0 security
-**Source:** PRODUCTION_ROADMAP.md P0.6 (No audit logging) + planfromclaudeforhermes 2 Phase B.2
+**Source:** docs/historical/plans/PRODUCTION_ROADMAP.md P0.6 (No audit logging) + planfromclaudeforhermes 2 Phase B.2
 **Depends on:** P0_BUILD_001
 
 ---
 
 ## Verified Gap
 
-Per `PRODUCTION_ROADMAP.md` P0.6: "No audit logging  Security-relevant events (identity operations, key operations, block/unblock actions) leave no tamper-evident audit trail."
+Per `docs/historical/plans/PRODUCTION_ROADMAP.md` P0.6: "No audit logging  Security-relevant events (identity operations, key operations, block/unblock actions) leave no tamper-evident audit trail."
 
 Note: `core/src/iron_core.rs` already has `export_audit_log` (L1447), `get_audit_log` (L1134), `get_audit_events_since` (L1138), `validate_audit_chain` (L1263)  per `HANDOFF/ACTIVE_LEDGER.md` "Wired" column. The gap is that the **identity operation sites don't call them**.
 

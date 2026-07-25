@@ -49,11 +49,11 @@ forward.
    PASSED — but the ledger doesn't reflect that, and `HANDOFF/done/` count
    in the plan (556) is from May.
 5. **Plan referenced `C:/Users/kanal/...` paths**; the real workspace is
-   `E:\SCMessenger-Github-Repo\SCMessenger\`. All `ORCHESTRATOR_DIRECTIVE.md`
+   `E:\SCMessenger-Github-Repo\SCMessenger\`. All `docs/orchestration/ORCHESTRATOR_DIRECTIVE.md`
    file:// URLs are stale (e.g., `AI_STANDARDS.md` link points to
    `C:/Users/kanal/...` which doesn't exist for the current user
    `SCMessenger`). Not blocking, but the directive file is misleading.
-6. **No `OllamaQuotaScraper.ps1` at the path in CLAUDE.md** (`E:\OllamaQuotaScraper.ps1`).
+6. **No `scripts/OllamaQuotaScraper.ps1` at the path in CLAUDE.md** (`E:\OllamaQuotaScraper.ps1`).
    It actually lives at `E:\SCMessenger-Github-Repo\SCMessenger\OllamaQuotaScraper.ps1`.
    CLAUDE.md path is stale.
 

@@ -21,14 +21,14 @@ fixed," this is part of the ~30-ticket remaining backlog.
 **Agent:** rust-coder
 **Budget:** 1200s (MIXED tier)
 **Phase:** v0.2.1 P0 security
-**Source:** PRODUCTION_ROADMAP.md P0.2 (No bounded retention enforcement) + planfromclaudeforhermes 2 Phase B.3
+**Source:** docs/historical/plans/PRODUCTION_ROADMAP.md P0.2 (No bounded retention enforcement) + planfromclaudeforhermes 2 Phase B.3
 **Depends on:** P0_BUILD_001
 
 ---
 
 ## Verified Gap
 
-Per `PRODUCTION_ROADMAP.md` P0.2: "StorageManager exists but `enforce_retention()` is never called automatically. sled databases will grow without bound. No compaction, no size limits, no corruption recovery."
+Per `docs/historical/plans/PRODUCTION_ROADMAP.md` P0.2: "StorageManager exists but `enforce_retention()` is never called automatically. sled databases will grow without bound. No compaction, no size limits, no corruption recovery."
 
 `StorageManager` is in `core/src/store/storage_manager.rs`. `enforce_retention()` exists but is dormant.
 

@@ -269,19 +269,19 @@ idevicesyslog | grep -i scmessenger
 xcrun simctl spawn booted log stream --predicate 'subsystem == "com.scmessenger"'
 ```
 
-### run5.sh Script
+### scripts/run5.sh Script
 
 **Purpose:** Test multiple nodes with fresh install
 
 ```bash
 # Run comprehensive test
-./run5.sh
+scripts/run5.sh
 
 # Check all nodes are running
 pgrep -l scmessenger
 
 # Collect logs from all nodes
-# (commands will depend on run5.sh implementation)
+# (commands will depend on scripts/run5.sh implementation)
 ```
 
 ## SUCCESS CRITERIA

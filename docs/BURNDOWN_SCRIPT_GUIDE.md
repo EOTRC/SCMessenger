@@ -451,7 +451,7 @@ jobs:
 
 ## See Also
 
-- [`MASTER_BUG_TRACKER.md`](../MASTER_BUG_TRACKER.md) - Centralized bug tracking
+- [`docs/historical/MASTER_BUG_TRACKER.md`](historical/MASTER_BUG_TRACKER.md) - Centralized bug tracking
 - [`REMAINING_WORK_TRACKING.md`](../REMAINING_WORK_TRACKING.md) - Work item tracking
 - [`scripts/README.md`](../scripts/README.md) - Scripts operations guide
 - [`docs/SCRIPT_HYGIENE_GUIDE.md`](./SCRIPT_HYGIENE_GUIDE.md) - Script development guidelines

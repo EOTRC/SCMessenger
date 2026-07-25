@@ -28,7 +28,7 @@
 
 ### Analysis of Current Run
 
-**Observed Behavior (from run5.sh logs):**
+**Observed Behavior (from scripts/run5.sh logs):**
 ```
  iOS Sim connecting to peers successfully
  Peer identification working
@@ -52,7 +52,7 @@
 
 ### Current Stability: GOOD
 - App has been running for 2+ hours without issues
-- Test harness (run5.sh) shows normal peer connectivity
+- Test harness (scripts/run5.sh) shows normal peer connectivity
 - No hangs or freezes detected
 - Memory usage: ~140MB (normal)
 
@@ -92,7 +92,7 @@
 
 ## Test Results (Current Session)
 
-**Test Harness:** run5.sh (5-node mesh)
+**Test Harness:** scripts/run5.sh (5-node mesh)
 **Duration:** 10+ minutes
 **iOS Status:**  PASS
 

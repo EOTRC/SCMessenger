@@ -246,7 +246,7 @@ Same 8 tasks as above (duplicate batch file). Process once, mark both done.
    ```
 2. Count remaining: `Get-ChildItem HANDOFF\todo -Filter *.md | Measure-Object`
 3. Move all completed batch files to `HANDOFF\done\`
-4. Update `FEATURE_PARITY.md` if any new API surface was added
+4. Update `docs/FEATURE_PARITY.md` if any new API surface was added
 5. Update `docs/CURRENT_STATE.md` with final verification timestamp
 
 ---
@@ -280,7 +280,7 @@ All of these must be true:
 - [ ] `cargo check --workspace` passes
 - [ ] `cargo clippy --workspace` passes
 - [ ] All sprint statuses above are `[x] DONE`
-- [ ] `FEATURE_PARITY.md` reflects true implemented state
+- [ ] `docs/FEATURE_PARITY.md` reflects true implemented state
 - [ ] `docs/CURRENT_STATE.md` updated with final timestamp
 
 ---

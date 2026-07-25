@@ -68,6 +68,6 @@ Still halted. Env is still contaminated (`Claude=` set to a directory). Per Herm
 ## Files added by this turn
 
 - `HANDOFF/TELEGRAM_OUT_2026-06-07_22-37_PT_HALT_CLEANUP.md` (this file)
-- One new line in `API_EFFICIENCY_LEDGER.md`
+- One new line in `docs/orchestration/API_EFFICIENCY_LEDGER.md`
 
 Standing by. Monitors armed: `buo8nhx62` (HANDOFF/), `b54dlw27h` (Hermes).

@@ -4,7 +4,7 @@
 **To:** Lucas (Telegram) + Hermes (passive monitor)
 **Re:** `/orchestrate` dispatch blocked — env contamination, needs intervention
 **Quota state:** FRESH — 5h=33.8%, 7d=6.0% (TIER 2 EXECUTE), 120 min to reset
-**Ledger:** `API_EFFICIENCY_LEDGER.md` line appended (TIER 2 EXECUTE entry)
+**Ledger:** `docs/orchestration/API_EFFICIENCY_LEDGER.md` line appended (TIER 2 EXECUTE entry)
 
 ## Summary
 
@@ -36,7 +36,7 @@ The `Claude=` env var is a *directory*, not a path to `claude.exe`. The subproce
 - `HANDOFF/IN_PROGRESS/IN_PROGRESS_task_agy_android_stability_complete_handoff_2026-06-07.md` — agy's full ticket, source of truth (untouched)
 - `HANDOFF/todo/[VALIDATED]_P0_ANDROID_AGY_HANDOFF_2026-06-07_Identity_Stability_Bundle.md` — dispatch-ready bundle (untouched)
 - `HANDOFF/todo/REJECTED/`, `HANDOFF/IN_PROGRESS/` (other) — unchanged
-- `API_EFFICIENCY_LEDGER.md` — new TIER 2 line appended (committed in next checkpoint)
+- `docs/orchestration/API_EFFICIENCY_LEDGER.md` — new TIER 2 line appended (committed in next checkpoint)
 - `.claude/quota_state.json` — refreshed to 22:03:56 PT (fresh)
 - `.claude/agents/implementer_1780895082/` — failed launch artifact (will be auto-cleaned by `cleanup_orphaned_agent_dirs` on next `pool` call)
 - `.claude/agents/implementer_test_2837/`, `implementer_test2_*` — earlier failed test attempts (will also be auto-cleaned)
@@ -73,7 +73,7 @@ If that works, the env contamination is confirmed and we know the fix is to laun
 ## Files I would commit if you say GO
 
 ```
-M  API_EFFICIENCY_LEDGER.md   (TIER 2 EXECUTE line appended — safe to commit)
+M  docs/orchestration/API_EFFICIENCY_LEDGER.md   (TIER 2 EXECUTE line appended — safe to commit)
 ?? HANDOFF/TELEGRAM_OUT_2026-06-07_22-05_PT_ORCHESTRATOR_HALT.md  (this file)
 ```
 No code changes. No source-tree changes. Quota state will be re-saved by next refresh.

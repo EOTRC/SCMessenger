@@ -310,7 +310,7 @@ These system logs typically indicate that Android is attempting an RFCOMM/L2CAP 
 
 ### Immediate Action Plan
 1. **Pull iOS Logs Manually:** Could you please pull the `diagnostics.txt` file manually through Xcode?
-   *(Window > Devices and Simulators > iPhone > Installed Apps > SCMessenger > ⚙️ settings gear > Download Container)*
+   *(Window > Devices and Simulators > iPhone > Installed Apps > SCMessenger > [CONFIG] settings gear > Download Container)*
    You can place it somewhere like the Desktop and let me know the path, and I'll analyze it immediately to see what iOS is doing during the Bluetooth failure.
 2. If BLE is failing silently on Android, you might try quickly toggling BLE completely off and on inside the SCMessenger app settings or device settings to cycle the GATT server state during these timeouts.
 
@@ -571,7 +571,7 @@ Android is still USB, but nothing it coming through to iOS via bluetooth (I have
 
 *Edited relevant file*
 
-*Viewed [SCMessengerSKILL.md](file:///Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger/SCMessengerSKILL.md) *
+*Viewed [docs/historical/SCMessengerSKILL.md](file:///Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger/SCMessengerSKILL.md) *
 
 *Searched filesystem*
 
@@ -595,7 +595,7 @@ Android is still USB, but nothing it coming through to iOS via bluetooth (I have
 
 This issue appears to be caused by how BLE addresses are stored and updated when transferring data to and from the local device contact database.
 
-I checked the [MeshRepository](cci:2://file:///Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger/android/app/src/main/java/com/scmessenger/android/data/MeshRepository.kt:33:0-3739:1) on both platforms, and when it successfully executes the [tryBleDelivery](cci:1://file:///Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger/android/app/src/main/java/com/scmessenger/android/data/MeshRepository.kt:2380:8-2402:9) routing function, it is supposed to log "✓ Delivery via BLE (target=...)". Since `grep` could not find this output in our log, it indicates [tryBleDelivery](cci:1://file:///Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger/android/app/src/main/java/com/scmessenger/android/data/MeshRepository.kt:2380:8-2402:9) isn't actually executing the BLE send payload!
+I checked the [MeshRepository](cci:2://file:///Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger/android/app/src/main/java/com/scmessenger/android/data/MeshRepository.kt:33:0-3739:1) on both platforms, and when it successfully executes the [tryBleDelivery](cci:1://file:///Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger/android/app/src/main/java/com/scmessenger/android/data/MeshRepository.kt:2380:8-2402:9) routing function, it is supposed to log "[OK] Delivery via BLE (target=...)". Since `grep` could not find this output in our log, it indicates [tryBleDelivery](cci:1://file:///Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger/android/app/src/main/java/com/scmessenger/android/data/MeshRepository.kt:2380:8-2402:9) isn't actually executing the BLE send payload!
 
 I went ahead and added additional, verbose logging directly inside [tryBleDelivery](cci:1://file:///Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger/android/app/src/main/java/com/scmessenger/android/data/MeshRepository.kt:2380:8-2402:9) on both platforms to trace:
 1. Is it even being called?
@@ -774,7 +774,7 @@ can you run it now please to be sure it works?
 
 *User accepted the command `tail -n 100 /tmp/ios_mesh_diagnostics_v3.log`*
 
-*User accepted the command `grep "✓ Direct delivery ACK from" android_logcat_v3.txt | tail -n 20`*
+*User accepted the command `grep "[OK] Direct delivery ACK from" android_logcat_v3.txt | tail -n 20`*
 
 *User accepted the command `grep -i "Message received" android_logcat_v3.txt | tail -n 20`*
 

@@ -51,7 +51,7 @@ Walk through the ENTIRE lifecycle of a debugging session. For each step, identif
 - What are the launch commands? Are they correct? (`adb shell am start`, `xcrun simctl launch`)
 
 **Step 4: Log Capture Phase**
-- Android: `adb logcat -v time` (multiple variants in `capture_both_logs.sh`, `comprehensive_log_capture.sh`, `live-smoke.sh`, `run5.sh`)
+- Android: `adb logcat -v time` (multiple variants in `capture_both_logs.sh`, `comprehensive_log_capture.sh`, `live-smoke.sh`, `scripts/run5.sh`)
 - iOS Simulator: `xcrun simctl spawn <udid> log stream --predicate 'subsystem == "com.scmessenger"'`
 - iOS Device: Requires `xcrun devicectl` or filtered syslog
 - GCP/OSX: File-based logging or stdout capture
@@ -162,7 +162,7 @@ Before starting, read these files in order:
 1. `docs/TESTING_GUIDE.md` — testing pyramid and validation ladder
 2. `docs/WS14_AUTOMATION_HANDOFF.md` — automation handoff patterns
 3. `scripts/README.md` — script inventory
-4. `run5.sh` — 5-node mesh harness
+4. `scripts/run5.sh` — 5-node mesh harness
 5. `scripts/run5-live-feedback.sh` — live verification loop
 6. `scripts/deploy_to_device.sh` — device deployment
 7. `scripts/live-smoke.sh` — live smoke test

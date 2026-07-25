@@ -728,7 +728,7 @@ Re-enabled v0.2.1 notification functionality that was previously rolled back to 
 
 ### Version Details
 - **Current Version**: v0.3.0
-- **GitHub Release**: https://github.com/Treystu/SCMessenger/releases/tag/v0.3.0
+- **GitHub Release**: https://github.com/Sovereign-Communication/SCMessenger/releases/tag/v0.3.0
 - **Android**: versionCode 8, versionName '0.3.0'
 - **iOS**: CFBundleShortVersionString 0.3.0, CFBundleVersion 6
 
@@ -915,7 +915,7 @@ Enhanced the Mesh Topology Visualizer to correctly display Bluetooth (BLE) links
 ### Key Changes
 
 - **Log Visualizer (`mesh.html`)**: Broadened BLE detection keywords and refined own-identity parsing.
-- **Run Script (`run5.sh`)**: Added proactive "Seeding node identities" step to inject identity markers for already-running nodes.
+- **Run Script (`scripts/run5.sh`)**: Added proactive "Seeding node identities" step to inject identity markers for already-running nodes.
 - **iOS Logging**: Expanded log stream predicates to capture `com.scmessenger` subsystem logs.
 
 ### Verification
@@ -1303,14 +1303,14 @@ ssh relay-server "journalctl -u scm-relay --since '5 minutes ago'"
     3. persisted BLE hint only if it is still fresh.
   - stale cached BLE hints are now explicitly skipped instead of silently outranking fresher runtime evidence.
 - **run5 collector ambiguity is now made explicit instead of hidden**:
-  - `run5.sh` now writes physical-device app console output to `ios-device.log` and host/system Bluetooth + Multipeer context to `ios-device-system.log`.
-  - if the physical iOS app is already running, `run5.sh` no longer relaunches it just to chase console output; the app log now records that passive app-console capture is unavailable in that case.
+  - `scripts/run5.sh` now writes physical-device app console output to `ios-device.log` and host/system Bluetooth + Multipeer context to `ios-device-system.log`.
+  - if the physical iOS app is already running, `scripts/run5.sh` no longer relaunches it just to chase console output; the app log now records that passive app-console capture is unavailable in that case.
   - the post-run visibility matrix now counts only peers whose own IDs were actually captured in the current log window.
   - unknown own IDs are now reported as collector gaps, not auto-counted as mesh failures.
   - duplicate/ambiguous own-ID inference is suppressed instead of being reused across multiple nodes.
 - **Operator ambiguity clarified**:
   - `ios_dev own id = unknown` now means "app startup identity lines were not captured in this log window," not "the iPhone was off mesh."
-  - transport evidence and visibility proof are now separate concepts in `run5.sh`; BLE/direct/relay activity can be real even when a node's local own ID was not captured.
+  - transport evidence and visibility proof are now separate concepts in `scripts/run5.sh`; BLE/direct/relay activity can be real even when a node's local own ID was not captured.
   - GCP relay log collection now grabs a recent `docker logs --tail 200` snapshot before incremental polling so short runs have a better chance of capturing headless startup identity context.
   - Android BLE fallback telemetry still has one remaining forensic ambiguity: accepted-send lines can retain the requested fallback MAC while `BleGattClient` callback success is emitted for the fresher connected GATT address actually used on the wire. Until that logging is unified, treat the callback-success address as authoritative.
 - **Verification**:
@@ -1941,7 +1941,7 @@ ssh relay-server "journalctl -u scm-relay --since '5 minutes ago'"
 
 ### WS12.25 Mega-Update Intake: Pending-Sync RCA + Node-Role Unification (2026-03-03 HST)
 
-- `run5.sh` and associated logs were reviewed for the reported "older pending messages remain undelivered while newer traffic still appears active" issue:
+- `scripts/run5.sh` and associated logs were reviewed for the reported "older pending messages remain undelivered while newer traffic still appears active" issue:
   - `logs/5mesh/latest/android.log` shows the same message ID (`1c24a6d2-5114-42cc-8545-01f9bfc41eb1`) repeatedly cycling `forwarding -> stored`, with `Core-routed delivery failed` / `Relay-circuit retry failed` and repeated flush triggers (`peer_discovered`, `peer_identified`).
   - `logs/pairwise/ios-debug-detach-20260303-014559/pending_outbox.json` shows multiple queued items for one canonical peer with persisted `routePeerId` and relay-circuit address hints tied to prior relay identities.
 - Root-cause conclusion (implementation confidence: medium-high):
@@ -2049,7 +2049,7 @@ ssh relay-server "journalctl -u scm-relay --since '5 minutes ago'"
   - `scripts/run5-live-feedback.sh`
 - Execution model:
   - deploy Android+iOS build updates (`scripts/deploy_to_device.sh both`, optional skip flag),
-  - run `run5.sh` with `--update` for synchronized 5-node capture,
+  - run `scripts/run5.sh` with `--update` for synchronized 5-node capture,
   - enforce sequential gates before accepting a step:
     - log-health gate (all five node logs),
     - directed pair-matrix gate (all node pairings),
@@ -2268,12 +2268,12 @@ ssh relay-server "journalctl -u scm-relay --since '5 minutes ago'"
   - `cargo check --workspace` — **pass**
   - `cd android && ANDROID_HOME=/path/to/android/sdk ./gradlew :app:generateUniFFIBindings` — **pass**
   - `bash iOS/copy-bindings.sh` — **pass**
-  - `ANDROID_HOME=/path/to/android/sdk bash ./verify_integration.sh` — **pass**
-  - `bash ./verify_simulation.sh` — **expected fail-fast** (Docker unavailable in this environment)
+  - `ANDROID_HOME=/path/to/android/sdk bash scripts/verify_integration.sh` — **pass**
+  - `bash scripts/verify_simulation.sh` — **expected fail-fast** (Docker unavailable in this environment)
   - `cd wasm && wasm-pack build` — **pass** (with release `wasm-opt` disabled in `wasm/Cargo.toml` for host compatibility)
 - Tooling adjustments in this wave:
-  - `verify_integration.sh` was modernized to delegate to canonical `scripts/verify_ws12_matrix.sh` instead of stale grep-pattern checks that were producing false negatives.
-  - `verify_simulation.sh` no longer attempts automatic Docker installation and now exits with explicit operator guidance when Docker is not preinstalled/running.
+  - `scripts/verify_integration.sh` was modernized to delegate to canonical `scripts/verify_ws12_matrix.sh` instead of stale grep-pattern checks that were producing false negatives.
+  - `scripts/verify_simulation.sh` no longer attempts automatic Docker installation and now exits with explicit operator guidance when Docker is not preinstalled/running.
 - Backlog-governance outcome:
   - Non-historical mixed docs were reclassified from open checkboxes to status-tagged guidance/roadmap entries (`FEATURE_WORKFLOW.md`, `AUDIT_QUICK_REFERENCE.md`, `FEATURE_PARITY.md`, `DRIFTNET_MESH_BLUEPRINT.md`, `docs/TRANSPORT_ARCHITECTURE.md`).
   - `docs/TRANSPORT_ARCHITECTURE.md` future enhancements now include explicit owner/milestone/gate/acceptance metadata.
@@ -2647,7 +2647,7 @@ Treat older status and audit report docs as historical snapshots unless they are
   - debounce beacon refreshes
   - reduce redundant peer-identification churn
   - maintain fully local-ledger-first send behavior
-- `run5.sh` was substantially upgraded in this conversation lineage:
+- `scripts/run5.sh` was substantially upgraded in this conversation lineage:
   - GCP collector prepends Docker snapshot logs before incremental polling
   - physical iOS logs split into app-console and system/Bluetooth context
   - live status ticker now surfaces Android peer/BLE counts and separate iOS app/system counts

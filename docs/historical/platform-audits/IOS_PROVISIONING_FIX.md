@@ -158,7 +158,7 @@ After renewing provisioning profile:
 1. **Rebuild Core Framework** (if needed):
    ```bash
    cd /Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger
-   ./rebuild_ios_core.sh
+   scripts/rebuild_ios_core.sh
    ```
 
 2. **Build iOS App**:

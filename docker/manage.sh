@@ -50,7 +50,7 @@ function run_local {
 
 function simulate {
     log_info "Running full simulation verification..."
-    ./verify_simulation.sh
+    ./scripts/verify_simulation.sh
 }
 
 function deploy {

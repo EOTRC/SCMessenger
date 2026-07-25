@@ -890,9 +890,9 @@ cp target/release/scmessenger-cli build2
 
 # Compare (excluding timestamps)
 if diff <(sha256sum build1) <(sha256sum build2); then
-    echo "✓ Builds are reproducible"
+    echo "[OK] Builds are reproducible"
 else
-    echo "✗ Builds differ"
+    echo "[FAIL] Builds differ"
     exit 1
 fi
 ```
@@ -957,7 +957,7 @@ cd wasm
 npm version $VERSION --no-git-tag-version
 cd ..
 
-echo "✓ Version synced to $VERSION"
+echo "[OK] Version synced to $VERSION"
 ```
 
 ```bash
@@ -1006,7 +1006,7 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?$ ]]; then
     exit 1
 fi
 
-echo "✓ Tag $TAG is valid"
+echo "[OK] Tag $TAG is valid"
 ```
 
 
@@ -1069,7 +1069,7 @@ echo "Auditing unsafe Rust code..."
 UNSAFE_BLOCKS=$(rg -n 'unsafe\s*\{' core/src mobile/src --no-heading)
 
 if [[ -z "$UNSAFE_BLOCKS" ]]; then
-    echo "✓ No unsafe blocks found"
+    echo "[OK] No unsafe blocks found"
     exit 0
 fi
 
@@ -1086,11 +1086,11 @@ while IFS= read -r line; do
 done <<< "$UNSAFE_BLOCKS"
 
 if [[ $FAILED -eq 1 ]]; then
-    echo "✗ Some unsafe blocks lack SAFETY comments"
+    echo "[FAIL] Some unsafe blocks lack SAFETY comments"
     exit 1
 fi
 
-echo "✓ All unsafe blocks have SAFETY comments"
+echo "[OK] All unsafe blocks have SAFETY comments"
 ```
 
 ```bash
@@ -1117,7 +1117,7 @@ if rg -i 'password\s*=\s*["\']' core/src android/app/src iOS/SCMessenger; then
     exit 1
 fi
 
-echo "✓ Platform security checks passed"
+echo "[OK] Platform security checks passed"
 ```
 
 **Security Audit Log**:
@@ -1206,7 +1206,7 @@ jobs:
       - name: Check for trailing whitespace
         run: |
           if git diff --check HEAD^; then
-            echo "✓ No trailing whitespace"
+            echo "[OK] No trailing whitespace"
           else
             echo "ERROR: Trailing whitespace found"
             exit 1
@@ -1235,7 +1235,7 @@ jobs:
           if [[ -f .github/CODEOWNERS ]]; then
             # Basic syntax check
             if grep -qE '^\s*#|^\s*$|^[^\s]+\s+@' .github/CODEOWNERS; then
-              echo "✓ CODEOWNERS syntax valid"
+              echo "[OK] CODEOWNERS syntax valid"
             else
               echo "ERROR: CODEOWNERS has invalid syntax"
               exit 1
@@ -1343,13 +1343,13 @@ if [[ ! -f android/release.keystore ]]; then
         -keypass "$KEY_PASSWORD" \
         -dname "CN=SCMessenger, OU=Development, O=SC Team, L=City, ST=State, C=US"
     
-    echo "✓ Keystore generated at android/release.keystore"
-    echo "⚠️  IMPORTANT: Back up this keystore securely!"
+    echo "[OK] Keystore generated at android/release.keystore"
+    echo "[WARNING] IMPORTANT: Back up this keystore securely!"
 fi
 
 # Encode keystore for GitHub Secrets
 base64 android/release.keystore > android/release.keystore.base64
-echo "✓ Base64-encoded keystore saved to android/release.keystore.base64"
+echo "[OK] Base64-encoded keystore saved to android/release.keystore.base64"
 echo "Add this to GitHub Secrets as ANDROID_KEYSTORE_BASE64"
 ```
 
@@ -1375,13 +1375,13 @@ security export -k ~/Library/Keychains/login.keychain-db \
 
 # Encode for GitHub Secrets
 base64 ios_certificate.p12 > ios_certificate.p12.base64
-echo "✓ Certificate exported and encoded"
+echo "[OK] Certificate exported and encoded"
 echo "Add ios_certificate.p12.base64 to GitHub Secrets as IOS_CERTIFICATE_BASE64"
 
 # Export provisioning profile
 cp ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision profile.mobileprovision
 base64 profile.mobileprovision > profile.mobileprovision.base64
-echo "✓ Provisioning profile encoded"
+echo "[OK] Provisioning profile encoded"
 echo "Add profile.mobileprovision.base64 to GitHub Secrets as IOS_PROVISIONING_PROFILE_BASE64"
 ```
 
@@ -1429,7 +1429,7 @@ wasm-opt -Oz pkg/scmessenger_wasm_bg.wasm -o pkg/scmessenger_wasm_bg.wasm
 ORIGINAL_SIZE=$(stat -f%z pkg/scmessenger_wasm_bg.wasm.bak 2>/dev/null || echo "unknown")
 OPTIMIZED_SIZE=$(stat -f%z pkg/scmessenger_wasm_bg.wasm)
 
-echo "✓ WASM optimized"
+echo "[OK] WASM optimized"
 echo "Original size: $ORIGINAL_SIZE bytes"
 echo "Optimized size: $OPTIMIZED_SIZE bytes"
 ```
@@ -1668,7 +1668,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        ⚠️ **IMPORTANT**: For serious security vulnerabilities, please email security@scmessenger.org instead of creating a public issue.
+        [WARNING] **IMPORTANT**: For serious security vulnerabilities, use GitHub private vulnerability reporting (Security > Advisories > Report a vulnerability) instead of creating a public issue.
         
         For minor security concerns, you can use this template.
   
@@ -1844,7 +1844,7 @@ Thank you for your interest in contributing to SCMessenger! This document provid
 
 ## Code of Conduct
 
-This project adheres to a Code of Conduct. By participating, you are expected to uphold this code. Please report unacceptable behavior to conduct@scmessenger.org.
+This project adheres to a Code of Conduct. By participating, you are expected to uphold this code. Please report unacceptable behavior via the private reporting channel described in CODE_OF_CONDUCT.md.
 
 ## Getting Started
 
@@ -1952,7 +1952,7 @@ Releases are automated via GitHub Actions when version tags are pushed. See `doc
 ## Getting Help
 - GitHub Discussions for questions
 - GitHub Issues for bugs and features
-- Email support@scmessenger.org for general inquiries
+- Open a GitHub issue for general inquiries (see SUPPORT.md)
 
 ## License
 By contributing, you agree that your contributions will be licensed under the MIT License.
@@ -1981,7 +1981,7 @@ Examples of unacceptable behavior:
 - Other conduct which could reasonably be considered inappropriate
 
 ## Enforcement
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to conduct@scmessenger.org. All complaints will be reviewed and investigated promptly and fairly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported via the private reporting channel described in CODE_OF_CONDUCT.md. All complaints will be reviewed and investigated promptly and fairly.
 
 ## Attribution
 This Code of Conduct is adapted from the Contributor Covenant, version 2.1.
@@ -2458,9 +2458,9 @@ jobs:
           
           # Run path filter logic
           if git diff --name-only HEAD | grep -q '^core/'; then
-            echo "✓ Core path detected"
+            echo "[OK] Core path detected"
           else
-            echo "✗ Core path not detected"
+            echo "[FAIL] Core path not detected"
             exit 1
           fi
   
@@ -2479,9 +2479,9 @@ jobs:
       - name: Verify cache exists
         run: |
           if [[ -d target/ ]]; then
-            echo "✓ Cache populated"
+            echo "[OK] Cache populated"
           else
-            echo "✗ Cache not populated"
+            echo "[FAIL] Cache not populated"
             exit 1
           fi
 ```
@@ -2510,9 +2510,9 @@ jobs:
       - name: Verify binary exists
         run: |
           if [[ -f target/release/scmessenger-cli ]] || [[ -f target/release/scmessenger-cli.exe ]]; then
-            echo "✓ Binary built successfully"
+            echo "[OK] Binary built successfully"
           else
-            echo "✗ Binary not found"
+            echo "[FAIL] Binary not found"
             exit 1
           fi
 ```
@@ -2536,7 +2536,7 @@ sed -i 's/version = "0.2.1"/version = "0.2.2"/' Cargo.toml
 # 3. Verify sync
 VERSION=$(grep 'versionName' android/build.gradle | sed "s/.*'\(.*\)'.*/\1/")
 if [[ "$VERSION" != "0.2.2" ]]; then
-    echo "✗ Version sync failed"
+    echo "[FAIL] Version sync failed"
     exit 1
 fi
 
@@ -2551,11 +2551,11 @@ git tag v0.2.2
 
 # 7. Verify changelog
 if ! grep -q "## Features" CHANGELOG.md; then
-    echo "✗ Changelog generation failed"
+    echo "[FAIL] Changelog generation failed"
     exit 1
 fi
 
-echo "✓ Release flow test passed"
+echo "[OK] Release flow test passed"
 ```
 
 **Security Scan Simulation**:
@@ -2574,7 +2574,7 @@ VULN_COUNT=$(jq '.vulnerabilities.count' audit_report.json)
 
 # 3. Verify reporting
 if [[ $VULN_COUNT -gt 0 ]]; then
-    echo "⚠️  $VULN_COUNT vulnerabilities detected"
+    echo "[WARNING] $VULN_COUNT vulnerabilities detected"
     # In real workflow, this would create GitHub issue
 fi
 
@@ -2583,11 +2583,11 @@ gitleaks detect --no-git --source . --report-path gitleaks_report.json
 
 # 5. Verify no secrets
 if [[ -f gitleaks_report.json ]] && [[ $(jq length gitleaks_report.json) -gt 0 ]]; then
-    echo "✗ Secrets detected"
+    echo "[FAIL] Secrets detected"
     exit 1
 fi
 
-echo "✓ Security scan test passed"
+echo "[OK] Security scan test passed"
 ```
 
 #### 4. Smoke Tests
@@ -2603,24 +2603,24 @@ echo "Validating configurations..."
 # Validate GitHub Actions workflows
 for workflow in .github/workflows/*.yml; do
     if ! yamllint "$workflow"; then
-        echo "✗ Invalid YAML: $workflow"
+        echo "[FAIL] Invalid YAML: $workflow"
         exit 1
     fi
 done
 
 # Validate deny.toml
 if ! cargo deny check --config deny.toml; then
-    echo "✗ Invalid deny.toml"
+    echo "[FAIL] Invalid deny.toml"
     exit 1
 fi
 
 # Validate rust-toolchain.toml
 if ! rustup show | grep -q "1.75.0"; then
-    echo "✗ Rust toolchain mismatch"
+    echo "[FAIL] Rust toolchain mismatch"
     exit 1
 fi
 
-echo "✓ Configuration validation passed"
+echo "[OK] Configuration validation passed"
 ```
 
 #### 5. Manual Testing Checklist

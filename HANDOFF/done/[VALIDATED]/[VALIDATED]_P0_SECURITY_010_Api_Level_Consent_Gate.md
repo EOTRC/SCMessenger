@@ -21,14 +21,14 @@ fixed," this is part of the ~30-ticket remaining backlog.
 **Agent:** rust-coder
 **Budget:** 1200s (MIXED tier)
 **Phase:** v0.2.1 P0 security
-**Source:** PRODUCTION_ROADMAP.md P0.1 (Consent gate is UI-only) + planfromclaudeforhermes 2 Phase B.4
+**Source:** docs/historical/plans/PRODUCTION_ROADMAP.md P0.1 (Consent gate is UI-only) + planfromclaudeforhermes 2 Phase B.4
 **Depends on:** P0_BUILD_001
 
 ---
 
 ## Verified Gap
 
-Per `PRODUCTION_ROADMAP.md` P0.1: "Consent gate blocks `initialize_identity()` in Rust core until platform confirms consent (currently consent is UI-only, not gated at API level)."
+Per `docs/historical/plans/PRODUCTION_ROADMAP.md` P0.1: "Consent gate blocks `initialize_identity()` in Rust core until platform confirms consent (currently consent is UI-only, not gated at API level)."
 
 UI-side consent exists in:
 - Android: `OnboardingScreen.kt` with `ConsentView`

@@ -1,18 +1,19 @@
 # SCMessenger Copilot Instructions
 
 Status: Active
-Last updated: 2026-04-11
+Last updated: 2026-07-24
 
-## ⚠️ CRITICAL - Read First
+## [CRITICAL] Read First
 
 **ALL AGENTS MUST READ:** `.github/COPILOT_AGENT_INSTRUCTIONS.md`
 
 This document contains STRICT repository rules for file storage, temp files, and work organization.
 
 **Key Rules:**
-- ❌ NEVER use `/tmp` outside repo
-- ✅ ALWAYS use `/tmp/` at repo root for temp work
-- All session files go in repo `/tmp/` subdirectory
+- [NO] Never use the system `/tmp` outside the repo
+- [OK] Always use the repo-local `tmp/` directory for temp work
+- All session files go in the repo-local `tmp/` subdirectory
+- No emoji anywhere in this repo (`.claude/rules/no-emojis.md`, hook-enforced) -- use plain-text tags such as `[OK]`, `[WARNING]`, `[FAIL]`
 - See `.github/COPILOT_AGENT_INSTRUCTIONS.md` for full details
 
 ---
@@ -26,13 +27,13 @@ Use these repository sources in order:
 3. `docs/DOCUMENT_STATUS_INDEX.md`
 4. `docs/CURRENT_STATE.md`
 5. `REMAINING_WORK_TRACKING.md`
-6. `docs/MILESTONE_PLAN_V0.2.0_ALPHA.md`
+6. `HANDOFF/V1_0_0_EXECUTION_PLAN.md`
 7. `docs/V0.2.0_RESIDUAL_RISK_REGISTER.md`
 
 Current release line:
 
-- `v0.2.0` is the active alpha baseline.
-- `WS13` and `WS14` are currently planned `v0.2.1` follow-up scope.
+- `v0.3.5` is the active alpha baseline.
+- Work toward `v1.0.0` is sequenced by `HANDOFF/V1_0_0_EXECUTION_PLAN.md` (two-phase DAG).
 
 Contributor-routing surfaces:
 
@@ -51,10 +52,10 @@ Do not treat mixed or historical docs as current source of truth unless the cano
 
 ## File Storage Rules (STRICT)
 
-⚠️ **This is now enforced via `.github/COPILOT_AGENT_INSTRUCTIONS.md`**
+**This is enforced via `.github/COPILOT_AGENT_INSTRUCTIONS.md`**
 
-- ❌ Never store session files outside the repo
-- ❌ Never use system `/tmp`, `/var/tmp`, etc.
-- ✅ Always use repo-local `/tmp/` subdirectory
+- [NO] Never store session files outside the repo
+- [NO] Never use system `/tmp`, `/var/tmp`, etc.
+- [OK] Always use the repo-local `tmp/` subdirectory
 - Example: `tmp/session_logs/`
 

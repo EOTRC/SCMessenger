@@ -92,7 +92,7 @@ pacman -S mingw-w64-x86_64-toolchain mingw-w64-x86_64-openssl
 
 ```bash
 # Clone repository
-git clone https://github.com/Treystu/SCMessenger.git
+git clone https://github.com/Sovereign-Communication/SCMessenger.git
 cd SCMessenger
 
 # Build CLI
@@ -106,7 +106,7 @@ ls -lh target/release/scmessenger-cli
 
 ```bash
 # Clone repository
-git clone https://github.com/Treystu/SCMessenger.git
+git clone https://github.com/Sovereign-Communication/SCMessenger.git
 cd SCMessenger
 
 # Build CLI
@@ -121,7 +121,7 @@ ls -lh target/release/scmessenger-cli
 **PowerShell:**
 ```powershell
 # Clone repository
-git clone https://github.com/Treystu/SCMessenger.git
+git clone https://github.com/Sovereign-Communication/SCMessenger.git
 cd SCMessenger
 
 # Build CLI
@@ -134,7 +134,7 @@ dir target\release\scmessenger-cli.exe
 **Git Bash:**
 ```bash
 # Clone repository
-git clone https://github.com/Treystu/SCMessenger.git
+git clone https://github.com/Sovereign-Communication/SCMessenger.git
 cd SCMessenger
 
 # Build CLI
@@ -532,14 +532,14 @@ upx --best --lzma target/release/scmessenger-cli
 
 - [Rust Users Forum](https://users.rust-lang.org/)
 - [Rust Discord](https://discord.gg/rust-lang)
-- [SCMessenger GitHub Issues](https://github.com/Treystu/SCMessenger/issues)
-- [SCMessenger GitHub Discussions](https://github.com/Treystu/SCMessenger/discussions)
+- [SCMessenger GitHub Issues](https://github.com/Sovereign-Communication/SCMessenger/issues)
+- [SCMessenger GitHub Discussions](https://github.com/Sovereign-Communication/SCMessenger/discussions)
 
 ## Getting Help
 
 - Check [Troubleshooting Guide](../troubleshooting/BUILD_ISSUES.md)
-- Search [GitHub Issues](https://github.com/Treystu/SCMessenger/issues)
-- Ask in [GitHub Discussions](https://github.com/Treystu/SCMessenger/discussions)
+- Search [GitHub Issues](https://github.com/Sovereign-Communication/SCMessenger/issues)
+- Ask in [GitHub Discussions](https://github.com/Sovereign-Communication/SCMessenger/discussions)
 - See [CONTRIBUTING.md](../../CONTRIBUTING.md) for contribution guidelines
 
 ---

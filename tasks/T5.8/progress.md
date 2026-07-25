@@ -13,11 +13,11 @@
 1. Root `README.md` (architecture diagram from the audit: bridge -> IronCore -> message/crypto/routing/transport/drift/store layers; build prerequisites incl. NDK env var from T5.2)
 2. `LICENSE` (MIT)
 3. `CHANGELOG.md` seeded at 0.3.4
-4. `ARCHITECTURE.md` mapping every subsystem to its files — this is the swarm agents' navigation chart
+4. `docs/ARCHITECTURE_MODULE_MAP.md` mapping every subsystem to its files — this is the swarm agents' navigation chart
 
 ## Edge Cases
 - Keep claims accurate to code (no aspirational features — acoustic is explicitly listed as post-v1.0 in a roadmap section)
 
 ## Verification
-- [x] `test -f README.md LICENSE CHANGELOG.md ARCHITECTURE.md`
-- [x] Every path referenced in ARCHITECTURE.md exists (scriptable link-check)
+- [x] `test -f README.md LICENSE CHANGELOG.md docs/ARCHITECTURE_MODULE_MAP.md`
+- [x] Every path referenced in docs/ARCHITECTURE_MODULE_MAP.md exists (scriptable link-check)

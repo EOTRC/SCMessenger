@@ -11,7 +11,7 @@ Current release line: `v0.2.0` is the active alpha baseline. Planned workstreams
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                          TESTING PYRAMID                                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  Level 4: Full Mesh Integration (run5.sh)                                  │
+│  Level 4: Full Mesh Integration (scripts/run5.sh)                                  │
 │    └── 5-node live topology: GCP + OSX + Android + iOS Device + iOS Sim   │
 │         Tests: peer discovery, relay circuits, transport diversity          │
 ├─────────────────────────────────────────────────────────────────────────────┤
@@ -156,9 +156,9 @@ For validating fixes with strict phase gates:
 ## Level 4: Full 5-Node Mesh Test
 
 ```bash
-./run5.sh --time=5           # Run for 5 minutes (default)
-./run5.sh --time=10 --update # 10 minutes, rebuild headless nodes
-./run5.sh --restore-on-exit  # Stop nodes we launched on exit
+scripts/run5.sh --time=5           # Run for 5 minutes (default)
+scripts/run5.sh --time=10 --update # 10 minutes, rebuild headless nodes
+scripts/run5.sh --restore-on-exit  # Stop nodes we launched on exit
 ```
 
 **Nodes:**

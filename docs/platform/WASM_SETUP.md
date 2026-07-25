@@ -65,7 +65,7 @@ This guide covers setting up your development environment for SCMessenger WASM d
 ### 1. Clone Repository
 
 ```bash
-git clone https://github.com/Treystu/SCMessenger.git
+git clone https://github.com/Sovereign-Communication/SCMessenger.git
 cd SCMessenger/wasm
 ```
 
@@ -462,13 +462,13 @@ wasm-opt -Oz pkg/scmessenger_wasm_bg.wasm -o pkg/scmessenger_wasm_bg.wasm
 
 - [Rust and WebAssembly Working Group](https://github.com/rustwasm)
 - [WebAssembly Community](https://webassembly.org/community/)
-- [SCMessenger GitHub Issues](https://github.com/Treystu/SCMessenger/issues)
+- [SCMessenger GitHub Issues](https://github.com/Sovereign-Communication/SCMessenger/issues)
 
 ## Getting Help
 
 - Check [Troubleshooting Guide](../troubleshooting/BUILD_ISSUES.md)
-- Search [GitHub Issues](https://github.com/Treystu/SCMessenger/issues)
-- Ask in [GitHub Discussions](https://github.com/Treystu/SCMessenger/discussions)
+- Search [GitHub Issues](https://github.com/Sovereign-Communication/SCMessenger/issues)
+- Ask in [GitHub Discussions](https://github.com/Sovereign-Communication/SCMessenger/discussions)
 - See [CONTRIBUTING.md](../../CONTRIBUTING.md) for contribution guidelines
 
 ---

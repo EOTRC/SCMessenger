@@ -175,7 +175,7 @@ cd /path/to/SCMessenger
 ls -la Cargo.toml
 
 # If missing, re-clone repository
-git clone https://github.com/Treystu/SCMessenger.git
+git clone https://github.com/Sovereign-Communication/SCMessenger.git
 ```
 
 ## Android Build Issues
@@ -592,8 +592,8 @@ xcode-select -p
 If your issue isn't listed here:
 
 1. **Check logs**: Look for specific error messages
-2. **Search issues**: https://github.com/Treystu/SCMessenger/issues
-3. **Ask for help**: https://github.com/Treystu/SCMessenger/discussions
+2. **Search issues**: https://github.com/Sovereign-Communication/SCMessenger/issues
+3. **Ask for help**: https://github.com/Sovereign-Communication/SCMessenger/discussions
 4. **Read docs**: Check platform-specific setup guides in `docs/platform/`
 
 ### Useful Commands for Debugging

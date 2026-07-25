@@ -12,7 +12,7 @@ Scope: Core + Android + iOS + Desktop GUI + Relay topology
    - send-path BLE fallback prefers connected peers first, then fresh observed BLE aliases/addresses, and only then persisted hints that are still within a 120s freshness window.
    - filtered BLE scanning now promotes to an unfiltered scan after 20s without a matching mesh advertisement so nearby peers are not missed when service-UUID filtering lags real radio state.
 2. **5-node operator visibility semantics are clarified**:
-   - `run5.sh` now separates physical-device app console logs from host/system Bluetooth + Multipeer context (`ios-device.log` vs `ios-device-system.log`).
+   - `scripts/run5.sh` now separates physical-device app console logs from host/system Bluetooth + Multipeer context (`ios-device.log` vs `ios-device-system.log`).
    - pre-existing physical iOS sessions are no longer relaunched just to capture console output; the harness now records that limitation explicitly instead of perturbing the app.
    - post-run visibility now counts only known local-own-ID captures; unknown IDs are surfaced as collector gaps instead of being folded into a false "mesh missing" verdict.
 3. **Ambiguity policy is now explicit**:
@@ -230,7 +230,7 @@ Scope: Core + Android + iOS + Desktop GUI + Relay topology
 
 ## Mega-Update Intake Addendum (WS12.25, 2026-03-03 HST)
 
-1. The pending-sync "older messages remain undelivered" regression was re-triaged from the updated `run5.sh` artifact set and pairwise pending-outbox snapshots.
+1. The pending-sync "older messages remain undelivered" regression was re-triaged from the updated `scripts/run5.sh` artifact set and pairwise pending-outbox snapshots.
 2. Android+iOS route/receipt hardening was applied in-scope for v0.2.0 reliability closure:
    - route hints now refresh on change, not only first-write,
    - receipt sends now prefer observed inbound route/listener hints,
@@ -299,11 +299,11 @@ Scope: Core + Android + iOS + Desktop GUI + Relay topology
 
 ## Live Verification Loop Addendum (WS12.30, 2026-03-03 HST)
 
-1. Added a dedicated step-gated orchestration harness to execute WS12.29 burndown in immediate feedback cycles without changing baseline `run5.sh`:
+1. Added a dedicated step-gated orchestration harness to execute WS12.29 burndown in immediate feedback cycles without changing baseline `scripts/run5.sh`:
    - `scripts/run5-live-feedback.sh`
 2. Harness gate sequence is now explicit and deterministic for each fix-step:
    - deploy mobile updates (optional),
-   - run `run5.sh --update` to refresh/capture 5-node topology,
+   - run `scripts/run5.sh --update` to refresh/capture 5-node topology,
    - require all-node log health,
    - require full directed node-pair visibility matrix,
    - require crash/fatal marker clean scan,
@@ -939,7 +939,7 @@ Key cross-cutting findings captured during the latest live-debug session:
 1. GCP relay required live operational repair (project-context drift, Docker disk/log pressure, corrupted persisted relay ledger) before transport verification could be trusted again.
 2. Android store-and-forward-first semantics were explicitly reaffirmed as the target architecture and the expected UX parity model for iOS.
 3. iOS instability was narrowed toward peer-identify / identity-beacon churn rather than being treated solely as a cloud-side outage.
-4. `run5.sh` was materially upgraded so visibility accounting is based on known own IDs, iOS app/system evidence is separated, and collector gaps are no longer misreported as deterministic mesh failure.
+4. `scripts/run5.sh` was materially upgraded so visibility accounting is based on known own IDs, iOS app/system evidence is separated, and collector gaps are no longer misreported as deterministic mesh failure.
 5. Full 5-node visibility was still not conclusively proven in the recent runs; the honest state remained partially indeterminate.
 6. The iPhone 17 Pro simulator launch failure was traced to a stale device-flavor SCMessenger bundle installed into the simulator and resolved by reinstalling a proper `iphonesimulator` build.
 7. Post-launch simulator runtime still has active follow-on debt, especially `historySync request failed to prepare message`.

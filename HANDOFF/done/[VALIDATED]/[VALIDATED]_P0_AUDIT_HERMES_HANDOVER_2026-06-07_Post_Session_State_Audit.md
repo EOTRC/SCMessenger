@@ -71,7 +71,7 @@ hermes-gateway  active (PID 970, RSS 139 MB)  Telegram state: connected
 - OS-level `claude.exe` slots: 3 max. PIDs 648 + 19584 = 2 active. **1 free.**
 - Agy = local-only, dead, doesn't count.
 
-**Quota:** Last known `API_EFFICIENCY_LEDGER.md` entry was TIER 2 EXECUTE (5h=33.8%, 7d=6.0%) at 22:03 PT. Re-scrape on resume.
+**Quota:** Last known `docs/orchestration/API_EFFICIENCY_LEDGER.md` entry was TIER 2 EXECUTE (5h=33.8%, 7d=6.0%) at 22:03 PT. Re-scrape on resume.
 
 ---
 
@@ -117,7 +117,7 @@ You are at the prompt in `3ce62c20-8a50-4b22-a61d-c25e62afa4f8`. When you read t
 
 1. **Re-baseline env.** `echo $Claude $CLAUDE_CODE_EXECPATH`  confirm whether `Claude=` is set. If yes: **stop, write a halt memo, tell Lucas the env is contaminated, ask him to restart you in a clean shell.** Do NOT try to dispatch with a dirty env.
 
-2. **Pre-flight per `/orchestrate` spec.** Re-run quota scrape, ledger append, pool status, branch confirmation. Append a TIER 1 LIGHT line to `API_EFFICIENCY_LEDGER.md` (this is a wake-up, not a dispatch).
+2. **Pre-flight per `/orchestrate` spec.** Re-run quota scrape, ledger append, pool status, branch confirmation. Append a TIER 1 LIGHT line to `docs/orchestration/API_EFFICIENCY_LEDGER.md` (this is a wake-up, not a dispatch).
 
 3. **Dispatch the Agy bundle.** Path: `/orchestrate`  `pool launch implementer HANDOFF/todo/[VALIDATED]_P0_ANDROID_AGY_HANDOFF_2026-06-07_Identity_Stability_Bundle.md`. The implementer will read `HANDOFF/IN_PROGRESS/IN_PROGRESS_task_agy_android_stability_complete_handoff_2026-06-07.md` for source-of-truth and start coding.
 

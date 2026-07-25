@@ -20,9 +20,9 @@ This document explains how to use the comprehensive network testing tools for SC
 
 SCMessenger includes three levels of testing scripts:
 
-1. **`verify_simulation.sh`** - Core functionality and quick network validation (basic Docker network)
-2. **`run_comprehensive_network_tests.sh`** - **NEW!** Enhanced testing with real network conditions (NAT, latency, packet loss)
-3. **`test_network_scenarios.sh`** - Advanced network scenario testing with detailed pass/fail reporting
+1. **`scripts/verify_simulation.sh`** - Core functionality and quick network validation (basic Docker network)
+2. **`scripts/run_comprehensive_network_tests.sh`** - **NEW!** Enhanced testing with real network conditions (NAT, latency, packet loss)
+3. **`scripts/test_network_scenarios.sh`** - Advanced network scenario testing with detailed pass/fail reporting
 
 ## [Needs Revalidation] 🆕 Enhanced Network Testing (Recommended)
 
@@ -60,7 +60,7 @@ The enhanced setup creates **realistic conditions** where these features are act
 Run the enhanced simulation with real network conditions:
 
 ```bash
-./run_comprehensive_network_tests.sh
+scripts/run_comprehensive_network_tests.sh
 ```
 
 This will:
@@ -75,7 +75,7 @@ This will:
 Then run the comprehensive scenarios:
 
 ```bash
-./test_network_scenarios.sh
+scripts/test_network_scenarios.sh
 ```
 
 ### [Needs Revalidation] Option B: Basic Simulation & Validation
@@ -83,7 +83,7 @@ Then run the comprehensive scenarios:
 Run the basic simulation (simpler, but less realistic):
 
 ```bash
-./verify_simulation.sh
+scripts/verify_simulation.sh
 ```
 
 This script will:
@@ -107,7 +107,7 @@ This script will:
 Once the basic simulation is running, test advanced scenarios:
 
 ```bash
-./test_network_scenarios.sh
+scripts/test_network_scenarios.sh
 ```
 
 This script tests:
@@ -246,7 +246,7 @@ docker compose -f docker/docker-compose.yml down -v
 ## [Needs Revalidation] Troubleshooting
 
 ### [Needs Revalidation] "Containers not running" Error
-Run `verify_simulation.sh` first before running `test_network_scenarios.sh`.
+Run `scripts/verify_simulation.sh` first before running `scripts/test_network_scenarios.sh`.
 
 ### [Needs Revalidation] "Failed to retrieve node IDs"
 Wait 5-10 seconds after starting containers, then retry.
@@ -268,7 +268,7 @@ Ensure at least 4GB RAM is available. Close other applications if needed.
 
 ### [Needs Revalidation] Run Specific Scenarios Only
 
-Edit `test_network_scenarios.sh` and comment out unwanted scenario sections.
+Edit `scripts/test_network_scenarios.sh` and comment out unwanted scenario sections.
 
 ### [Needs Revalidation] Custom Network Topologies
 
@@ -280,7 +280,7 @@ Run the scenarios multiple times to test consistency:
 ```bash
 for i in {1..5}; do
   echo "=== Test iteration $i ==="
-  ./test_network_scenarios.sh
+  scripts/test_network_scenarios.sh
   sleep 10
 done
 ```
@@ -290,7 +290,7 @@ done
 Watch logs in real-time while tests run:
 ```bash
 # In one terminal
-./test_network_scenarios.sh
+scripts/test_network_scenarios.sh
 
 # In another terminal
 docker logs -f scm-relay
@@ -308,8 +308,8 @@ Both scripts can be integrated into CI/CD pipelines:
 # Example GitHub Actions workflow
 - name: Run Network Tests
   run: |
-    ./verify_simulation.sh
-    ./test_network_scenarios.sh
+    scripts/verify_simulation.sh
+    scripts/test_network_scenarios.sh
 ```
 
 ## [Needs Revalidation] Performance Benchmarks
@@ -326,7 +326,7 @@ Expected performance on modern hardware:
 
 When adding new network tests:
 
-1. Add test scenario to `test_network_scenarios.sh`
+1. Add test scenario to `scripts/test_network_scenarios.sh`
 2. Document the scenario in this guide
 3. Update the summary section with the new capability
 4. Test on multiple platforms (macOS, Linux)

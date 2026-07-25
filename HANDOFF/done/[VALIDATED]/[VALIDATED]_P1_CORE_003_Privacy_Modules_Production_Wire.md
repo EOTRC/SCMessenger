@@ -21,14 +21,14 @@ fixed," this is part of the ~30-ticket remaining backlog.
 **Agent:** rust-coder
 **Budget:** 2400s (LARGE tier)
 **Phase:** v0.2.1 P1 wire dormant modules
-**Source:** PRODUCTION_ROADMAP.md Module Status Matrix (Privacy:  Dormant) + planfromclaudeforhermes 2 Phase C.3
+**Source:** docs/historical/plans/PRODUCTION_ROADMAP.md Module Status Matrix (Privacy:  Dormant) + planfromclaudeforhermes 2 Phase C.3
 **Depends on:** P1_CORE_001 (Drift wire provides the message envelope to wrap)
 
 ---
 
 ## Verified Gap
 
-Per `PRODUCTION_ROADMAP.md`: "Privacy modules dormant  Onion routing (`privacy/onion.rs`), cover traffic (`privacy/cover.rs`), message padding (`privacy/padding.rs`), and timing obfuscation (`privacy/timing.rs`) all exist with tests but are NEVER called from any production code path."
+Per `docs/historical/plans/PRODUCTION_ROADMAP.md`: "Privacy modules dormant  Onion routing (`privacy/onion.rs`), cover traffic (`privacy/cover.rs`), message padding (`privacy/padding.rs`), and timing obfuscation (`privacy/timing.rs`) all exist with tests but are NEVER called from any production code path."
 
 Privacy module: 6 files totaling ~2,350 LoC (circuit 529, cover 527, onion 508, padding 320, timing 397, mod 69). All unit-tested, none called.
 

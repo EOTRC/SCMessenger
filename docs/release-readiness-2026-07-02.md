@@ -87,7 +87,7 @@ with working runners.
   kind of stale. PR #1's edits to these files are also honest: it checks
   boxes it has tests for and leaves hardware-dependent boxes unchecked with
   explanations.
-- `fable5plan.md`'s claim that the core subsystems are implemented and tested
+- `docs/historical/plans/fable5plan.md`'s claim that the core subsystems are implemented and tested
   is consistent with the passing workspace suite.
 
 ## 4. PR #1 review (head `1f52b42`, 68 files, +11023/−805)

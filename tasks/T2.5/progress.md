@@ -13,7 +13,7 @@
 1. Define and enforce a single ownership rule in `iron_core.rs` send path (`iron_core.rs:602` is where legacy->drift envelope conversion happens)
 2. When `RoutingDecision.primary == NextHop::StoreAndCarry`, message moves to drift custody and is *removed* from active outbox retry (state-marked `InCustody`)
 3. A delivery receipt (`integration_receipt_convergence.rs` machinery) clears both
-4. Document the state machine in `ARCHITECTURE.md`
+4. Document the state machine in `docs/ARCHITECTURE_MODULE_MAP.md`
 
 ## Edge Cases
 - Receipt arrives via a different transport than delivery (likely in mesh) — receipt handling is already transport-agnostic by message_id, verify

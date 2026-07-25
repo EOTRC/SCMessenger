@@ -5,7 +5,7 @@ Last updated: 2026-07-21 (status-correction header reflecting early morning Kimi
 
 ## 2026-07-21 STATUS CORRECTIONS (authoritative over the body below)
 
-- **v0.4.0 EXECUTION PLAN**: Active authority is `HANDOFF/plans/V040_ORCHESTRATION_PLAN.md` + `KIMI_K3_V040_ORCHESTRATION_PROMPT.md`.
+- **v0.4.0 EXECUTION PLAN**: Active authority is `HANDOFF/plans/V040_ORCHESTRATION_PLAN.md` + `docs/historical/KIMI_K3_V040_ORCHESTRATION_PROMPT.md`.
 - **PROVE_SECOND_REAL_ENDPOINT_DELIVERY**: COMPLETED & VERIFIED (`HANDOFF/PROOF_TWO_ENDPOINT_DELIVERY_2026-07-20.md`, moved to `HANDOFF/done/`). Alice and Bob CLI instances exchanged bidirectional messages & receipts over real alpha relay (`100.56.248.69:9001`).
 - **GRACEFUL_AF_DIAL_POLICY (Items 3+4 & Audit Fixes)**: COMPLETED in `cli/src/ledger.rs` & `cli/src/main.rs`. Implemented per-peer backoff state, max 3 concurrent outbound dials, circuit-relay preference after connection established, plus peer spoofing & relay liveness audit hardening.
 - **A-04 ANDROID RECEIPT UNIFICATION**: COMPLETED. `core/src/iron_core.rs` replaced serde_json calls with `encode_receipt`/`decode_receipt`. `android/app/build.gradle` updated with test JNA dependency. `ReceiptUnificationTest.kt` added with native-aware `@BeforeClass` probe.

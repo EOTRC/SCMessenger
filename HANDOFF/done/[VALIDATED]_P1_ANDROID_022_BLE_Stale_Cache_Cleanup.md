@@ -26,14 +26,14 @@ was created by gemini on 2026-06-05 20:17 PT.
 **Agent:** implementer
 **Budget:** 600s (MICRO tier)
 **Phase:** v0.2.1 P1 Android stability
-**Source:** PRODUCTION_ROADMAP.md 1.2 (gratuitous nearby entries persistence) + planfromclaudeforhermes 2 Phase D.4
+**Source:** docs/historical/plans/PRODUCTION_ROADMAP.md 1.2 (gratuitous nearby entries persistence) + planfromclaudeforhermes 2 Phase D.4
 **Depends on:** P0_BUILD_001
 
 ---
 
 ## Verified Gap
 
-Per `PRODUCTION_ROADMAP.md` 1.2: "Fix gratuitous nearby entries persistence (stale peer cache after discovery stop)".
+Per `docs/historical/plans/PRODUCTION_ROADMAP.md` 1.2: "Fix gratuitous nearby entries persistence (stale peer cache after discovery stop)".
 
 Per `HANDOFF/WIRING_TASK_INDEX.md` row 50: `task_wire_clearPeerCache` is one of 350 wiring tasks. `BleScanner.clearPeerCache()` exists in code per wiring manifest, but unit test coverage is missing.
 

@@ -5,8 +5,8 @@ analyze_mesh.py — Live mesh connectivity monitor for 5-node SCMessenger test.
 Nodes: GCP (headless), OSX (headless), Android (Pixel 6a), iOS Device, iOS Sim
 
 Usage:
-    # Terminal 1: run5.sh (starts nodes + log collection)
-    # Terminal 2: python3 analyze_mesh.py
+    # Terminal 1: scripts/run5.sh (starts nodes + log collection)
+    # Terminal 2: python3 scripts/analyze_mesh.py
 """
 import time
 import re
@@ -103,7 +103,7 @@ def count_events(content, pat):
     return len(pat.findall(content))
 
 print(" SCMessenger 5-Node Mesh Monitor — waiting for logs...")
-print("   Run ./run5.sh if nodes are not yet started.\n")
+print("   Run scripts/run5.sh if nodes are not yet started.\n")
 
 try:
     while True:

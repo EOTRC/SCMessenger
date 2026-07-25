@@ -271,7 +271,7 @@ pub struct RetryStrategy {
 2. Bind libp2p QUIC for native nodes (port 4433)
 3. Use the transport-agnostic `RelayMessage` protocol to bridge both
 
-**Solution:** See [`CLI_WEBRTC_BRIDGE_PLAN.md`](CLI_WEBRTC_BRIDGE_PLAN.md) for full implementation plan.
+**Solution:** See [`docs/historical/plans/CLI_WEBRTC_BRIDGE_PLAN.md`](../plans/CLI_WEBRTC_BRIDGE_PLAN.md) for full implementation plan.
 - ~310 LOC across core + CLI
 - 6-8 day implementation timeline
 - GCP relay nodes will run in bridge mode
@@ -635,7 +635,7 @@ Implement ability to switch transport mid-conversation:
 - Quality degradation detection
 - Circuit breaker behavior
 
-### 6.3 Live Testing (run5.sh)
+### 6.3 Live Testing (scripts/run5.sh)
 - Cellular → WiFi messaging (via relay)
 - WiFi → Cellular messaging (direct + relay fallback)
 - BLE-only delivery (no relays reachable)
@@ -674,7 +674,7 @@ Implement ability to switch transport mid-conversation:
 2. `docs/CURRENT_STATE.md` - Update transport status
 3. `docs/TESTING_GUIDE.md` - Add adaptive transport tests
 4. `REMAINING_WORK_TRACKING.md` - Add transport tasks
-5. `MASTER_BUG_TRACKER.md` - Close cellular bugs when fixed
+5. `docs/historical/MASTER_BUG_TRACKER.md` - Close cellular bugs when fixed
 
 ---
 

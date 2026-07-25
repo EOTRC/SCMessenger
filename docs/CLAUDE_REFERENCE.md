@@ -119,7 +119,7 @@ workers implement one `BATCH_*.md`, run compile gates, move the file to
 `HANDOFF/done/`, commit `swarm: completed [Task]`. Fire-and-forget: once the
 2 slots fill, commit, arm monitors, exit — the `/loop 30m` cron wakes you.
 Swarm-managed processes stop via `pool stop <id>` (bookkeeping), not raw kill.
-`ORCHESTRATOR_DIRECTIVE.md` has stale paths/roster — `.claude/agent_pool.json`
+`docs/orchestration/ORCHESTRATOR_DIRECTIVE.md` has stale paths/roster — `.claude/agent_pool.json`
 and `orchestrate.md` win on conflict.
 
 Windows process-tree kill (for non-pool processes): `kill -9 <PID>; taskkill //F //T //PID <PID>`.

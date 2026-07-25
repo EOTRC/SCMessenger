@@ -114,7 +114,7 @@ Core commands (all under `.claude/orchestrator_manager.sh`):
 | MICRO | ≤99.5% | Trivial edits, single-line fixes, label changes |
 | HARDLOCK | >99.5% | **No work.** Scrape quota and wait. |
 
-**5-minute staleness rule:** `.claude/quota_state.json` is valid for 5 minutes only. On stale state, refresh with `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./OllamaQuotaScraper.ps1 -Quiet` (or `bash` equivalent). Stale state is rejected.
+**5-minute staleness rule:** `.claude/quota_state.json` is valid for 5 minutes only. On stale state, refresh with `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/OllamaQuotaScraper.ps1 -Quiet` (or `bash` equivalent). Stale state is rejected.
 
 **Agent routing table** (8 specialists in `.claude/agent_pool.json`):
 

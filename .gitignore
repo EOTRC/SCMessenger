@@ -345,3 +345,6 @@ __pycache__/
 !iOS/SCMessengerCore.xcframework/**
 !log-visualizer/package-lock.json
 
+
+# Machine-local Android SDK path (root copy)
+local.properties

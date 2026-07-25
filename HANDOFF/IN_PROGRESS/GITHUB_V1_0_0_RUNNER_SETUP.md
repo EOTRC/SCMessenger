@@ -72,7 +72,7 @@ Confirm that the Sovereign-Communication org now has access to macOS runners via
 ## Follow-up: Farm-Sim Phase 1 iOS Testing
 
 Once runners are enabled:
-1. Deploy updated farm-sim-compose.yml with iOS simulator support
+1. Deploy updated docker/farm-sim-compose.yml with iOS simulator support
 2. Run Phase 1 tests: mDNS, QUIC/TCP, BLE (all app variants)
 3. Collect iOS-specific artifacts (emulator logs, network traces)
 4. Validate iOS ↔ Android ↔ CLI cross-compatibility over all transports

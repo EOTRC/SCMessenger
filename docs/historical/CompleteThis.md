@@ -16,7 +16,7 @@ Active debug message sent from Android to iOS NOT YET SUCCESSFUL - figure out wh
 
 *Checked command status*
 
-*Viewed [run5.sh](file:///Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger/run5.sh) *
+*Viewed [scripts/run5.sh](file:///Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger/run5.sh) *
 
 *User accepted the command `ls -l logs/5mesh/latest/`*
 
@@ -360,7 +360,7 @@ ps aux | grep "log stream"`*
 
 *Running MCP tool*
 
-*User accepted the command `grep -iE "xcrun devicectl|adb logcat" run5.sh`*
+*User accepted the command `grep -iE "xcrun devicectl|adb logcat" scripts/run5.sh`*
 
 *Checked command status*
 
@@ -389,13 +389,13 @@ grep -iE "message received" /tmp/android_latest.log | tail -n 10`*
 
 *Running MCP tool*
 
-*User accepted the command `grep -n "xcrun devicectl device process log stream" run5.sh`*
+*User accepted the command `grep -n "xcrun devicectl device process log stream" scripts/run5.sh`*
 
 *Checked command status*
 
 *Running MCP tool*
 
-*User accepted the command `grep -in "devicectl" run5.sh`*
+*User accepted the command `grep -in "devicectl" scripts/run5.sh`*
 
 ### User Input
 
@@ -526,7 +526,7 @@ head -n 50 logs/5mesh/latest/osx.log`*
 
 *Viewed [MeshRepository.kt](file:///Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger/android/app/src/main/java/com/scmessenger/android/data/MeshRepository.kt) *
 
-*Viewed [run5.sh](file:///Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger/run5.sh) *
+*Viewed [scripts/run5.sh](file:///Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger/run5.sh) *
 
 *Viewed [swarm.rs](file:///Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger/core/src/transport/swarm.rs) *
 
@@ -819,7 +819,7 @@ Continue
 
 *Checked command status*
 
-*Viewed [rebuild_ios_core.sh](file:///Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger/rebuild_ios_core.sh) *
+*Viewed [scripts/rebuild_ios_core.sh](file:///Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger/rebuild_ios_core.sh) *
 
 *Listed directory [bin](file:///Users/christymaxwell/Desktop/Luke_Stuff/GitHub/SCMessenger/core/src/bin) *
 

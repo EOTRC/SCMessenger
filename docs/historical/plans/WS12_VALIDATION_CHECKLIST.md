@@ -267,9 +267,9 @@ cd android && ./gradlew :app:lintDebug
 
 - [x] **Updated Documentation**
   - [x] docs/CURRENT_STATE.md
-  - [x] Latest_Updates.md
+  - [x] docs/historical/session-reports/Latest_Updates.md
   - [x] REMAINING_WORK_TRACKING.md
-  - [x] FEATURE_PARITY.md
+  - [x] docs/FEATURE_PARITY.md
   - [x] COMPLETE_SESSION_REPORT_2026-03-09.md
 
 ---

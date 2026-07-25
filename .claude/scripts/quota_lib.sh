@@ -8,7 +8,7 @@ set -euo pipefail
 
 QUOTA_STALE_SECONDS=300
 QUOTA_STATE_FILE=".claude/quota_state.json"
-QUOTA_SCRAPER='./OllamaQuotaScraper.sh --quiet'
+QUOTA_SCRAPER='./scripts/OllamaQuotaScraper.sh --quiet'
 
 # --- lazy_quota_refresh ---
 # Checks quota_state.json timestamp. If missing or older than

@@ -39,7 +39,7 @@ The 6-tier quota governor is referenced everywhere (CLAUDE.md, plan, STATE files
 Sections:
 1. **Quick decision tree**  flowchart: read .claude/quota_state.json  check timestamp  if > 5 min old, force-refresh  read fiveHour and sevenDay  pick lowest tier that matches both percentages
 2. **The 6 tiers**  copy from CLAUDE.md table; add "what NOT to do at this tier"
-3. **The 5-minute staleness rule**  explicit: "If timestamp is > 5 minutes old, do NOT trust the percentages. Run OllamaQuotaScraper.sh first."
+3. **The 5-minute staleness rule**  explicit: "If timestamp is > 5 minutes old, do NOT trust the percentages. Run scripts/OllamaQuotaScraper.sh first."
 4. **Common mistakes** 
    - "I saw 5h=20% so I'm in TIER 1!"  but if 7d=80%, you're in TIER 4. **Lowest wins.**
    - "It's a small task, I'll just dispatch at MICRO"  MICRO = 1 slot, 300s. Most tasks need LIGHT or EXECUTE.
@@ -68,7 +68,7 @@ grep -c "^##" docs/QUOTA_GOVERNOR_RUNBOOK.md  # should be 6+
 1. File exists at `docs/QUOTA_GOVERNOR_RUNBOOK.md`
 2. Contains all 6 sections
 3. No broken markdown links (run `markdown-link-check` if available, or eyeball)
-4. Cross-references `OllamaQuotaScraper.sh` (Mac) and `OllamaQuotaScraper.ps1` (Windows)
+4. Cross-references `scripts/OllamaQuotaScraper.sh` (Mac) and `scripts/OllamaQuotaScraper.ps1` (Windows)
 
 ## CRITICAL
 

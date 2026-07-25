@@ -1,41 +1,47 @@
 # Changelog
 
-All notable changes to SCMessenger will be documented in this file.
+All notable changes to SCMessenger are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+Releases before `0.3.5` are not itemized here. For those, see the git tags
+(`v0.1.0`, `v0.1.1`, `v0.1.9`, `v0.2.1`) and the commit history.
 
 ## [Unreleased]
 
-### Corrected — accuracy of the 1.0.0-rc2 verification claims
-
-The "Verification" list under 1.0.0-rc2 below did not hold on the commit
-that added it (`0a49d32`), and no CI run has ever executed to back it (all
-GitHub Actions jobs since 2026-06-15 failed in 1–2 s without a runner being
-assigned — an account-level problem, see
-`docs/release-readiness-2026-07-02.md`):
-
-- `cargo fmt --check` — **failed** at `0a49d32` (13 diff sites) and on every
-  commit since, until fixed in this changeset.
-- `scripts/ffi_surface.sh` — **fails** on `main`: `gen_kotlin` panics unless
-  the cdylib is prebuilt, and the checked-in Kotlin snapshot is stale. (Both
-  are fixed by PR #1.) The script also exits 0 when bindings are absent, so
-  a "pass" without generated bindings was vacuous.
-- Android/iOS/WASM build claims — unverifiable (no CI logs exist).
-  Independently reproduced in this changeset's session: the WASM release
-  build **does** pass; Android/iOS remain unverified.
-- `cargo test --workspace --all-features`, `cargo clippy --workspace
-  --all-features -- -D warnings`, `cargo deny check
-  bans licenses sources` — independently re-verified **passing** on
-  `cd582f8` in this changeset's session (advisories check not run:
-  network-restricted environment).
-
 ### Changed
-- Applied `cargo fmt` across `core/` (including CRLF→LF normalization of
+- Applied `cargo fmt` across `core/` (including CRLF-to-LF normalization of
   `iron_core.rs`); `cargo fmt --check` is clean again.
 - Untracked committed Python bytecode under `cloud/orchestrator/` and added
-  `__pycache__/`/`*.py[cod]` to `.gitignore`.
+  `__pycache__/` and `*.py[cod]` to `.gitignore`.
 - Added `docs/release-readiness-2026-07-02.md`: evidence-based release
   readiness assessment and ordered handoff task list.
+- Front-page and community-health accuracy pass: restored the truncated
+  `README.md` and corrected its transport, port, crypto, and workspace claims
+  against the code; replaced the abridged code of conduct with the full
+  Contributor Covenant 2.1; removed a fabricated security contact address on an
+  unregistered domain in favor of GitHub private vulnerability reporting;
+  removed a placeholder `CODEOWNERS` file and the invented maintainer roles in
+  it; corrected version, CI job name, and build-command claims in
+  `CONTRIBUTING.md` and the issue templates.
 
-## [0.3.5] — 2026-07-11
+### Removed
+- The `1.0.0-rc2` changelog entry's "Verification" list. It asserted that
+  `cargo test`, `cargo fmt --check`, `cargo clippy`, `cargo deny`,
+  `scripts/ffi_surface.sh`, and the Android and iOS builds had all passed. Those
+  claims did not hold on the commit that added them (`0a49d32`) and no CI run
+  ever backed them: every GitHub Actions job between 2026-06-15 and the account
+  fix failed in 1-2 s without a runner being assigned (see
+  `docs/release-readiness-2026-07-02.md`). Specifically, `cargo fmt --check`
+  failed at `0a49d32` with 13 diff sites; `scripts/ffi_surface.sh` fails on
+  `main` because `gen_kotlin` panics unless the cdylib is prebuilt and the
+  checked-in Kotlin snapshot is stale, and it exits 0 when bindings are absent,
+  so a reported "pass" without generated bindings was vacuous; the Android and
+  iOS build claims were never verifiable. The WASM release build was
+  independently reproduced as passing.
+
+## [0.3.5] - 2026-07-11
 
 ### Added
 - Post-quantum hybrid migration (PQC-01 through PQC-08): ML-KEM-768
@@ -43,8 +49,7 @@ assigned — an account-level problem, see
   negotiation (0x01 legacy / 0x02 hybrid), PQ-augmented double ratchet,
   legacy static-ECDH retirement gating with audit logging.
 - `docs/ORCHESTRATION.md`: unified cross-mode orchestration protocol
-  (state machine, dispatcher, tier routing, commit authority) covering
-  native Claude, Qwen/DashScope, OpenRouter, agy/Gemini, and Ollama lanes.
+  (state machine, dispatcher, tier routing, commit authority).
 - `scripts/delegate_task.py`: `--verify`/`--max-rounds` auto-fix loop and
   `--mode diff` unified-diff support, reducing compile-fix round trips.
 
@@ -64,23 +69,15 @@ assigned — an account-level problem, see
   `docs/historical/`, rewrote `README.md` and GitHub repo metadata for
   accuracy, groomed `HANDOFF/todo/` to live tasks only.
 
-## [1.0.0-rc2] — 2026-06-17
+## 1.0.0-rc2 - 2026-06-17 (never released)
 
-Release candidate completing the Fable 5 plan. All core subsystems implemented,
-Rust gatekeeper suite passes, and Android/iOS/WASM builds are verified.
-Includes WiFi Direct/Aware discovery wiring, background sync scheduling, and
-identity backup continuity tests contributed by Gemini.
+This version was never tagged or released; no `v1.0.0-rc2` tag exists, and the
+workspace version has remained below it. It is retained here only as a record of
+the development milestone that completed the Fable 5 plan, which added WiFi
+Direct/Aware discovery wiring, background sync scheduling, and identity backup
+continuity tests.
 
-### Verification
-
-- `cargo test --workspace --all-features` — passed
-- `cargo fmt --check`, `cargo clippy --workspace --all-features -- -D warnings`, `cargo deny check` — passed
-- `scripts/ffi_surface.sh` (Kotlin + Swift snapshots) — passed
-- Android debug APK (`./gradlew :app:assembleDebug`) — succeeded
-- iOS Simulator build (`xcodebuild -project SCMessenger.xcodeproj -scheme SCMessenger -destination 'generic/platform=iOS Simulator' build`) — succeeded
-- WASM build (`cargo build --target wasm32-unknown-unknown -p scmessenger-wasm`) — succeeded
-
-### Subsystems
+Subsystems implemented as of that milestone:
 
 - **Routing**: Mycorrhizal mesh engine with local, neighborhood, and global strategies; multipath forwarding; reputation scoring; adaptive TTL
 - **Drift / DTN**: Delay-tolerant sync with MinHash sketches, custody-based relay store, frame/envelope protocol, rate limiting, and policy-driven forwarding
@@ -96,4 +93,7 @@ identity backup continuity tests contributed by Gemini.
 
 ### Deferred
 
-- Acoustic transport — deferred to post-v1.0.0
+- Acoustic transport - deferred to post-v1.0.0
+
+[Unreleased]: https://github.com/Sovereign-Communication/SCMessenger/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/Sovereign-Communication/SCMessenger/compare/v0.2.1...v0.3.5

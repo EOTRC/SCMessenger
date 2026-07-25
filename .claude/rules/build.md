@@ -21,9 +21,17 @@ change; resolve failures before finalizing.
 
 ## Path Conventions (CI Enforced)
 
-- `iOS/` uppercase-I in ALL path references; XCFramework at `iOS/SCMessengerCore.xcframework/`.
+Enforced by the `Repository Hygiene` workflow (`.github/workflows/hygiene.yml`):
+
+- `iOS/` uppercase-I in ALL path references; XCFramework at `iOS/SCMessengerCore.xcframework/`
+  (step: `Verify path governance rules`).
 - No `.py` in repo root (use `scripts/`); no build artifacts committed
-  (`git ls-files "*.log" "*.pid" "*.logcat"` must be empty).
+  (`git ls-files "*.log" "*.pid" "*.logcat"` must be empty) (step:
+  `Verify root directory layout`).
+- Keep the repo root minimal. Documentation belongs under `docs/` (with
+  historical material in `docs/historical/`), executable scripts under
+  `scripts/`. Only tooling-mandated files and GitHub community-health files
+  belong at the root.
 
 ## Windows
 
@@ -40,4 +48,4 @@ Only when using the `swarm` backend (ollama pool): verify the target ollama mode
 via `bash .claude/model_validation_template.sh` or `https://ollama.com/api/tags`.
 Not applicable to the `lanes`, `native`, or `agent` backends -- for `native` the
 model truth is `claude --help` aliases; for `lanes` it is the lake registry
-`SCM_UNIFIED_LAKE_ORCHESTRATION.md`.
+`docs/orchestration/SCM_UNIFIED_LAKE_ORCHESTRATION.md`.

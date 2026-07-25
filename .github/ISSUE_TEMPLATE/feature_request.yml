@@ -5,14 +5,15 @@ body:
   - type: markdown
     attributes:
       value: |
-        Use this template for new work proposals. Requests that really belong to `WS13` / `WS14` should be marked as `v0.2.1` scope so they do not get mixed into `v0.2.0` alpha closeout.
+        Use this template for new work proposals. The current baseline is `v0.3.5`; planned work toward `v1.0.0` is sequenced in `HANDOFF/V1_0_0_EXECUTION_PLAN.md`.
   - type: dropdown
     id: release_scope
     attributes:
       label: Requested release scope
       options:
-        - v0.2.0 alpha closeout
-        - v0.2.1 / WS13 / WS14 follow-up
+        - v0.3.x alpha line
+        - v1.0.0 scope
+        - Post-v1.0.0
         - Later / not sure
     validations:
       required: true

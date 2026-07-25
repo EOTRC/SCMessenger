@@ -12,7 +12,7 @@
 **Correction: shipped and stable for the core scaffolding.**
 - `core/src/lib.rs:93` — `uniffi::include_scaffolding!("api");` is live.
 - `core/Cargo.toml` exposes the `gen-bindings` feature; `mobile/` crate builds `cdylib` + `staticlib`; `core/src/api.udl` has the full UDL surface.
-- Cross-platform parity: still tracked in `[VALIDATED]_P1_IOS_001/002/003` (iOS side blocked on macOS) and `PRODUCTION_ROADMAP_PRIORITIZED.md` ("Android: 30+ Kotlin compile errors, WASM: 28 cfg-gate errors"). So the **Rust UniFFI side is solid**; the platform-consumer sides (Android Kotlin / WASM / iOS Swift) still have compile gaps. The plan's framing is half-right but the blame is on the wrong layer.
+- Cross-platform parity: still tracked in `[VALIDATED]_P1_IOS_001/002/003` (iOS side blocked on macOS) and `docs/historical/plans/PRODUCTION_ROADMAP_PRIORITIZED.md` ("Android: 30+ Kotlin compile errors, WASM: 28 cfg-gate errors"). So the **Rust UniFFI side is solid**; the platform-consumer sides (Android Kotlin / WASM / iOS Swift) still have compile gaps. The plan's framing is half-right but the blame is on the wrong layer.
 
 ### BLE & Wi-Fi Aware — plan: "Partially Implemented / bottleneck"
 **Correction: more advanced than the plan suggests, but with the exact gaps the plan names.**
@@ -130,7 +130,7 @@
 
 1. **Compile state today:** I did NOT run `cargo check --workspace`. `HANDOFF/ACTIVE_LEDGER.md` (2026-05-13) reports `cargo check` passes with 1 warning; `cargo test --workspace --no-run` has 10 ICE failures, all in `integration_registration_protocol.rs` cascade. Per `HANDOFF/STATE/2026-06-10_BUILD_GATE_integration_cargo_test_norun.log` this is the most recent data point. **Status as of 2026-05-13: compile gate green, test gate red.**
 2. **iOS specifics:** I did not re-scan `iOS/`. Per `CLAUDE.md` "iOS / Swift: Source-complete, needs macOS build. No `.a` binary, stale field build" — your phone is off-limits and Lucas-side mac build hasn't happened, so iOS verification is structurally impossible from this session.
-3. **Platform-side compile errors:** `PRODUCTION_ROADMAP_PRIORITIZED.md` (2026-04-21) lists 30+ Android Kotlin errors and 28 WASM cfg-gate errors. I did not re-verify those today — using that file as the most recent authoritative snapshot.
+3. **Platform-side compile errors:** `docs/historical/plans/PRODUCTION_ROADMAP_PRIORITIZED.md` (2026-04-21) lists 30+ Android Kotlin errors and 28 WASM cfg-gate errors. I did not re-verify those today — using that file as the most recent authoritative snapshot.
 4. **Quota:** 7d at 84.1% per memory. Per Lucas's "low credits" framing, this verification used read-only ops (no dispatch, no edits outside this report file).
 
 ---

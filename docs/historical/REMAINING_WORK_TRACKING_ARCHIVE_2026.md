@@ -121,7 +121,7 @@ These files were moved to `HANDOFF/done/` but still contain unresolved work. The
 - [x] Duplicate notification channel creation (NotificationHelper + MeshForegroundService) — DONE via `task_p1b_notification_channel_dedup.md`
 
 ### Current Build State (from git status 2026-05-18)
-- Uncommitted changes: `.claude/quota_state.json`, `SwarmHeartbeat.ps1`, `TaskGovernor.ps1`; plus orchestrator queue renames (see below)
+- Uncommitted changes: `.claude/quota_state.json`, `scripts/SwarmHeartbeat.ps1`, `scripts/TaskGovernor.ps1`; plus orchestrator queue renames (see below)
 - IN_PROGRESS: 0 slots (empty)
 - todo/: empty (only REJECTED subdir with stale historical files)
 - done/: 547 completed tasks (including 2 recent validations + 1 superseded)
@@ -423,7 +423,7 @@ Full verification requires physical devices on cellular networks:
 5. Send messages between devices
 6. Verify delivery succeeds without NetworkError
 
-Note: `run5.sh` test requires physical device connections for full verification.
+Note: `scripts/run5.sh` test requires physical device connections for full verification.
 
 ## iOS 43K Send Failures Fix (2026-03-17)
 
@@ -485,7 +485,7 @@ Remaining governance expectation:
 Completed in this pass:
 
 1. [x] **Log Visualizer (`mesh.html`)**: Broadened BLE detection keywords and refined own-identity parsing.
-2. [x] **Run Script (`run5.sh`)**: Added proactive "Seeding node identities" step to inject identity markers for already-running nodes.
+2. [x] **Run Script (`scripts/run5.sh`)**: Added proactive "Seeding node identities" step to inject identity markers for already-running nodes.
 3. [x] **iOS Logging**: Expanded log stream predicates to capture `com.scmessenger` subsystem logs.
 
 ## GCP Node Nickname Update (2026-03-16)
@@ -584,7 +584,7 @@ Completed in this pass:
 6. [x] **Android Mesh UI Scrolling** (2026-03-10): Converted DashboardScreen to LazyColumn for proper scrolling with large peer lists
 7. [x] **Android ID Normalization** (2026-03-10): Standardized peer ID handling to fix "Contact not found" messaging issues
 8. [x] **NAT Traversal & BLE Stability** (2026-03-13): Restored relay routing, throttled BLE beacons, fixed Android connect-on-demand.
-9. [x] **BLE Freshness Profiling + run5 Visibility Clarification** (2026-03-13): Android now prefers fresh BLE observations over stale cached hints, promotes to unfiltered BLE scan after 20s of zero mesh advertisements, and `run5.sh` now splits iOS app/system logs while treating unknown own IDs as collector gaps instead of mesh failures.
+9. [x] **BLE Freshness Profiling + run5 Visibility Clarification** (2026-03-13): Android now prefers fresh BLE observations over stale cached hints, promotes to unfiltered BLE scan after 20s of zero mesh advertisements, and `scripts/run5.sh` now splits iOS app/system logs while treating unknown own IDs as collector gaps instead of mesh failures.
 
 Outstanding items:
 
@@ -593,7 +593,7 @@ Outstanding items:
 3. [ ] Test BLE reconnection scenarios end-to-end with new 5s throttles
 4. [ ] Verify parallel transport attempts reduce WiFi→BLE transition time to < 2s
 5. [ ] Test Mesh tab scrolling with 50+ discovered peers
-6. [ ] Re-run upgraded `run5.sh` on fresh artifacts and close the remaining "unknown own ID in current log window" ambiguity where full mesh transport evidence exists but passive identity capture is incomplete.
+6. [ ] Re-run upgraded `scripts/run5.sh` on fresh artifacts and close the remaining "unknown own ID in current log window" ambiguity where full mesh transport evidence exists but passive identity capture is incomplete.
 7. [ ] Bring iOS BLE route profiling to the same freshness-observation standard if stale BLE hint churn reappears; current explicit freshness cache is Android-only, while iOS still relies primarily on connected-peer preference plus runtime transport evidence.
 8. [ ] Unify Android BLE fallback telemetry so the accepted-send target reflects the actual connected GATT address used on wire; current logs can still show the requested stale MAC while `BleGattClient` success callbacks fire for the fresher connected device.
 
@@ -875,9 +875,9 @@ Inventory from repo-wide checklist scan (`rg -P "^\s*(?:[-*]|\d+\.)\s+\[ \]" --g
 ### WS12.13 Wave-2 Backlog Consolidation (2026-03-03 HST)
 
 1. Non-historical mixed-doc checklists were normalized to status-tagged guidance/roadmap entries (no open checkbox ambiguity):
-   - `FEATURE_WORKFLOW.md`
+   - `docs/FEATURE_WORKFLOW.md`
    - `AUDIT_QUICK_REFERENCE.md`
-   - `FEATURE_PARITY.md`
+   - `docs/FEATURE_PARITY.md`
    - `DRIFTNET_MESH_BLUEPRINT.md`
    - `docs/TRANSPORT_ARCHITECTURE.md`
 2. `docs/TRANSPORT_ARCHITECTURE.md` future enhancements were migrated to explicit roadmap lines with status, owner, milestone, gate command, and acceptance criteria.
@@ -885,12 +885,12 @@ Inventory from repo-wide checklist scan (`rg -P "^\s*(?:[-*]|\d+\.)\s+\[ \]" --g
    - `cargo check --workspace` — pass
    - `cd android && ANDROID_HOME=/path/to/android/sdk ./gradlew :app:generateUniFFIBindings` — pass
    - `bash iOS/copy-bindings.sh` — pass
-   - `ANDROID_HOME=/path/to/android/sdk bash ./verify_integration.sh` — pass (now delegates to canonical WS12 matrix)
-   - `bash ./verify_simulation.sh` — fail-fast as designed when Docker is unavailable (no auto-install side effects)
+   - `ANDROID_HOME=/path/to/android/sdk bash scripts/verify_integration.sh` — pass (now delegates to canonical WS12 matrix)
+   - `bash scripts/verify_simulation.sh` — fail-fast as designed when Docker is unavailable (no auto-install side effects)
    - `cd wasm && wasm-pack build` — pass (after installing `wasm-pack` and disabling release `wasm-opt` in `wasm/Cargo.toml` for host compatibility)
 4. Script hygiene updates:
-   - `verify_integration.sh` converted from stale grep-based checks to canonical `scripts/verify_ws12_matrix.sh` execution.
-   - `verify_simulation.sh` now requires preinstalled/running Docker and exits with explicit operator instructions instead of attempting automatic system installs.
+   - `scripts/verify_integration.sh` converted from stale grep-based checks to canonical `scripts/verify_ws12_matrix.sh` execution.
+   - `scripts/verify_simulation.sh` now requires preinstalled/running Docker and exits with explicit operator instructions instead of attempting automatic system installs.
 5. Repo-wide checklist inventory after wave-2 normalization:
    - Open markdown checkboxes repo-wide: **71**
    - Active canonical open checkboxes: **18**
@@ -930,7 +930,7 @@ Inventory from repo-wide checklist scan (`rg -P "^\s*(?:[-*]|\d+\.)\s+\[ \]" --g
    - Outcome (2026-03-03 HST): backoff math now uses saturating arithmetic and clamped exponent; added regression test `test_ledger_entry_backoff_overflow_safety`; `cargo test -p scmessenger-cli ledger` and `cargo check -p scmessenger-cli` both pass.
 2. [x] Install `wasm-pack` on the active dev host and rerun `cd wasm && wasm-pack build` to clear remaining local validation-debt blocker.
    - Outcome (2026-03-03 HST): Installed `wasm-pack 0.14.0`, added `wasm-opt = false` release-profile metadata in `wasm/Cargo.toml` for this host target, and re-ran `cd wasm && wasm-pack build` successfully.
-3. [ ] Provision Docker runtime on the active dev host and rerun `bash ./verify_simulation.sh` to convert fail-fast prerequisite guidance into executed simulation evidence.
+3. [ ] Provision Docker runtime on the active dev host and rerun `bash scripts/verify_simulation.sh` to convert fail-fast prerequisite guidance into executed simulation evidence.
 4. [ ] Execute live network matrix validation (GCP + direct P2P + relay fallback, Android+iOS) and store artifact bundle pointer in canonical docs.
 5. [ ] Execute ACK-safe path switching validation (mid-send route switch, no duplicate/loss, sender receipt convergence) and record evidence.
 6. [ ] Execute app-update + reinstall continuity validation on real Android+iOS devices and record identity/contact/history continuity evidence.
@@ -957,7 +957,7 @@ Inventory from repo-wide checklist scan (`rg -P "^\s*(?:[-*]|\d+\.)\s+\[ \]" --g
 4. Highest-priority remaining wave-2 actions (post-implementation evidence gates):
    - Re-run synchronized Android+iOS+GCP live probe and verify reduced relay/multipeer churn with receipt convergence in both directions.
    - Capture synchronized BLE-only and internet-degraded artifact bundle with one message ID end-to-end timeline for residual-risk closure.
-   - Provision Docker runtime and rerun `bash ./verify_simulation.sh` to clear the final local validation-debt blocker.
+   - Provision Docker runtime and rerun `bash scripts/verify_simulation.sh` to clear the final local validation-debt blocker.
 
 ### WS12.17 Wave-3 Governance Closure (2026-03-03 HST)
 
@@ -996,7 +996,7 @@ Inventory from repo-wide checklist scan (`rg -P "^\s*(?:[-*]|\d+\.)\s+\[ \]" --g
    - WS12.12.5: capture synchronized tri-platform traces for one failed message ID.
    - WS12.12.6: verify iOS receipt/ack emission path during Android BLE fallback attempts.
    - WS12.14.6: capture synchronized BLE-only artifact bundle and compare against baseline.
-   - WS12.15.3: provision Docker runtime and rerun `verify_simulation.sh`.
+   - WS12.15.3: provision Docker runtime and rerun `scripts/verify_simulation.sh`.
    - WS12.15.4: execute live network matrix validation (GCP + direct + relay fallback).
    - WS12.15.5: execute ACK-safe path switching validation and record evidence.
    - WS12.15.6: execute app-update + reinstall continuity validation on real Android+iOS devices.
@@ -1280,7 +1280,7 @@ Priority items to track into remaining v0.2.x execution:
 
 ## 2026-03-13 Consolidated Open Items From Full Conversation
 
-- Open: prove full 5-node visibility after simulator recovery using the upgraded `run5.sh`; current honest state remains partially indeterminate rather than fully verified.
+- Open: prove full 5-node visibility after simulator recovery using the upgraded `scripts/run5.sh`; current honest state remains partially indeterminate rather than fully verified.
 - Open: investigate iOS simulator runtime `historySync request failed to prepare message` after successful launch recovery.
 - Open: complete iOS send-path parity with store-and-forward-first UX so the send action never blocks on live transport success.
 - Open: continue hardening iOS against peer-identify / identity-beacon event storms that can contribute to transient freeze/unfreeze behavior.

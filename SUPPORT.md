@@ -1,9 +1,11 @@
 # SCMessenger Support
 
 Status: Active
-Last updated: 2026-03-07
+Last updated: 2026-07-24
 
-SCMessenger's current public development line is **v0.2.0 alpha**. Planned workstreams `WS13` and `WS14` are currently tracked as **v0.2.1** follow-up scope, not part of the active alpha-closeout baseline.
+SCMessenger's current public development line is **v0.3.5 alpha**, working
+toward **v1.0.0**. Sequencing for the v1.0.0 work is tracked in
+`HANDOFF/V1_0_0_EXECUTION_PLAN.md`.
 
 ## Where to Ask for Help
 
@@ -22,20 +24,24 @@ Use the GitHub documentation template for stale, missing, or unclear docs.
 
 ### Request a feature or propose future work
 
-Use the feature-request template. If the request is really a `v0.2.1` planning item (for example `WS13` or `WS14` scope), say that explicitly so it does not get mixed into `v0.2.0` alpha closeout work.
+Use the feature-request template. If the request is v1.0.0 scope rather than a
+fix against the current v0.3.5 line, say so explicitly.
+
+### Ask a general question
+
+Open a GitHub issue. GitHub Discussions is not enabled on this repository.
 
 ### Report a security vulnerability
 
-Do **not** open a public issue. Follow `SECURITY.md` and use GitHub's private vulnerability reporting flow.
+Do **not** open a public issue. Follow `SECURITY.md` and use GitHub's private
+vulnerability reporting flow (repository **Security** tab, **Report a
+vulnerability**).
 
 ## Current Canonical References
 
 - `README.md`
 - `DOCUMENTATION.md`
 - `docs/CURRENT_STATE.md`
+- `docs/V1_KNOWN_LIMITATIONS.md`
 - `REMAINING_WORK_TRACKING.md`
-- `docs/MILESTONE_PLAN_V0.2.0_ALPHA.md`
-
-## Not Currently Used for Support Intake
-
-GitHub Discussions are not the current support path for this repository. Use issues/templates plus the security route above instead.
+- `HANDOFF/V1_0_0_EXECUTION_PLAN.md`

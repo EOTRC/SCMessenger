@@ -24,7 +24,7 @@ fixed," this is part of the ~30-ticket remaining backlog.
 **Source:** `HANDOFF/todo/P0_ANDROID_024_IDENTITY_GENERATION_REGRESSION.md` (82 lines, full spec)
 **Depends on:** `HANDOFF/todo/[META]_ORCHESTRATOR_COLD_START_RECOVERY.md` (cold pool must be warm first)
 **Blocks:** v0.2.3 hotfix release; user-blocking onboarding bug
-**AGENT_MODEL:** qwen3-coder-next:cloud (per `ORCHESTRATOR_DIRECTIVE.md` table for `implementer`)
+**AGENT_MODEL:** qwen3-coder-next:cloud (per `docs/orchestration/ORCHESTRATOR_DIRECTIVE.md` table for `implementer`)
 
 ---
 

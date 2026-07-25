@@ -74,7 +74,7 @@ $ grep -n "R-WS13.6\|Contact Duplication" docs/V0.2.0_RESIDUAL_RISK_REGISTER.md
 - Proposed fixes
 - Debug commands
 
-### 3.  CONTACT_PERSISTENCE_FIX_PLAN.md
+### 3.  docs/historical/plans/CONTACT_PERSISTENCE_FIX_PLAN.md
 **Purpose:** Implementation roadmap  
 **Scope:** All 4 issues  
 **Contents:**
@@ -153,7 +153,7 @@ cd android && ./gradlew assembleDebug -x lint --quiet
 
 -  ANDROID_FIXES_2026-03-14.md
 -  DEBUG_REMAINING_ISSUES_2026-03-14.md
--  CONTACT_PERSISTENCE_FIX_PLAN.md
+-  docs/historical/plans/CONTACT_PERSISTENCE_FIX_PLAN.md
 -  SESSION_SUMMARY_CONTACT_PERSISTENCE_2026-03-14.md
 -  DOCUMENTATION_SYNC_VERIFICATION_2026-03-14.md (this file)
 

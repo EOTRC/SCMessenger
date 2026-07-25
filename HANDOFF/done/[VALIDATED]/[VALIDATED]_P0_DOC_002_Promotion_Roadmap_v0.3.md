@@ -28,13 +28,13 @@ fixed," this is part of the ~30-ticket remaining backlog.
 
 ## Verified Gap
 
-`PRODUCTION_ROADMAP.md` (53KB) describes v1.0 plan and lists v0.2.1 items as P0/P1. After v0.2.1-complete ships, those items must be moved to "done" and v0.3 alpha items promoted to active P0.
+`docs/historical/plans/PRODUCTION_ROADMAP.md` (53KB) describes v1.0 plan and lists v0.2.1 items as P0/P1. After v0.2.1-complete ships, those items must be moved to "done" and v0.3 alpha items promoted to active P0.
 
-## Scope (~45 LoC of edits to PRODUCTION_ROADMAP.md)
+## Scope (~45 LoC of edits to docs/historical/plans/PRODUCTION_ROADMAP.md)
 
 ## File Targets
 
-- `PRODUCTION_ROADMAP.md` [EDIT  close v0.2.1 items, promote v0.3 items]
+- `docs/historical/plans/PRODUCTION_ROADMAP.md` [EDIT  close v0.2.1 items, promote v0.3 items]
 
 ## Edits Required
 
@@ -127,15 +127,15 @@ Add a link at the top:
 
 ```bash
 # Confirm file is updated
-head -30 PRODUCTION_ROADMAP.md
-grep "v0.2.1-complete shipped" PRODUCTION_ROADMAP.md
-grep "PHASE 0: v0.3 Alpha" PRODUCTION_ROADMAP.md
-wc -l PRODUCTION_ROADMAP.md
+head -30 docs/historical/plans/PRODUCTION_ROADMAP.md
+grep "v0.2.1-complete shipped" docs/historical/plans/PRODUCTION_ROADMAP.md
+grep "PHASE 0: v0.3 Alpha" docs/historical/plans/PRODUCTION_ROADMAP.md
+wc -l docs/historical/plans/PRODUCTION_ROADMAP.md
 ```
 
 ## Acceptance Gates
 
-1. `PRODUCTION_ROADMAP.md` updated
+1. `docs/historical/plans/PRODUCTION_ROADMAP.md` updated
 2. All 17 success criteria from `planfromclaudeforhermes` 7 marked  in the doc
 3. New PHASE 0 (v0.3 alpha) added with 10 sub-items
 4. Link to `RELEASE_NOTES_v0.2.1.md` present

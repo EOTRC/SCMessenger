@@ -5,14 +5,14 @@ body:
   - type: markdown
     attributes:
       value: |
-        Use this template for canonical docs, supporting docs, or GitHub-facing contributor surfaces. If the issue changes release expectations, specify whether it affects the active `v0.2.0` alpha baseline or deferred `v0.2.1` planning.
+        Use this template for canonical docs, supporting docs, or GitHub-facing contributor surfaces. If the issue changes release expectations, say whether it affects the active `v0.3.5` alpha baseline or planned `v1.0.0` scope.
   - type: dropdown
     id: release_scope
     attributes:
       label: Release scope
       options:
-        - v0.2.0 alpha (active baseline)
-        - v0.2.1 / WS13 / WS14 planned scope
+        - v0.3.5 alpha (active baseline)
+        - v1.0.0 planned scope
         - Not release-specific
     validations:
       required: true
