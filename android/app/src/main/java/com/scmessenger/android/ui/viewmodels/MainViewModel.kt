@@ -29,7 +29,7 @@ class MainViewModel @Inject constructor(
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
-    private val _isReady = MutableStateFlow(false)
+    private val _isReady = MutableStateFlow(meshRepository.getIdentityInfoNonBlocking() != null)
     val isReady = _isReady.asStateFlow()
     val hasIdentity = _isReady.asStateFlow()
 
@@ -47,8 +47,8 @@ class MainViewModel @Inject constructor(
         !ready && !choiceCompleted
     }.stateIn(
         scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = true
+        started = SharingStarted.Eagerly,
+        initialValue = !_isReady.value && !_installChoiceCompleted.value
     )
 
     val isCreatingIdentity: StateFlow<Boolean> = identityCreationCoordinator.identityState.map {
