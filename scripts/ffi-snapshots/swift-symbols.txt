@@ -63,6 +63,7 @@ open func exportIdentityBackupFastWithSalt(passphrase: String, salt: Data?)throw
 open func exportIdentityBackupWithSalt(passphrase: String, salt: Data)throws  -> String  {
 open func exportIdentityBackupWithSalt(passphrase: String, salt: Data?)throws  -> String  {
 open func exportLogs()throws  -> String  {
+open func exportSeedEntries(limit: UInt32) -> [SeedLedgerEntry]  {
 open func extractPublicKeyFromPeerId(peerId: String)throws  -> String  {
 open func flush()  {try! rustCall() {
 open func flush()  {try! rustCall() {
@@ -102,6 +103,7 @@ open func historyManager()throws  -> HistoryManager  {
 open func identityId() -> String?  {
 open func importIdentityBackup(backup: String, passphrase: String)throws   {try rustCallWithError(FfiConverterTypeIronCoreError_lift) {
 open func importIdentityBackup(backup: String, passphrase: String)throws   {try rustCallWithError(FfiConverterTypeIronCoreError_lift) {
+open func importSeedEntries(entries: [SeedLedgerEntry]) -> UInt32  {
 open func inboxCount() -> UInt32  {
 open func initializeIdentity()throws   {try rustCallWithError(FfiConverterTypeIronCoreError_lift) {
 open func inviteGetSignableData(tokenBytes: Data)throws  -> Data  {
@@ -206,6 +208,7 @@ open func save(settings: MeshSettings)throws   {try rustCallWithError(FfiConvert
 open func saveWithEntries(entries: [LedgerEntry])throws   {try rustCallWithError(FfiConverterTypeIronCoreError_lift) {
 open func search(query: String)throws  -> [Contact]  {
 open func search(query: String, limit: UInt32)throws  -> [MessageRecord]  {
+open func seedAddresses(limit: UInt32) -> [LedgerEntry]  {
 open func sendMessage(peerId: String, data: Data, recipientIdentityId: String?, intendedDeviceId: String?)async throws   {
 open func sendMessageStatus(peerId: String, data: Data, recipientIdentityId: String?, intendedDeviceId: String?) -> String?  {
 open func sendMessageStatus(peerId: String, data: Data, recipientIdentityId: String?, intendedDeviceId: String?)async  -> String?  {
@@ -351,6 +354,8 @@ public func FfiConverterTypeRegistrationStateInfo_lift(_ buf: RustBuffer) throws
 public func FfiConverterTypeRegistrationStateInfo_lower(_ value: RegistrationStateInfo) -> RustBuffer {
 public func FfiConverterTypeRelayAdjustment_lift(_ buf: RustBuffer) throws -> RelayAdjustment {
 public func FfiConverterTypeRelayAdjustment_lower(_ value: RelayAdjustment) -> RustBuffer {
+public func FfiConverterTypeSeedLedgerEntry_lift(_ buf: RustBuffer) throws -> SeedLedgerEntry {
+public func FfiConverterTypeSeedLedgerEntry_lower(_ value: SeedLedgerEntry) -> RustBuffer {
 public func FfiConverterTypeServiceState_lift(_ buf: RustBuffer) throws -> ServiceState {
 public func FfiConverterTypeServiceState_lower(_ value: ServiceState) -> RustBuffer {
 public func FfiConverterTypeServiceStats_lift(_ buf: RustBuffer) throws -> ServiceStats {
@@ -442,6 +447,7 @@ public struct FfiConverterTypeReceipt: FfiConverterRustBuffer {
 public struct FfiConverterTypeReceivedMessage: FfiConverterRustBuffer {
 public struct FfiConverterTypeRegistrationStateInfo: FfiConverterRustBuffer {
 public struct FfiConverterTypeRelayAdjustment: FfiConverterRustBuffer {
+public struct FfiConverterTypeSeedLedgerEntry: FfiConverterRustBuffer {
 public struct FfiConverterTypeServiceState: FfiConverterRustBuffer {
 public struct FfiConverterTypeServiceStats: FfiConverterRustBuffer {
 public struct FfiConverterTypeSignatureResult: FfiConverterRustBuffer {
@@ -471,6 +477,7 @@ public struct Receipt: Equatable, Hashable {
 public struct ReceivedMessage: Equatable, Hashable {
 public struct RegistrationStateInfo: Equatable, Hashable {
 public struct RelayAdjustment: Equatable, Hashable {
+public struct SeedLedgerEntry: Equatable, Hashable {
 public struct ServiceStats: Equatable, Hashable {
 public struct SignatureResult: Equatable, Hashable {
 public struct TtlConfig: Equatable, Hashable {
