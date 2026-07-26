@@ -58,6 +58,7 @@ data class Receipt (
 data class ReceivedMessage (
 data class RegistrationStateInfo (
 data class RelayAdjustment (
+data class SeedLedgerEntry (
 data class ServiceStats (
 data class SignatureResult (
 data class TtlConfig (
@@ -134,6 +135,7 @@ fun `exportIdentityBackupWithSalt`(`passphrase`: kotlin.String, `salt`: kotlin.B
 fun `exportIdentityBackup`(`passphrase`: kotlin.String): kotlin.String
 fun `exportIdentityBackup`(`passphrase`: kotlin.String): kotlin.String
 fun `exportLogs`(): kotlin.String
+fun `exportSeedEntries`(`limit`: kotlin.UInt): List<SeedLedgerEntry>
 fun `extractPublicKeyFromPeerId`(`peerId`: kotlin.String): kotlin.String
 fun `flush`()
 fun `flush`()
@@ -170,6 +172,7 @@ fun `historyManager`(): HistoryManager
 fun `identityId`(): kotlin.String?
 fun `importIdentityBackup`(`backup`: kotlin.String, `passphrase`: kotlin.String)
 fun `importIdentityBackup`(`backup`: kotlin.String, `passphrase`: kotlin.String)
+fun `importSeedEntries`(`entries`: List<SeedLedgerEntry>): kotlin.UInt
 fun `inboxCount`(): kotlin.UInt
 fun `initializeIdentity`()
 fun `inviteGetSignableData`(`tokenBytes`: kotlin.ByteArray): kotlin.ByteArray
@@ -287,6 +290,7 @@ fun `save`()
 fun `save`(`settings`: MeshSettings)
 fun `search`(`query`: kotlin.String): List<Contact>
 fun `search`(`query`: kotlin.String, `limit`: kotlin.UInt): List<MessageRecord>
+fun `seedAddresses`(`limit`: kotlin.UInt): List<LedgerEntry>
 fun `sendBlePacket`(`peerId`: kotlin.String, `data`: kotlin.ByteArray)
 fun `sendMessageStatus`(`peerId`: kotlin.String, `data`: kotlin.ByteArray, `recipientIdentityId`: kotlin.String?, `intendedDeviceId`: kotlin.String?): kotlin.String?
 fun `sendProximityPacket`(`peerId`: kotlin.String, `transport`: ProximityTransport, `data`: kotlin.ByteArray)
