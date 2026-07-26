@@ -38,6 +38,17 @@
 //! optional: if it were outside the signature, anyone who intercepted or relayed
 //! an invite could inject attacker-controlled multiaddrs that a fresh node dials
 //! on first launch.
+//!
+//! # Verification
+//!
+//! [`InviteToken::verify`] is the only real validity gate: Ed25519 over
+//! [`InviteToken::get_signable_data`] with `inviter_public_key`, plus ML-DSA-65
+//! over the same bytes when the token carries a post-quantum key and signature.
+//! The signed bytes are domain separated with [`INVITE_SIGNING_DOMAIN`].
+//! [`InviteToken::is_valid`] is a boolean wrapper over it.
+//!
+//! No code may treat any field of a token as authenticated — `seed_ledger`
+//! above all — before `verify` has returned `Ok`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -54,6 +65,28 @@ pub const QR_BYTE_BUDGET: usize = 2953;
 /// Format tag on the encoded invite payload. Bumping this is how a future
 /// encoding change stays distinguishable from the current one.
 const QR_PAYLOAD_PREFIX: &str = "SCI1:";
+
+/// Domain-separation tag prefixed to the bytes an invite signature covers.
+///
+/// Without it the signed blob is a bare bincode struct, so a signature produced
+/// over some other bincode-encoded structure with a coincidentally compatible
+/// layout could be replayed as an invite signature (and vice versa). The tag
+/// binds every invite signature to the invite context and to this version of
+/// the signed-byte layout.
+///
+/// WIRE BREAK: this changes the signed byte string on top of the seed-ledger
+/// change documented on [`InviteToken::get_signable_data`]. Signatures minted
+/// by any earlier build do not verify here and vice versa. Invites are short
+/// lived (30 day default expiry), so this is an accepted pre-1.0 break rather
+/// than a migration; bump the version suffix on any future layout change.
+pub const INVITE_SIGNING_DOMAIN: &[u8] = b"SCM-INVITE-v1";
+
+/// Encoded length of an ML-DSA-65 public key, per FIPS 204.
+///
+/// Mirrors the length `crate::crypto::pq::mldsa::verify` enforces. Checked here
+/// only so a wrong-sized key reports as [`InviteError::MalformedKey`] rather
+/// than being indistinguishable from a genuine verification failure.
+const MLDSA65_PUBLIC_KEY_LEN: usize = 1952;
 
 /// Invite system errors
 #[derive(Debug, Error)]
@@ -72,6 +105,21 @@ pub enum InviteError {
     PayloadTooLarge(usize, usize),
     #[error("Malformed invite payload: {0}")]
     MalformedPayload(String),
+    /// The token carries no Ed25519 signature at all.
+    #[error("Invite carries no signature")]
+    MissingSignature,
+    /// Signature bytes are present but structurally wrong (bad length).
+    #[error("Malformed signature: {0}")]
+    MalformedSignature(String),
+    /// Key material is the wrong length or not a valid point.
+    #[error("Malformed key: {0}")]
+    MalformedKey(String),
+    /// Policy demanded a post-quantum signature and the token has none.
+    #[error("Post-quantum signature required but not present")]
+    PqSignatureRequired,
+    /// The ML-DSA-65 signature is present but does not verify.
+    #[error("Post-quantum signature verification failed")]
+    PqVerificationFailed,
 }
 
 /// Build the seed ledger for an invite: the inviter's own address first and
@@ -229,33 +277,123 @@ impl InviteToken {
         self
     }
 
-    /// Check if token is still valid
-    pub fn is_valid(&self, require_pq: bool) -> bool {
+    /// Cryptographically verify the token: expiry, Ed25519, and ML-DSA-65 when
+    /// the token carries a post-quantum key and signature.
+    ///
+    /// This is the only real validity gate. `Ok(())` means the inviter named by
+    /// `inviter_public_key` actually signed every field covered by
+    /// [`Self::get_signable_data`] — including `seed_ledger`, whose addresses a
+    /// fresh invitee dials on first launch.
+    ///
+    /// A token that has a post-quantum key but no post-quantum signature is
+    /// accepted here (Ed25519 alone). Use [`Self::verify_with_policy`] with
+    /// `require_pq = true` to refuse that downgrade.
+    pub fn verify(&self) -> Result<(), InviteError> {
+        self.verify_with_policy(false)
+    }
+
+    /// [`Self::verify`], plus a policy check that the token carries a
+    /// post-quantum signature when `require_pq` is set.
+    pub fn verify_with_policy(&self, require_pq: bool) -> Result<(), InviteError> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
-        if now >= self.expires_at || self.signature.is_empty() {
-            return false;
+        if now >= self.expires_at {
+            return Err(InviteError::TokenExpired);
         }
 
-        if let Some(pq_sig) = &self.pq_signature {
-            // Tampered signature check (simulated)
-            if pq_sig.is_empty() || pq_sig == b"TAMPERED" {
-                return false;
+        if self.signature.is_empty() {
+            return Err(InviteError::MissingSignature);
+        }
+
+        // Both algorithms sign exactly these bytes.
+        let signed = self.get_signable_data()?;
+
+        self.verify_ed25519(&signed)?;
+        self.verify_pq(&signed, require_pq)
+    }
+
+    /// Ed25519 verification of [`Self::signature`] over `signed` using
+    /// [`Self::inviter_public_key`].
+    fn verify_ed25519(&self, signed: &[u8]) -> Result<(), InviteError> {
+        use ed25519_dalek::Verifier;
+
+        let key_bytes: &[u8; 32] = self.inviter_public_key.as_slice().try_into().map_err(|_| {
+            InviteError::MalformedKey(format!(
+                "inviter_public_key is {} bytes, expected 32",
+                self.inviter_public_key.len()
+            ))
+        })?;
+        let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(key_bytes)
+            .map_err(|e| InviteError::MalformedKey(format!("inviter_public_key: {}", e)))?;
+
+        let sig_bytes: &[u8; 64] = self.signature.as_slice().try_into().map_err(|_| {
+            InviteError::MalformedSignature(format!(
+                "Ed25519 signature is {} bytes, expected 64",
+                self.signature.len()
+            ))
+        })?;
+        let signature = ed25519_dalek::Signature::from_bytes(sig_bytes);
+
+        verifying_key
+            .verify(signed, &signature)
+            .map_err(|_| InviteError::VerificationFailed)
+    }
+
+    /// ML-DSA-65 verification of [`Self::pq_signature`] over `signed` using
+    /// [`Self::pq_public_key`], and the `require_pq` downgrade policy.
+    ///
+    /// Note `pq_public_key` is covered by the Ed25519 signature but
+    /// `pq_signature` is not (it cannot be, it signs the same bytes), so a
+    /// post-quantum signature with no accompanying key is unverifiable and is
+    /// rejected rather than silently skipped.
+    fn verify_pq(&self, signed: &[u8], require_pq: bool) -> Result<(), InviteError> {
+        match (self.pq_public_key.as_deref(), self.pq_signature.as_deref()) {
+            (Some(pq_key), Some(pq_sig)) => {
+                if pq_key.len() != MLDSA65_PUBLIC_KEY_LEN {
+                    return Err(InviteError::MalformedKey(format!(
+                        "pq_public_key is {} bytes, expected {}",
+                        pq_key.len(),
+                        MLDSA65_PUBLIC_KEY_LEN
+                    )));
+                }
+                crate::crypto::pq::mldsa::verify(pq_key, signed, pq_sig)
+                    .map_err(|_| InviteError::PqVerificationFailed)
+            }
+            (None, Some(_)) => Err(InviteError::MalformedKey(
+                "pq_signature present without pq_public_key".to_string(),
+            )),
+            (_, None) => {
+                if require_pq {
+                    return Err(InviteError::PqSignatureRequired);
+                }
+                tracing::warn!(
+                    inviter_id = %self.inviter_id,
+                    invitee_id = %self.invitee_id,
+                    "AUDIT: accepted legacy single-signature (non-PQ) invite"
+                );
+                Ok(())
             }
         }
+    }
 
-        if require_pq && self.pq_signature.is_none() {
-            return false;
+    /// Boolean wrapper over [`Self::verify_with_policy`], for call sites that
+    /// only branch on validity. Prefer `verify_with_policy` where the reason
+    /// matters: this discards it to a `debug` log.
+    pub fn is_valid(&self, require_pq: bool) -> bool {
+        match self.verify_with_policy(require_pq) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::debug!(
+                    inviter_id = %self.inviter_id,
+                    error = %e,
+                    "rejected invite token"
+                );
+                false
+            }
         }
-
-        if !require_pq && self.pq_signature.is_none() {
-            println!("[INFO] AUDIT: Accepted legacy single-sig invite");
-        }
-
-        true
     }
 
     /// Get data to be signed (everything except signature)
@@ -269,6 +407,11 @@ impl InviteToken {
     /// produced by pre-v0.4.0 builds no longer verify against v0.4.0 tokens and
     /// vice versa. Invites are short lived (30 day default expiry), so this is
     /// an accepted pre-1.0 break rather than a migration.
+    ///
+    /// SECURITY: the returned bytes are prefixed with [`INVITE_SIGNING_DOMAIN`]
+    /// so an invite signature is bound to the invite context and cannot be
+    /// replayed as a signature over another bincode structure. That prefix is a
+    /// second, independent wire break on top of the one described above.
     pub fn get_signable_data(&self) -> Result<Vec<u8>, InviteError> {
         let temp = Self {
             inviter_id: self.inviter_id.clone(),
@@ -283,7 +426,13 @@ impl InviteToken {
             seed_ledger: self.seed_ledger.clone(),
         };
 
-        bincode::serialize(&temp).map_err(|e| InviteError::SerializationError(e.to_string()))
+        let body = bincode::serialize(&temp)
+            .map_err(|e| InviteError::SerializationError(e.to_string()))?;
+
+        let mut signable = Vec::with_capacity(INVITE_SIGNING_DOMAIN.len() + body.len());
+        signable.extend_from_slice(INVITE_SIGNING_DOMAIN);
+        signable.extend_from_slice(&body);
+        Ok(signable)
     }
 
     /// Serialize to bytes
@@ -547,6 +696,50 @@ mod tests {
         InviteToken::new("alice".to_string(), vec![1, 2, 3, 4, 5], "bob".to_string())
     }
 
+    fn signing_key() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
+    }
+
+    /// A second, unrelated inviter key.
+    fn other_signing_key() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[9u8; 32])
+    }
+
+    /// Sign a token over its signable data, exactly as a platform client does.
+    ///
+    /// `inviter_public_key` is set to the signer's key first: it is part of the
+    /// signed bytes, so signing with a key the token does not name would only
+    /// ever produce a token that cannot verify.
+    fn sign_token(mut token: InviteToken) -> InviteToken {
+        use ed25519_dalek::Signer;
+        let key = signing_key();
+        token.inviter_public_key = key.verifying_key().to_bytes().to_vec();
+        let data = token.get_signable_data().expect("signable data");
+        token.signature = key.sign(&data).to_bytes().to_vec();
+        token
+    }
+
+    /// Sign a token with both Ed25519 and a freshly generated ML-DSA-65 key,
+    /// over the same bytes.
+    fn sign_token_pq(token: InviteToken) -> InviteToken {
+        use ed25519_dalek::Signer;
+
+        let pq = crate::crypto::pq::mldsa::generate_keypair();
+        let key = signing_key();
+
+        // The PQ public key is inside the signed bytes, so it must be attached
+        // before the Ed25519 signature is computed.
+        let mut token = token;
+        token.inviter_public_key = key.verifying_key().to_bytes().to_vec();
+        token.pq_public_key = Some(pq.verifying_key().to_vec());
+        token.pq_signature = None;
+
+        let data = token.get_signable_data().expect("signable data");
+        token.signature = key.sign(&data).to_bytes().to_vec();
+        token.pq_signature = Some(crate::crypto::pq::mldsa::sign(&pq, &data).expect("mldsa sign"));
+        token
+    }
+
     #[test]
     fn test_invite_token_creation() {
         let token = test_token();
@@ -569,51 +762,218 @@ mod tests {
 
     #[test]
     fn test_invite_token_validity() {
-        let mut token = test_token();
-        assert!(!token.is_valid(false)); // No signature yet
+        let token = test_token();
+        // No signature yet.
+        assert!(matches!(token.verify(), Err(InviteError::MissingSignature)));
+        assert!(!token.is_valid(false));
 
-        token = token.with_signature(vec![1, 2, 3]);
-        assert!(token.is_valid(false));
+        let signed = sign_token(test_token());
+        assert!(signed.verify().is_ok());
+        assert!(signed.is_valid(false));
     }
 
     #[test]
     fn test_invite_token_expiry_check() {
-        let token = test_token().with_signature(vec![1, 2, 3]).with_expiry(0);
+        let token = sign_token(test_token().with_expiry(0));
 
         std::thread::sleep(web_time::Duration::from_millis(10));
+        assert!(matches!(token.verify(), Err(InviteError::TokenExpired)));
+        assert!(!token.is_valid(false));
+    }
+
+    /// THE F1 FORGERY, verbatim from the adversarial review: an attacker-built
+    /// token with junk in both signature fields used to return `is_valid(true)`.
+    #[test]
+    fn test_invite_token_forged_signature_is_rejected() {
+        let mut forged = test_token().with_seed_ledger(vec![seed("/ip4/6.6.6.6/tcp/9001")]);
+        forged.inviter_public_key = signing_key().verifying_key().to_bytes().to_vec();
+        forged.signature = vec![0x00];
+        forged.pq_signature = Some(vec![0x01]);
+        forged.pq_public_key = Some(vec![0x02]);
+
+        assert!(!forged.is_valid(true), "forged invite must not validate");
+        assert!(!forged.is_valid(false), "forged invite must not validate");
+        assert!(matches!(
+            forged.verify(),
+            Err(InviteError::MalformedSignature(_))
+        ));
+    }
+
+    /// A signature of the right shape but the wrong contents: this is the case
+    /// a length check alone would let through.
+    #[test]
+    fn test_invite_token_zeroed_full_length_signature_is_rejected() {
+        let mut forged = test_token();
+        forged.inviter_public_key = signing_key().verifying_key().to_bytes().to_vec();
+        forged.signature = vec![0x00; 64];
+
+        assert!(matches!(
+            forged.verify(),
+            Err(InviteError::VerificationFailed)
+        ));
+    }
+
+    #[test]
+    fn test_invite_token_wrong_public_key_is_rejected() {
+        // Signed by `signing_key()`, but the token names a different inviter.
+        let mut token = sign_token(test_token());
+        token.inviter_public_key = other_signing_key().verifying_key().to_bytes().to_vec();
+
+        assert!(matches!(
+            token.verify(),
+            Err(InviteError::VerificationFailed)
+        ));
         assert!(!token.is_valid(false));
     }
 
     #[test]
+    fn test_invite_token_malformed_public_key_is_rejected() {
+        // The default `test_token()` key is 5 bytes, not an Ed25519 key.
+        let mut token = test_token();
+        token.signature = vec![0x00; 64];
+
+        assert!(matches!(token.verify(), Err(InviteError::MalformedKey(_))));
+    }
+
+    /// Domain separation: a signature over the bare bincode body, without the
+    /// [`INVITE_SIGNING_DOMAIN`] prefix, must not verify.
+    #[test]
+    fn test_invite_token_requires_domain_separation() {
+        use ed25519_dalek::Signer;
+
+        let key = signing_key();
+        let mut token = test_token();
+        token.inviter_public_key = key.verifying_key().to_bytes().to_vec();
+
+        let domained = token.get_signable_data().expect("signable data");
+        assert!(
+            domained.starts_with(INVITE_SIGNING_DOMAIN),
+            "signable data must carry the domain-separation prefix"
+        );
+
+        let undomained = &domained[INVITE_SIGNING_DOMAIN.len()..];
+        token.signature = key.sign(undomained).to_bytes().to_vec();
+
+        assert!(
+            matches!(token.verify(), Err(InviteError::VerificationFailed)),
+            "a signature over the undomained body must not verify"
+        );
+    }
+
+    #[test]
     fn test_invite_token_v1_compatibility() {
-        let token = test_token().with_signature(vec![1, 2, 3]);
+        // Ed25519-only invite: valid, but only under a policy that permits the
+        // non-PQ downgrade.
+        let token = sign_token(test_token());
+        assert!(token.verify().is_ok());
         assert!(token.is_valid(false));
     }
 
     #[test]
     fn test_invite_token_require_pq_rejects_v1() {
-        let token = test_token().with_signature(vec![1, 2, 3]);
+        let token = sign_token(test_token());
+        assert!(matches!(
+            token.verify_with_policy(true),
+            Err(InviteError::PqSignatureRequired)
+        ));
         assert!(!token.is_valid(true));
     }
 
     #[test]
     fn test_invite_token_v2_dual_sig_verification() {
-        let token = test_token()
-            .with_signature(vec![1, 2, 3])
-            .with_pq_signature(vec![4, 5], vec![6, 7]);
+        let token = sign_token_pq(test_token());
 
+        assert!(token.verify_with_policy(true).is_ok());
         assert!(token.is_valid(true));
         assert!(token.is_valid(false));
     }
 
     #[test]
     fn test_invite_token_tampered_pq_signature() {
-        let token = test_token()
-            .with_signature(vec![1, 2, 3])
-            .with_pq_signature(vec![4, 5], b"TAMPERED".to_vec());
+        let mut token = sign_token_pq(test_token());
+        let sig = token.pq_signature.as_mut().expect("pq signature");
+        sig[0] ^= 1;
 
+        assert!(matches!(
+            token.verify(),
+            Err(InviteError::PqVerificationFailed)
+        ));
         assert!(!token.is_valid(true));
         assert!(!token.is_valid(false));
+    }
+
+    #[test]
+    fn test_invite_token_garbage_pq_signature() {
+        let mut token = sign_token_pq(test_token());
+        token.pq_signature = Some(vec![0x01]);
+
+        assert!(matches!(
+            token.verify(),
+            Err(InviteError::PqVerificationFailed)
+        ));
+        assert!(!token.is_valid(true));
+    }
+
+    /// A PQ signature with no PQ key is unverifiable, so it is rejected rather
+    /// than skipped: skipping would let an attacker append a fake `pq_signature`
+    /// to a legitimate Ed25519-only invite and satisfy a `require_pq` policy.
+    #[test]
+    fn test_invite_token_pq_signature_without_key_is_rejected() {
+        let mut token = sign_token(test_token());
+        token.pq_signature = Some(vec![0x01; 3309]);
+
+        assert!(matches!(token.verify(), Err(InviteError::MalformedKey(_))));
+        assert!(!token.is_valid(true));
+        assert!(!token.is_valid(false));
+    }
+
+    /// Every field covered by `get_signable_data` must break verification when
+    /// mutated after signing.
+    #[test]
+    fn test_invite_token_mutating_any_signed_field_breaks_verification() {
+        let base = sign_token(
+            test_token()
+                .with_metadata("group-1".to_string())
+                .with_seed_ledger(vec![seed("/ip4/198.51.100.7/tcp/9001")]),
+        );
+        assert!(base.verify().is_ok());
+
+        let mutations: Vec<(&str, Box<dyn Fn(&mut InviteToken)>)> = vec![
+            (
+                "inviter_id",
+                Box::new(|t: &mut InviteToken| t.inviter_id = "mallory".to_string()),
+            ),
+            (
+                "invitee_id",
+                Box::new(|t: &mut InviteToken| t.invitee_id = "mallory".to_string()),
+            ),
+            (
+                "created_at",
+                Box::new(|t: &mut InviteToken| t.created_at -= 1),
+            ),
+            (
+                "expires_at",
+                Box::new(|t: &mut InviteToken| t.expires_at += 1),
+            ),
+            (
+                "metadata",
+                Box::new(|t: &mut InviteToken| t.metadata = Some("group-2".to_string())),
+            ),
+            (
+                "pq_public_key",
+                Box::new(|t: &mut InviteToken| t.pq_public_key = Some(vec![0u8; 1952])),
+            ),
+        ];
+
+        for (field, mutate) in mutations {
+            let mut mutated = base.clone();
+            mutate(&mut mutated);
+            assert!(
+                mutated.verify().is_err(),
+                "mutating {} must break verification",
+                field
+            );
+        }
     }
 
     // ------------------------------------------------------------------
@@ -642,32 +1002,6 @@ mod tests {
         token
     }
 
-    fn signing_key() -> ed25519_dalek::SigningKey {
-        ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
-    }
-
-    /// Sign a token over its signable data, exactly as a platform client does.
-    fn sign_token(mut token: InviteToken) -> InviteToken {
-        use ed25519_dalek::Signer;
-        let key = signing_key();
-        let data = token.get_signable_data().expect("signable data");
-        token.signature = key.sign(&data).to_bytes().to_vec();
-        token
-    }
-
-    fn verify_token(token: &InviteToken) -> bool {
-        use ed25519_dalek::Verifier;
-        let key = signing_key().verifying_key();
-        let Ok(data) = token.get_signable_data() else {
-            return false;
-        };
-        let Ok(sig_bytes) = <[u8; 64]>::try_from(token.signature.as_slice()) else {
-            return false;
-        };
-        key.verify(&data, &ed25519_dalek::Signature::from_bytes(&sig_bytes))
-            .is_ok()
-    }
-
     #[test]
     fn test_seed_ledger_is_covered_by_signature() {
         // REGRESSION GUARD: if seed_ledger ever falls outside
@@ -675,13 +1009,13 @@ mod tests {
         // attacker-controlled multiaddrs that a fresh node dials on launch.
         let token =
             sign_token(test_token().with_seed_ledger(vec![seed("/ip4/198.51.100.7/tcp/9001")]));
-        assert!(verify_token(&token), "honest token must verify");
+        assert!(token.verify().is_ok(), "honest token must verify");
 
         // 1. Append an attacker address.
         let mut injected = token.clone();
         injected.seed_ledger.push(seed("/ip4/6.6.6.6/tcp/9001"));
         assert!(
-            !verify_token(&injected),
+            injected.verify().is_err(),
             "appending a seed_ledger entry must break the signature"
         );
 
@@ -689,7 +1023,7 @@ mod tests {
         let mut rewritten = token.clone();
         rewritten.seed_ledger[0].multiaddr = "/ip4/6.6.6.6/tcp/9001".to_string();
         assert!(
-            !verify_token(&rewritten),
+            rewritten.verify().is_err(),
             "mutating a seed_ledger multiaddr must break the signature"
         );
 
@@ -697,7 +1031,7 @@ mod tests {
         let mut reported = token.clone();
         reported.seed_ledger[0].multiaddr = "/ip4/198.51.100.7/tcp/9002".to_string();
         assert!(
-            !verify_token(&reported),
+            reported.verify().is_err(),
             "mutating a seed_ledger port must break the signature"
         );
 
@@ -705,9 +1039,48 @@ mod tests {
         let mut stripped = token.clone();
         stripped.seed_ledger.clear();
         assert!(
-            !verify_token(&stripped),
+            stripped.verify().is_err(),
             "removing the seed_ledger must break the signature"
         );
+    }
+
+    /// Property: no mutation of the seed ledger survives verification, for any
+    /// ledger shape and any single-entry edit. The hand-written cases above
+    /// cover the four shapes we expect; this covers the ones we did not think
+    /// of.
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn prop_seed_ledger_mutation_always_breaks_verification(
+            addrs in proptest::collection::vec(
+                "/ip4/[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}/tcp/[0-9]{1,5}",
+                1..8usize,
+            ),
+            index in 0usize..8,
+            suffix in "[a-z0-9]{1,8}",
+        ) {
+            let entries: Vec<SeedLedgerEntry> = addrs.iter().map(|a| seed(a)).collect();
+            let token = sign_token(test_token().with_seed_ledger(entries));
+            proptest::prop_assert!(token.verify().is_ok(), "honest token must verify");
+
+            let i = index % token.seed_ledger.len();
+
+            // Append.
+            let mut appended = token.clone();
+            appended.seed_ledger.push(seed(&format!("/ip4/6.6.6.6/tcp/1{}", suffix)));
+            proptest::prop_assert!(appended.verify().is_err());
+
+            // Edit one entry in place.
+            let mut edited = token.clone();
+            edited.seed_ledger[i].multiaddr.push_str(&suffix);
+            proptest::prop_assert!(edited.verify().is_err());
+
+            // Remove one entry.
+            let mut removed = token.clone();
+            removed.seed_ledger.remove(i);
+            proptest::prop_assert!(removed.verify().is_err());
+        }
     }
 
     #[test]
@@ -765,7 +1138,10 @@ mod tests {
 
         let decoded = InviteToken::from_qr_payload(&payload).expect("round trip");
         assert_eq!(decoded.seed_ledger, token.seed_ledger);
-        assert!(verify_token(&decoded), "round trip must preserve signature");
+        assert!(
+            decoded.verify().is_ok(),
+            "round trip must preserve signature"
+        );
     }
 
     /// LEAK REGRESSION GUARD (operator directive 2026-07-25): the seed ledger

@@ -2,7 +2,9 @@ use scmessenger_core::crypto::{
     decrypt_with_ratchet_fallback, encrypt_with_ratchet_fallback, RatchetSessionManager,
 };
 use scmessenger_core::identity::{sign_bundle, verify_bundle, IdentityKeys};
-use scmessenger_core::relay::invite::InviteToken;
+use scmessenger_core::relay::invite::{
+    InviteError, InviteToken, SeedLedgerEntry, INVITE_SIGNING_DOMAIN,
+};
 
 #[test]
 fn test_pqc_01_hybrid_handshake() {
@@ -176,17 +178,125 @@ fn test_pqc_10_mldsa_dual_signatures() {
     assert!(verify_bundle(&tampered2).is_err());
 }
 
+/// Build a dual-signed invite from a real identity: Ed25519 and ML-DSA-65 sign
+/// the same domain-separated bytes, exactly as a platform client would.
+fn dual_signed_invite(keys: &IdentityKeys, seed_ledger: Vec<SeedLedgerEntry>) -> InviteToken {
+    let mut token = InviteToken::new(
+        "alice".to_string(),
+        keys.signing_key.verifying_key().to_bytes().to_vec(),
+        "bob".to_string(),
+    )
+    .with_seed_ledger(seed_ledger);
+
+    let pq = keys.mldsa_keypair.as_ref().expect("ML-DSA keypair");
+    // The PQ public key is inside the signed bytes, so attach it first.
+    token.pq_public_key = Some(pq.verifying_key().to_vec());
+
+    let data = token.get_signable_data().expect("signable data");
+    token.signature = keys.sign(&data).expect("ed25519 sign");
+    token.pq_signature = Some(keys.sign_mldsa(&data).expect("mldsa sign"));
+    token
+}
+
 #[test]
 fn test_pqc_11_dual_signature_invites() {
-    let token = InviteToken::new("alice".to_string(), vec![1, 2, 3], "bob".to_string())
-        .with_signature(vec![1, 2, 3])
-        .with_pq_signature(vec![4, 5], vec![6, 7]);
+    let alice = IdentityKeys::generate();
+    let seed_ledger = vec![SeedLedgerEntry {
+        multiaddr: "/ip4/198.51.100.7/tcp/9001".to_string(),
+    }];
 
+    let token = dual_signed_invite(&alice, seed_ledger.clone());
+
+    // Both signatures verify over the same bytes.
+    assert!(token.verify().is_ok(), "honest dual-signed invite");
+    assert!(token.verify_with_policy(true).is_ok());
     assert!(token.is_valid(true));
 
-    // Invalid when tampered
-    let tampered_token = InviteToken::new("alice".to_string(), vec![1, 2, 3], "bob".to_string())
-        .with_signature(vec![1, 2, 3])
-        .with_pq_signature(vec![4, 5], b"TAMPERED".to_vec());
-    assert!(!tampered_token.is_valid(true));
+    // Tampered ML-DSA signature.
+    let mut tampered_pq = token.clone();
+    tampered_pq.pq_signature.as_mut().expect("pq signature")[0] ^= 1;
+    assert!(matches!(
+        tampered_pq.verify(),
+        Err(InviteError::PqVerificationFailed)
+    ));
+    assert!(!tampered_pq.is_valid(true));
+
+    // Tampered Ed25519 signature.
+    let mut tampered_ed = token.clone();
+    tampered_ed.signature[0] ^= 1;
+    assert!(matches!(
+        tampered_ed.verify(),
+        Err(InviteError::VerificationFailed)
+    ));
+
+    // The F1 forgery: junk in both signature fields.
+    let mut forged = token.clone();
+    forged.signature = vec![0x00];
+    forged.pq_signature = Some(vec![0x01]);
+    assert!(!forged.is_valid(true), "forged invite must not validate");
+    assert!(!forged.is_valid(false), "forged invite must not validate");
+
+    // Seed-ledger injection after signing.
+    let mut injected = token.clone();
+    injected.seed_ledger.push(SeedLedgerEntry {
+        multiaddr: "/ip4/6.6.6.6/tcp/9001".to_string(),
+    });
+    assert!(
+        injected.verify().is_err(),
+        "injected seed entry must break both signatures"
+    );
+
+    // A different identity's key must not verify the token.
+    let mallory = IdentityKeys::generate();
+    let mut swapped = token.clone();
+    swapped.inviter_public_key = mallory.signing_key.verifying_key().to_bytes().to_vec();
+    assert!(swapped.verify().is_err());
+}
+
+#[test]
+fn test_pqc_11b_invite_requires_pq_when_policy_demands_it() {
+    // Ed25519-only invite: verifies, but not under a require_pq policy.
+    let alice = IdentityKeys::generate();
+    let mut token = InviteToken::new(
+        "alice".to_string(),
+        alice.signing_key.verifying_key().to_bytes().to_vec(),
+        "bob".to_string(),
+    );
+    let data = token.get_signable_data().expect("signable data");
+    token.signature = alice.sign(&data).expect("ed25519 sign");
+
+    assert!(token.verify().is_ok());
+    assert!(matches!(
+        token.verify_with_policy(true),
+        Err(InviteError::PqSignatureRequired)
+    ));
+
+    // Bolting a PQ signature onto a token that names no PQ key is rejected,
+    // not silently skipped.
+    let mut bolted = token.clone();
+    bolted.pq_signature = Some(vec![0x01; 3309]);
+    assert!(matches!(bolted.verify(), Err(InviteError::MalformedKey(_))));
+    assert!(!bolted.is_valid(true));
+}
+
+#[test]
+fn test_pqc_11c_invite_signature_is_domain_separated() {
+    let alice = IdentityKeys::generate();
+    let mut token = InviteToken::new(
+        "alice".to_string(),
+        alice.signing_key.verifying_key().to_bytes().to_vec(),
+        "bob".to_string(),
+    );
+
+    let domained = token.get_signable_data().expect("signable data");
+    assert!(domained.starts_with(INVITE_SIGNING_DOMAIN));
+
+    // Sign the bincode body without the domain prefix.
+    token.signature = alice
+        .sign(&domained[INVITE_SIGNING_DOMAIN.len()..])
+        .expect("ed25519 sign");
+    assert!(matches!(
+        token.verify(),
+        Err(InviteError::VerificationFailed)
+    ));
 }

@@ -779,21 +779,39 @@ impl MeshService {
 
                                     // NAT hole-punch Priority 1: proactively dial a seed peer on
                                     // startup so an outbound NAT mapping exists before any
-                                    // inbound circuit-relay traffic arrives. Non-blocking: a
-                                    // failure here must never fail service startup.
+                                    // inbound circuit-relay traffic arrives. A failure here must
+                                    // never fail service startup.
                                     //
                                     // Not gated on `parsed_bootstrap` any more: the swarm now
                                     // sources seed candidates from the connection ledger first,
                                     // so a node with an empty startup address list but a warm
-                                    // ledger must still get its hole punch. `Ok(())` now means
-                                    // an actual connection was established, so the log line is
-                                    // no longer a false positive.
-                                    match handle.connect_to_seed_peers().await {
-                                        Ok(()) => tracing::info!("Connected to seed peer"),
-                                        Err(e) => tracing::warn!(
-                                            "No seed peer reachable at startup (non-fatal): {:?}",
-                                            e
-                                        ),
+                                    // ledger must still get its hole punch. `Ok(())` means an
+                                    // actual connection was established, not merely a queued
+                                    // dial, so the log line is no longer a false positive.
+                                    //
+                                    // DEADLOCK SAFETY: this MUST NOT be awaited inline. Waiting
+                                    // for a real ConnectionEstablished can take until the swarm's
+                                    // 10s pending-dial sweep fires. `event_rx` is a bounded
+                                    // channel (capacity 100) and the swarm emits events with
+                                    // awaited sends from the same select! task that owns that
+                                    // sweep. Blocking here stops the drain below, the channel
+                                    // fills, the swarm task blocks on send, and the sweep that
+                                    // would release this reply can never run -- a permanent
+                                    // startup deadlock, reachable on an ordinary LAN via mDNS
+                                    // event volume. Detach it so the drain starts immediately.
+                                    {
+                                        let seed_handle = handle.clone();
+                                        tokio::spawn(async move {
+                                            match seed_handle.connect_to_seed_peers().await {
+                                                Ok(()) => {
+                                                    tracing::info!("Connected to seed peer")
+                                                }
+                                                Err(e) => tracing::warn!(
+                                                    "No seed peer reachable at startup (non-fatal): {:?}",
+                                                    e
+                                                ),
+                                            }
+                                        });
                                     }
                                     while let Some(event) = event_rx.recv().await {
                                         match event {
