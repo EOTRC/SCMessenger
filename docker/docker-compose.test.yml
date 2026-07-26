@@ -72,7 +72,7 @@ services:
     working_dir: /workspace
     volumes:
       - rust-test-cache:/workspace/target
-      - test-results:/workspace/test-results:rw
+      - ./test-results:/workspace/test-results:rw
     command: >
       bash -c "
         echo '=== Generating Code Coverage Report ===' &&
@@ -134,7 +134,7 @@ services:
     volumes:
       - android-test-cache:/workspace/android/.gradle
       - rust-build-cache:/workspace/core/target
-      - test-results:/workspace/test-results:rw
+      - ./test-results:/workspace/test-results:rw
     environment:
       - ANDROID_HOME=/opt/android-sdk
       - ANDROID_NDK_HOME=/opt/android-sdk/ndk/26.1.10909125
@@ -229,7 +229,7 @@ services:
     hostname: integration-test
     working_dir: /workspace
     volumes:
-      - test-results:/workspace/test-results:rw
+      - ./test-results:/workspace/test-results:rw
     environment:
       - RUST_LOG=debug
       - RUST_BACKTRACE=1
@@ -332,4 +332,3 @@ volumes:
   rust-test-cache:
   android-test-cache:
   rust-build-cache:
-  test-results:

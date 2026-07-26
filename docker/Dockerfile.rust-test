@@ -25,15 +25,11 @@ RUN rustup target add \
     i686-linux-android \
     x86_64-linux-android
 
-# Install cargo tools for testing
-RUN cargo install cargo-tarpaulin || true  # Code coverage
-RUN cargo install cargo-audit || true       # Security audits
-
 # Copy workspace
 COPY . .
 
-# Build dependencies first (cached layer)
-RUN cargo build --workspace --all-features --tests || true
-
-# Default command runs all tests
-CMD ["cargo", "test", "--workspace", "--all-features", "--", "--nocapture"]
+# Default command runs all tests with default features
+# (The pre-compile layer has been removed; cargo will build dependencies as needed.
+#  Redundant pre-compile with --all-features was compiling the workspace twice since
+#  the actual test run uses default features, causing significant disk/time waste.)
+CMD ["cargo", "test", "--workspace", "--", "--nocapture"]

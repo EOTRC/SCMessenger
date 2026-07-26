@@ -89,6 +89,18 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Free up disk space
+        run: |
+          set -euo pipefail
+          echo "[INFO] Disk usage before cleanup:"
+          df -h
+          echo "[INFO] Removing unnecessary files..."
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo apt-get clean || true
+          docker system prune -af || true
+          echo "[INFO] Disk usage after cleanup:"
+          df -h
+
       - name: Resolve Compose image name
         id: image
         working-directory: docker
@@ -154,6 +166,18 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Free up disk space
+        run: |
+          set -euo pipefail
+          echo "[INFO] Disk usage before cleanup:"
+          df -h
+          echo "[INFO] Removing unnecessary files..."
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo apt-get clean || true
+          docker system prune -af || true
+          echo "[INFO] Disk usage after cleanup:"
+          df -h
+
       - name: Resolve Compose image name
         id: image
         working-directory: docker
@@ -211,6 +235,18 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Free up disk space
+        run: |
+          set -euo pipefail
+          echo "[INFO] Disk usage before cleanup:"
+          df -h
+          echo "[INFO] Removing unnecessary files..."
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo apt-get clean || true
+          docker system prune -af || true
+          echo "[INFO] Disk usage after cleanup:"
+          df -h
 
       - name: Resolve Compose image name
         id: image
