@@ -37,6 +37,43 @@ pub enum NetworkMode {
     Public,
 }
 
+/// Whether a DNS-form multiaddr (`/dns/`, `/dns4/`, `/dns6/`, `/dnsaddr/`) may
+/// be accepted.
+///
+/// WHY THIS EXISTS (re-review NEW-1, 2026-07-25): the first remediation pass
+/// validated every `Ip4`/`Ip6` component and then set `has_transport = true`
+/// for DNS components while validating NOTHING about them. A name resolves to
+/// whatever its owner's zone says, so `/dns4/evil.example/tcp/80` skipped every
+/// rule below: publish `A evil.example -> 169.254.169.254`, put that string in
+/// a ledger-exchange entry or an invite `seed_ledger`, and the desktop swarm --
+/// which wires a real resolver -- resolves and dials it. That restores the full
+/// SSRF/internal-port-scan oracle F3 was filed for, and it is re-pointable per
+/// probe (change the zone between dials) so it scans, not just hits one host.
+///
+/// Resolve-then-validate is NOT implemented here on purpose: this module is
+/// I/O-free and `cfg`-free by contract (it compiles identically on wasm32,
+/// Android and desktop), and a resolve-then-validate gate is a DNS-rebinding
+/// TOCTOU anyway -- libp2p re-resolves at dial time and on every reconnect, so
+/// a validated answer is not the answer that gets connected to.
+///
+/// So the rule is provenance-based: a name is only as trustworthy as whoever
+/// supplied it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DnsPolicy {
+    /// The address came from a remote peer (ledger exchange, invite
+    /// `seed_ledger`, Identify `listen_addrs`, gossip) or is about to be
+    /// disclosed to one. DNS forms are REJECTED.
+    ///
+    /// This is the [`Default`] so that a future call site which forgets to
+    /// think about provenance fails closed.
+    #[default]
+    Reject,
+    /// The address came from local configuration: an operator-supplied
+    /// bootstrap list, a CLI flag, or an address this node itself connected to.
+    /// DNS forms are allowed, because the operator chose the name.
+    AllowLocallyConfigured,
+}
+
 /// Returns true iff `ip` is an IPv4 address a peer could legitimately be
 /// reachable at. Rejects, unconditionally:
 ///
@@ -120,7 +157,13 @@ fn is_dialable_ipv6(ip: &Ipv6Addr, mode: NetworkMode) -> bool {
 /// An address with no transport component at all (`""`, `/p2p/QmX`,
 /// `/p2p-circuit`) is REJECTED. Note `"".parse::<Multiaddr>()` returns
 /// `Ok(<empty>)`, so "it parsed" is not evidence of anything (review F9).
-pub fn is_dialable_multiaddr_parsed(addr: &Multiaddr, mode: NetworkMode) -> bool {
+///
+/// DNS-form components are governed by `dns`; see [`DnsPolicy`] for why a name
+/// supplied by a remote peer is not validatable at all. Note the DNS check runs
+/// BEFORE the `P2pCircuit` short-circuit can fire, so
+/// `/dns4/evil.example/tcp/80/p2p-circuit` -- whose relay hop we would really
+/// dial -- is rejected too.
+pub fn is_dialable_multiaddr_parsed(addr: &Multiaddr, mode: NetworkMode, dns: DnsPolicy) -> bool {
     let mut has_transport = false;
 
     for proto in addr.iter() {
@@ -140,6 +183,9 @@ pub fn is_dialable_multiaddr_parsed(addr: &Multiaddr, mode: NetworkMode) -> bool
                 }
             }
             Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_) | Protocol::Dnsaddr(_) => {
+                if dns == DnsPolicy::Reject {
+                    return false;
+                }
                 has_transport = true;
             }
             _ => {}
@@ -154,9 +200,48 @@ pub fn is_dialable_multiaddr_parsed(addr: &Multiaddr, mode: NetworkMode) -> bool
 /// An unparseable string is not dialable. (The CLI's previous implementation
 /// split on `/` and returned `true` for garbage that happened to contain no
 /// recognised IP component; that is now rejected.)
-pub fn is_dialable_multiaddr(multiaddr: &str, mode: NetworkMode) -> bool {
+pub fn is_dialable_multiaddr(multiaddr: &str, mode: NetworkMode, dns: DnsPolicy) -> bool {
     match multiaddr.parse::<Multiaddr>() {
-        Ok(addr) => is_dialable_multiaddr_parsed(&addr, mode),
+        Ok(addr) => is_dialable_multiaddr_parsed(&addr, mode, dns),
+        Err(_) => false,
+    }
+}
+
+/// Returns true iff `addr` is safe to HAND TO SOMEONE ELSE -- in a
+/// `/sc/ledger-exchange/1.0.0` reply, or baked into an invite QR.
+///
+/// DISCLOSURE IS NOT DIALABILITY (re-review NEW-2). The first remediation pass
+/// reused the dial predicate for the exchange reply and passed
+/// `NetworkMode::Local` at the call site, because `Local` is what keeps the
+/// LAN/mesh transport priority order working. But `Local` deliberately skips
+/// the `is_private()` check, and `record_connection` is deliberately unfiltered,
+/// so every LAN peer we ever dialed became a *proven, disclosable* record:
+/// internal subnet, live host:port, and each neighbour's `last_peer_id`. That
+/// is an internal network map handed to any peer that completed a Noise
+/// handshake.
+///
+/// The two predicates answer different questions and must not share a mode:
+/// - "can I reach it?" is contextual -- an RFC1918 peer on my own LAN is
+///   perfectly reachable, which is why the dial path keeps `Local`;
+/// - "may I tell a stranger about it?" is not -- an address the recipient
+///   cannot route to is, by construction, only useful to them as
+///   reconnaissance about us.
+///
+/// So this function takes NO `NetworkMode` parameter. There is no argument a
+/// call site can pass to weaken it, which is the point: the previous bug was
+/// exactly a call site passing the wrong mode.
+///
+/// DNS is rejected for a second, independent reason: a name like
+/// `/dns4/nas.corp.internal/tcp/443` leaks internal naming even when it does
+/// not resolve for the recipient.
+pub fn is_disclosable_multiaddr_parsed(addr: &Multiaddr) -> bool {
+    is_dialable_multiaddr_parsed(addr, NetworkMode::Public, DnsPolicy::Reject)
+}
+
+/// String convenience wrapper over [`is_disclosable_multiaddr_parsed`].
+pub fn is_disclosable_multiaddr(multiaddr: &str) -> bool {
+    match multiaddr.parse::<Multiaddr>() {
+        Ok(addr) => is_disclosable_multiaddr_parsed(&addr),
         Err(_) => false,
     }
 }
@@ -228,8 +313,13 @@ pub fn is_self_address(candidate: &str, my_addrs: &[String]) -> bool {
 /// Combined gate used by every core call site that turns remote-supplied
 /// address data into a dial candidate, a stored ledger entry, or a disclosed
 /// wire record: syntactically valid, routable under `mode`, and not us.
-pub fn is_acceptable_peer_address(candidate: &str, mode: NetworkMode, my_addrs: &[String]) -> bool {
-    is_dialable_multiaddr(candidate, mode) && !is_self_address(candidate, my_addrs)
+pub fn is_acceptable_peer_address(
+    candidate: &str,
+    mode: NetworkMode,
+    dns: DnsPolicy,
+    my_addrs: &[String],
+) -> bool {
+    is_dialable_multiaddr(candidate, mode, dns) && !is_self_address(candidate, my_addrs)
 }
 
 #[cfg(test)]
@@ -238,38 +328,73 @@ mod tests {
 
     const LOCAL: NetworkMode = NetworkMode::Local;
     const PUBLIC: NetworkMode = NetworkMode::Public;
+    /// Provenance of every address in the tests below unless stated otherwise:
+    /// a peer told us. That is the case that matters.
+    const REMOTE: DnsPolicy = DnsPolicy::Reject;
+    const CONFIGURED: DnsPolicy = DnsPolicy::AllowLocallyConfigured;
 
     #[test]
     fn rejects_non_routable_ipv4_in_every_mode() {
         for mode in [LOCAL, PUBLIC] {
-            assert!(!is_dialable_multiaddr("/ip4/127.0.0.1/tcp/8080", mode));
-            assert!(!is_dialable_multiaddr("/ip4/0.0.0.0/tcp/9001", mode));
-            assert!(!is_dialable_multiaddr("/ip4/0.1.2.3/tcp/9001", mode));
+            assert!(!is_dialable_multiaddr(
+                "/ip4/127.0.0.1/tcp/8080",
+                mode,
+                REMOTE
+            ));
+            assert!(!is_dialable_multiaddr(
+                "/ip4/0.0.0.0/tcp/9001",
+                mode,
+                REMOTE
+            ));
+            assert!(!is_dialable_multiaddr(
+                "/ip4/0.1.2.3/tcp/9001",
+                mode,
+                REMOTE
+            ));
             // Cloud metadata service -- the marquee SSRF target.
-            assert!(!is_dialable_multiaddr("/ip4/169.254.169.254/tcp/80", mode));
+            assert!(!is_dialable_multiaddr(
+                "/ip4/169.254.169.254/tcp/80",
+                mode,
+                REMOTE
+            ));
             assert!(!is_dialable_multiaddr(
                 "/ip4/224.0.0.1/udp/9001/quic-v1",
-                mode
+                mode,
+                REMOTE
             ));
             assert!(!is_dialable_multiaddr(
                 "/ip4/255.255.255.255/tcp/9001",
-                mode
+                mode,
+                REMOTE
             ));
-            assert!(!is_dialable_multiaddr("/ip4/192.0.0.8/tcp/9001", mode));
+            assert!(!is_dialable_multiaddr(
+                "/ip4/192.0.0.8/tcp/9001",
+                mode,
+                REMOTE
+            ));
         }
     }
 
     #[test]
     fn rejects_non_routable_ipv6_in_every_mode() {
         for mode in [LOCAL, PUBLIC] {
-            assert!(!is_dialable_multiaddr("/ip6/::1/tcp/9001", mode));
-            assert!(!is_dialable_multiaddr("/ip6/::/tcp/9001", mode));
+            assert!(!is_dialable_multiaddr("/ip6/::1/tcp/9001", mode, REMOTE));
+            assert!(!is_dialable_multiaddr("/ip6/::/tcp/9001", mode, REMOTE));
             assert!(!is_dialable_multiaddr(
                 "/ip6/fe80::1897:a8ff:fec5:3d16/tcp/443",
-                mode
+                mode,
+                REMOTE
             ));
-            assert!(!is_dialable_multiaddr("/ip6/fec0::1/tcp/9001", mode));
-            assert!(!is_dialable_multiaddr("/ip6/ff02::1/tcp/9001", mode));
+            assert!(!is_dialable_multiaddr(
+                "/ip6/fec0::1/tcp/9001",
+                mode,
+                REMOTE
+            ));
+            assert!(!is_dialable_multiaddr(
+                "/ip6/ff02::1/tcp/9001",
+                mode,
+                REMOTE
+            ));
         }
     }
 
@@ -279,40 +404,237 @@ mod tests {
         // v6 address".
         assert!(!is_dialable_multiaddr(
             "/ip6/::ffff:127.0.0.1/tcp/8080",
-            LOCAL
+            LOCAL,
+            REMOTE
         ));
         assert!(!is_dialable_multiaddr(
             "/ip6/::ffff:169.254.169.254/tcp/80",
-            LOCAL
+            LOCAL,
+            REMOTE
         ));
         assert!(!is_dialable_multiaddr(
             "/ip6/::ffff:192.168.1.1/tcp/443",
-            PUBLIC
+            PUBLIC,
+            REMOTE
         ));
     }
 
     #[test]
     fn private_ranges_follow_network_mode() {
-        assert!(is_dialable_multiaddr("/ip4/10.0.2.16/tcp/9001", LOCAL));
-        assert!(is_dialable_multiaddr("/ip4/192.168.1.5/tcp/9001", LOCAL));
-        assert!(is_dialable_multiaddr("/ip4/172.16.4.4/tcp/9001", LOCAL));
-        assert!(!is_dialable_multiaddr("/ip4/10.0.2.16/tcp/9001", PUBLIC));
-        assert!(!is_dialable_multiaddr("/ip4/192.168.1.5/tcp/9001", PUBLIC));
-        assert!(!is_dialable_multiaddr("/ip4/172.16.4.4/tcp/9001", PUBLIC));
+        assert!(is_dialable_multiaddr(
+            "/ip4/10.0.2.16/tcp/9001",
+            LOCAL,
+            REMOTE
+        ));
+        assert!(is_dialable_multiaddr(
+            "/ip4/192.168.1.5/tcp/9001",
+            LOCAL,
+            REMOTE
+        ));
+        assert!(is_dialable_multiaddr(
+            "/ip4/172.16.4.4/tcp/9001",
+            LOCAL,
+            REMOTE
+        ));
+        assert!(!is_dialable_multiaddr(
+            "/ip4/10.0.2.16/tcp/9001",
+            PUBLIC,
+            REMOTE
+        ));
+        assert!(!is_dialable_multiaddr(
+            "/ip4/192.168.1.5/tcp/9001",
+            PUBLIC,
+            REMOTE
+        ));
+        assert!(!is_dialable_multiaddr(
+            "/ip4/172.16.4.4/tcp/9001",
+            PUBLIC,
+            REMOTE
+        ));
         // IPv6 unique-local is the RFC1918 analogue.
-        assert!(is_dialable_multiaddr("/ip6/fd00::1/tcp/9001", LOCAL));
-        assert!(!is_dialable_multiaddr("/ip6/fd00::1/tcp/9001", PUBLIC));
+        assert!(is_dialable_multiaddr(
+            "/ip6/fd00::1/tcp/9001",
+            LOCAL,
+            REMOTE
+        ));
+        assert!(!is_dialable_multiaddr(
+            "/ip6/fd00::1/tcp/9001",
+            PUBLIC,
+            REMOTE
+        ));
     }
 
     #[test]
     fn accepts_globally_routable_addresses() {
-        assert!(is_dialable_multiaddr("/ip4/1.2.3.4/tcp/9001", LOCAL));
-        assert!(is_dialable_multiaddr("/ip4/198.51.100.11/tcp/9000", PUBLIC));
+        assert!(is_dialable_multiaddr(
+            "/ip4/1.2.3.4/tcp/9001",
+            LOCAL,
+            REMOTE
+        ));
+        assert!(is_dialable_multiaddr(
+            "/ip4/198.51.100.11/tcp/9000",
+            PUBLIC,
+            REMOTE
+        ));
         assert!(is_dialable_multiaddr(
             "/ip6/2606:4700:4700::1111/tcp/9001",
-            LOCAL
+            LOCAL,
+            REMOTE
         ));
-        assert!(is_dialable_multiaddr("/dns4/relay.example/tcp/443", PUBLIC));
+        // A name is fine when the OPERATOR chose it.
+        assert!(is_dialable_multiaddr(
+            "/dns4/relay.example/tcp/443",
+            PUBLIC,
+            CONFIGURED
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // NEW-1 -- DNS bypasses all address validation
+    // ------------------------------------------------------------------
+
+    /// The module previously had exactly ONE DNS assertion and it was positive,
+    /// which is precisely why the bypass survived a full adversarial review.
+    ///
+    /// Every one of these strings sets `has_transport = true` and validates
+    /// nothing under the old code, so every IPv4/IPv6 rule above is skipped and
+    /// the desktop resolver dials whatever the zone says.
+    #[test]
+    fn remote_supplied_dns_is_rejected_in_every_form_and_mode() {
+        let dns_forms = [
+            "/dns4/evil.example/tcp/80",
+            "/dns6/evil.example/tcp/80",
+            "/dns/evil.example/tcp/80",
+            "/dnsaddr/evil.example",
+            "/dnsaddr/evil.example/tcp/443",
+            "/dns4/evil.example/udp/9001/quic-v1",
+            "/dns4/metadata.google.internal/tcp/80",
+        ];
+        for mode in [LOCAL, PUBLIC] {
+            for addr in dns_forms {
+                assert!(
+                    !is_dialable_multiaddr(addr, mode, REMOTE),
+                    "{addr} was accepted from a remote peer in {mode:?}: \
+                     `A evil.example -> 169.254.169.254` is now a dial target"
+                );
+            }
+        }
+    }
+
+    /// A DNS relay hop must not be laundered through the `/p2p-circuit`
+    /// short-circuit: the hop is the part we actually connect a socket to.
+    #[test]
+    fn remote_supplied_dns_cannot_hide_behind_a_circuit_marker() {
+        assert!(!is_dialable_multiaddr(
+            "/dns4/evil.example/tcp/443/p2p-circuit",
+            LOCAL,
+            REMOTE
+        ));
+        assert!(!is_dialable_multiaddr(
+            "/dns4/evil.example/tcp/443/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN/p2p-circuit/p2p/12D3KooWSHj3RRbBjD15g6wekV8y3mm57Pobmps2g2WJm6F67Lay",
+            LOCAL,
+            REMOTE
+        ));
+        // ...and the mixed form, where a legitimate-looking IP hop is followed
+        // by a name.
+        assert!(!is_dialable_multiaddr(
+            "/ip4/1.2.3.4/tcp/443/dns4/evil.example/tcp/80",
+            LOCAL,
+            REMOTE
+        ));
+    }
+
+    /// The rejection is provenance-based, not a blanket ban: an operator's own
+    /// bootstrap relay name still works, which is what keeps the internet-relay
+    /// tier of the transport priority order alive.
+    #[test]
+    fn locally_configured_dns_still_works() {
+        assert!(is_dialable_multiaddr(
+            "/dns4/relay.example/tcp/443",
+            LOCAL,
+            CONFIGURED
+        ));
+        assert!(is_dialable_multiaddr(
+            "/dnsaddr/bootstrap.example",
+            PUBLIC,
+            CONFIGURED
+        ));
+        assert!(is_dialable_multiaddr(
+            "/dns4/relay.example/tcp/443/p2p-circuit",
+            PUBLIC,
+            CONFIGURED
+        ));
+    }
+
+    /// Fail-closed: a call site that forgets to think about provenance gets the
+    /// strict answer.
+    #[test]
+    fn dns_policy_defaults_to_reject() {
+        assert_eq!(DnsPolicy::default(), DnsPolicy::Reject);
+        assert!(!is_dialable_multiaddr(
+            "/dns4/evil.example/tcp/80",
+            LOCAL,
+            DnsPolicy::default()
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // NEW-2 -- disclosure is not dialability
+    // ------------------------------------------------------------------
+
+    /// The exchange reply used to run the dial predicate in
+    /// `NetworkMode::Local`, which skips `is_private()` entirely. Every LAN peer
+    /// we had ever dialed was therefore a disclosable record: internal subnet,
+    /// live host:port, neighbour peer id.
+    #[test]
+    fn disclosure_always_drops_private_ranges() {
+        for addr in [
+            "/ip4/192.168.1.5/tcp/9001",
+            "/ip4/10.0.2.16/tcp/9001",
+            "/ip4/172.16.4.4/tcp/9001",
+            "/ip6/fd00::1/tcp/9001",
+            "/ip6/::ffff:192.168.1.1/tcp/443",
+        ] {
+            assert!(
+                !is_disclosable_multiaddr(addr),
+                "{addr} would be handed to any peer that completed a handshake"
+            );
+            // ...even though it is legitimately DIALABLE on our own LAN. This
+            // pair of assertions is the whole point of the two predicates.
+            assert!(is_dialable_multiaddr(addr, LOCAL, REMOTE));
+        }
+    }
+
+    /// Everything the dial predicate rejects unconditionally is also
+    /// undisclosable, and an internal hostname is not disclosable either.
+    #[test]
+    fn disclosure_drops_loopback_link_local_and_dns() {
+        for addr in [
+            "/ip4/127.0.0.1/tcp/8080",
+            "/ip6/::1/tcp/8080",
+            "/ip4/169.254.169.254/tcp/80",
+            "/ip4/0.0.0.0/tcp/9001",
+            "/ip4/224.0.0.1/tcp/9001",
+            "/ip4/255.255.255.255/tcp/9001",
+            "/dns4/nas.corp.internal/tcp/443",
+            "/dnsaddr/vpn.corp.internal",
+            "",
+            "/p2p-circuit",
+            "not-a-multiaddr",
+        ] {
+            assert!(!is_disclosable_multiaddr(addr), "{addr} was disclosable");
+        }
+    }
+
+    #[test]
+    fn disclosure_keeps_globally_routable_addresses() {
+        assert!(is_disclosable_multiaddr("/ip4/198.51.100.11/tcp/9001"));
+        assert!(is_disclosable_multiaddr(
+            "/ip6/2606:4700:4700::1111/tcp/443"
+        ));
+        assert!(is_disclosable_multiaddr(
+            "/ip4/203.0.113.9/tcp/443/p2p-circuit"
+        ));
     }
 
     #[test]
@@ -320,17 +642,20 @@ mod tests {
         // Routable relay hop -- allowed (CLI parity).
         assert!(is_dialable_multiaddr(
             "/ip4/1.2.3.4/tcp/9001/p2p-circuit",
-            LOCAL
+            LOCAL,
+            REMOTE
         ));
         assert!(is_dialable_multiaddr(
             "/ip4/1.2.3.4/tcp/443/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN/p2p-circuit/p2p/12D3KooWSHj3RRbBjD15g6wekV8y3mm57Pobmps2g2WJm6F67Lay",
-            LOCAL
+            LOCAL,
+            REMOTE
         ));
         // Loopback relay hop -- rejected, because the hop is validated before
         // the circuit marker short-circuits.
         assert!(!is_dialable_multiaddr(
             "/ip4/127.0.0.1/tcp/443/p2p-circuit/p2p/12D3KooWSHj3RRbBjD15g6wekV8y3mm57Pobmps2g2WJm6F67Lay",
-            LOCAL
+            LOCAL,
+            REMOTE
         ));
     }
 
@@ -338,13 +663,14 @@ mod tests {
     fn rejects_addresses_with_no_transport_component() {
         // F9: "" parses as Ok(<empty>).
         assert!("".parse::<Multiaddr>().is_ok());
-        assert!(!is_dialable_multiaddr("", LOCAL));
+        assert!(!is_dialable_multiaddr("", LOCAL, REMOTE));
         assert!(!is_dialable_multiaddr(
             "/p2p/12D3KooWSHj3RRbBjD15g6wekV8y3mm57Pobmps2g2WJm6F67Lay",
-            LOCAL
+            LOCAL,
+            REMOTE
         ));
-        assert!(!is_dialable_multiaddr("/p2p-circuit", LOCAL));
-        assert!(!is_dialable_multiaddr("not-a-multiaddr", LOCAL));
+        assert!(!is_dialable_multiaddr("/p2p-circuit", LOCAL, REMOTE));
+        assert!(!is_dialable_multiaddr("not-a-multiaddr", LOCAL, REMOTE));
     }
 
     #[test]
@@ -413,16 +739,25 @@ mod tests {
         assert!(!is_acceptable_peer_address(
             "/ip4/1.2.3.4/tcp/9001",
             LOCAL,
+            REMOTE,
             &my_addrs
         ));
         assert!(!is_acceptable_peer_address(
             "/ip4/127.0.0.1/tcp/9001",
             LOCAL,
+            REMOTE,
+            &my_addrs
+        ));
+        assert!(!is_acceptable_peer_address(
+            "/dns4/evil.example/tcp/80",
+            LOCAL,
+            REMOTE,
             &my_addrs
         ));
         assert!(is_acceptable_peer_address(
             "/ip4/5.6.7.8/tcp/9001",
             LOCAL,
+            REMOTE,
             &my_addrs
         ));
     }

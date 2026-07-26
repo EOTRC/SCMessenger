@@ -115,8 +115,27 @@ impl InvitePayload {
         self
     }
 
-    /// Check if invite is still valid
-    pub fn is_valid(&self, require_pq: bool) -> bool {
+    /// Check expiry and signature PRESENCE. This is NOT authentication.
+    ///
+    /// SECURITY: this performs **no cryptographic verification whatsoever**. It
+    /// checks that the invite has not expired and that a signature blob exists
+    /// with the shape the policy requires. It does not verify `signature`
+    /// against `inviter_public_key`, and it does not verify `pq_signature`.
+    /// A caller must never treat a `true` return as proof of authenticity.
+    ///
+    /// It previously contained `if pq_sig == b"TAMPERED" { return false }` --
+    /// a literal string comparison standing in for ML-DSA-65 verification,
+    /// which made a forged invite indistinguishable from a signed one. That
+    /// stub is removed rather than left to read as a real check.
+    ///
+    /// The real verifier lives on `InviteToken` in `crate::relay::invite`
+    /// (`verify` / `verify_with_policy`, Ed25519 + ML-DSA-65 over
+    /// domain-separated bytes). This type and its `BootstrapManager` are
+    /// currently unreachable from any production path -- `accept_invite` and
+    /// `parse_qr_data` have no callers outside this module. If this module is
+    /// ever revived, route it through `InviteToken` instead of extending this
+    /// function.
+    pub fn is_unexpired_and_shaped(&self, require_pq: bool) -> bool {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -126,22 +145,19 @@ impl InvitePayload {
             return false;
         }
 
-        if let Some(pq_sig) = &self.pq_signature {
-            // Tampered signature check (simulated)
-            if pq_sig.is_empty() || pq_sig == b"TAMPERED" {
-                return false;
+        match (&self.pq_signature, require_pq) {
+            (Some(pq_sig), _) if pq_sig.is_empty() => false,
+            (None, true) => false,
+            (None, false) => {
+                tracing::warn!(
+                    peer_id = %self.peer_id,
+                    "accepted a legacy single-signature bootstrap invite shape \
+                     (NOT cryptographically verified)"
+                );
+                true
             }
+            _ => true,
         }
-
-        if require_pq && self.pq_signature.is_none() {
-            return false;
-        }
-
-        if !require_pq && self.pq_signature.is_none() {
-            println!("[INFO] AUDIT: Accepted legacy single-sig registration");
-        }
-
-        true
     }
 
     /// Serialize to bytes (for QR codes)
@@ -224,7 +240,7 @@ impl BootstrapManager {
         require_pq: bool,
     ) -> Result<InvitePayload, BootstrapError> {
         // Verify invite is still valid
-        if !invite_payload.is_valid(require_pq) {
+        if !invite_payload.is_unexpired_and_shaped(require_pq) {
             return Err(BootstrapError::InviteExpired);
         }
 
@@ -304,7 +320,7 @@ mod tests {
 
         assert_eq!(payload.peer_id, "peer1");
         assert_eq!(payload.addresses.len(), 1);
-        assert!(payload.is_valid(false));
+        assert!(payload.is_unexpired_and_shaped(false));
     }
 
     #[test]
@@ -359,7 +375,7 @@ mod tests {
         .with_expiry(0);
 
         std::thread::sleep(web_time::Duration::from_millis(10));
-        assert!(!payload.is_valid(false));
+        assert!(!payload.is_unexpired_and_shaped(false));
     }
 
     #[test]
@@ -409,7 +425,7 @@ mod tests {
 
         assert_eq!(invite.peer_id, "peer1");
         assert_eq!(invite.addresses.len(), 1);
-        assert!(invite.is_valid(false));
+        assert!(invite.is_unexpired_and_shaped(false));
     }
 
     #[test]
@@ -475,7 +491,7 @@ mod tests {
             vec!["127.0.0.1:8080".to_string()],
             vec![1, 2, 3, 4, 5],
         );
-        assert!(payload.is_valid(false));
+        assert!(payload.is_unexpired_and_shaped(false));
     }
 
     #[test]
@@ -485,7 +501,7 @@ mod tests {
             vec!["127.0.0.1:8080".to_string()],
             vec![1, 2, 3, 4, 5],
         );
-        assert!(!payload.is_valid(true));
+        assert!(!payload.is_unexpired_and_shaped(true));
     }
 
     #[test]
@@ -498,22 +514,34 @@ mod tests {
         payload.pq_public_key = Some(vec![4, 5]);
         payload.pq_signature = Some(vec![6, 7]);
 
-        assert!(payload.is_valid(true));
-        assert!(payload.is_valid(false));
+        assert!(payload.is_unexpired_and_shaped(true));
+        assert!(payload.is_unexpired_and_shaped(false));
     }
 
     #[test]
-    fn test_invite_payload_tampered_pq_signature() {
+    fn test_shape_check_does_not_detect_tampering() {
+        // Documents a LIMITATION, not a feature. `is_unexpired_and_shaped`
+        // performs no cryptographic verification, so a tampered signature is
+        // indistinguishable from a real one here. This test previously
+        // asserted the opposite, and passed only because the function
+        // contained a literal `pq_sig == b"TAMPERED"` comparison standing in
+        // for ML-DSA-65 verification -- i.e. it was asserting a simulation.
+        //
+        // Real verification lives on `InviteToken::verify` in
+        // `crate::relay::invite`. If this module is ever revived, route it
+        // through that and replace this test with a genuine tamper test.
         let mut payload = InvitePayload::new(
             "peer1".to_string(),
             vec!["127.0.0.1:8080".to_string()],
             vec![1, 2, 3, 4, 5],
         );
         payload.pq_public_key = Some(vec![4, 5]);
-        payload.pq_signature = Some(b"TAMPERED".to_vec());
+        payload.pq_signature = Some(b"obviously-not-a-real-signature".to_vec());
 
-        assert!(!payload.is_valid(true));
-        assert!(!payload.is_valid(false));
+        assert!(
+            payload.is_unexpired_and_shaped(true),
+            "shape check must not be mistaken for authentication"
+        );
     }
 
     #[test]

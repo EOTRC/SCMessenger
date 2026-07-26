@@ -85,9 +85,23 @@ fn is_discoverable_multiaddr(addr: &Multiaddr) -> bool {
     let mut is_p2p_circuit = false;
     let mut ip_is_restricted = false;
     let mut has_ip = false;
+    let mut has_dns = false;
 
     for proto in addr.iter() {
         match proto {
+            // Re-review NEW-1: a bare `/dns4/...` already failed the `has_ip`
+            // requirement below, but `/dns4/evil.example/tcp/80/p2p-circuit`
+            // took the unconditional circuit allowance and landed in the DHT --
+            // and the relay hop of a circuit address is a socket we really open.
+            // A name is not an address: it resolves to whatever its owner's zone
+            // says at dial time, so none of the IP rules here can be applied to
+            // it. Kademlia entries always come from a remote (Identify, mDNS, a
+            // ledger-exchange record), never from local config, so there is no
+            // legitimate-DNS case to preserve at this gate; operator-supplied
+            // bootstrap names reach Kademlia through `SwarmCommand::RegisterEndpoint`.
+            Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_) | Protocol::Dnsaddr(_) => {
+                has_dns = true;
+            }
             Protocol::Ip4(ip) => {
                 has_ip = true;
                 if ip.is_loopback()
@@ -128,6 +142,13 @@ fn is_discoverable_multiaddr(addr: &Multiaddr) -> bool {
         }
     }
 
+    // A DNS component disqualifies the address outright, including the circuit
+    // form -- checked BEFORE the circuit allowance below, which is the whole
+    // point (see the Dns arm above).
+    if has_dns {
+        return false;
+    }
+
     // Allow ANY P2P circuit address, even if it traverses a restricted IP (like 192.0.0.x)
     // as it's the ONLY way to reach the peer via that relay.
     if is_p2p_circuit {
@@ -153,6 +174,9 @@ fn is_discoverable_multiaddr(addr: &Multiaddr) -> bool {
 /// synchronously inside the `select!` task that also owns the swarm poll, the
 /// command channel and the dial sweep, and one 4 MiB ledger-exchange request
 /// can carry ~80 000 entries.
+///
+/// Re-review NEW-1: `dns` is per-TIER, not per-call-site convenience. See
+/// [`build_seed_dial_candidates`] for which tier gets which policy and why.
 #[cfg(not(target_arch = "wasm32"))]
 fn push_seed_dial_candidate(
     addr: &Multiaddr,
@@ -160,6 +184,7 @@ fn push_seed_dial_candidate(
     seen: &mut HashSet<Multiaddr>,
     my_addrs: &[String],
     mode: crate::transport::addr_filter::NetworkMode,
+    dns: crate::transport::addr_filter::DnsPolicy,
 ) {
     if out.len() >= SEED_DIAL_MAX_CANDIDATES {
         return;
@@ -171,6 +196,7 @@ fn push_seed_dial_candidate(
     if !crate::transport::addr_filter::is_acceptable_peer_address(
         &stripped.to_string(),
         mode,
+        dns,
         my_addrs,
     ) {
         tracing::debug!("Skipping non-dialable seed candidate: {}", stripped);
@@ -193,6 +219,27 @@ fn push_seed_dial_candidate(
 /// EVERY tier is capped here as well as at the caller. The caller's caps are
 /// what keep the ledger clone small; these are what guarantee the event loop
 /// stays bounded even if a future caller forgets (review F4).
+///
+/// DNS PROVENANCE PER TIER (re-review NEW-1). A `/dns4/...` candidate is only
+/// as trustworthy as whoever supplied the name, because the zone owner picks
+/// the IP at dial time and can re-point it between probes:
+///
+/// - `bootstrap_addrs` are the addresses this swarm was STARTED with -- an
+///   operator's config file or CLI flag. `AllowLocallyConfigured`: this is the
+///   internet-relay tier of the transport priority order and it is normally a
+///   name.
+/// - `proven` are entries with `success_count > 0`, i.e. addresses this node
+///   actually completed a connection to. `AllowLocallyConfigured` is sound here
+///   only because of a closed loop worth stating explicitly: the sole caller of
+///   `LedgerManager::record_connection` in core passes the resolved remote
+///   address of an established outbound connection, and to have connected we
+///   must already have passed one of these gates. Wire-learned entries arrive
+///   through `annotate_identity` with `success_count = 0`, so they are in the
+///   `seeds` tier, never here. If anything ever promotes an unproven entry
+///   directly, this argument breaks and this tier must become `Reject`.
+/// - `seeds` are `success_count == 0`: invite `seed_ledger` content and
+///   wire-learned addresses. `Reject` -- this is the attacker-suppliable tier
+///   and the exact vector NEW-1 describes.
 #[cfg(not(target_arch = "wasm32"))]
 fn build_seed_dial_candidates(
     proven: Vec<crate::store::ledger_entry::LedgerEntry>,
@@ -201,22 +248,45 @@ fn build_seed_dial_candidates(
     my_addrs: &[String],
     mode: crate::transport::addr_filter::NetworkMode,
 ) -> Vec<Multiaddr> {
+    use crate::transport::addr_filter::DnsPolicy;
+
     let mut candidates: Vec<Multiaddr> = Vec::new();
     let mut seen: HashSet<Multiaddr> = HashSet::new();
     let tier_cap = SEED_DIAL_LEDGER_CANDIDATES as usize;
 
     for entry in proven.iter().take(tier_cap) {
         if let Ok(addr) = entry.multiaddr.parse::<Multiaddr>() {
-            push_seed_dial_candidate(&addr, &mut candidates, &mut seen, my_addrs, mode);
+            push_seed_dial_candidate(
+                &addr,
+                &mut candidates,
+                &mut seen,
+                my_addrs,
+                mode,
+                DnsPolicy::AllowLocallyConfigured,
+            );
         }
     }
     for entry in seeds.iter().take(tier_cap) {
         if let Ok(addr) = entry.multiaddr.parse::<Multiaddr>() {
-            push_seed_dial_candidate(&addr, &mut candidates, &mut seen, my_addrs, mode);
+            push_seed_dial_candidate(
+                &addr,
+                &mut candidates,
+                &mut seen,
+                my_addrs,
+                mode,
+                DnsPolicy::Reject,
+            );
         }
     }
     for addr in bootstrap_addrs.iter().take(SEED_DIAL_MAX_CANDIDATES) {
-        push_seed_dial_candidate(addr, &mut candidates, &mut seen, my_addrs, mode);
+        push_seed_dial_candidate(
+            addr,
+            &mut candidates,
+            &mut seen,
+            my_addrs,
+            mode,
+            DnsPolicy::AllowLocallyConfigured,
+        );
     }
 
     candidates
@@ -407,6 +477,18 @@ const BOOTSTRAP_BACKOFF_MAX_SECS: u64 = 960;
 /// answer from (that field is `cfg(not(wasm32))`), so it still replies empty.
 #[cfg(not(target_arch = "wasm32"))]
 const LEDGER_EXCHANGE_MAX_RESPONSE_PEERS: usize = 64;
+
+/// Upper bound on how many peer entries we will PROCESS from one inbound
+/// `/sc/ledger-exchange/1.0.0` request or response.
+///
+/// Re-review NEW-5/NEW-3: `behaviour.rs` `MAX_REQUEST_SIZE` is 4 MiB, so one
+/// message can carry roughly 80 000 entries, and the handler ran every one of
+/// them through the recency recorder, `kademlia.add_address` and (previously) a
+/// gossipsub subscribe -- synchronously, on the `select!` task that also owns
+/// the swarm poll and the dial sweep. Deliberately equal to
+/// [`LEDGER_EXCHANGE_MAX_RESPONSE_PEERS`]: we accept no more than we would ever
+/// send, so an honest exchange is never truncated.
+const LEDGER_EXCHANGE_MAX_REQUEST_PEERS: usize = 64;
 
 /// Scales [`RELAY_PEER_BUCKET_BURST_CAPACITY`] / [`RELAY_PEER_BUCKET_REFILL_PER_SEC`]
 /// down for inbound ledger-exchange requests (review F6).
@@ -3643,114 +3725,161 @@ pub async fn start_swarm_with_config(
                             )) => {
                                 match message {
                                     request_response::Message::Request { request, channel, .. } => {
-                                        tracing::info!(
-                                            "Ledger exchange from {}: received {} peer entries (v{})",
-                                            peer,
-                                            request.peers.len(),
-                                            request.version,
-                                        );
-
-                                        // Forward received entries to the application layer
-                                        // The app will merge them into its persistent ledger
-                                        let _ = event_tx.send(SwarmEvent2::LedgerReceived {
-                                            from_peer: peer,
-                                            entries: request.peers.clone(),
-                                        }).await;
-
-                                        // Also add any addresses with known PeerIDs to Kademlia RIGHT NOW
-                                        // for immediate discoverability
-                                        let mut new_count = 0u32;
-                                        for entry in &request.peers {
-                                            if let Some(ref pid_str) = entry.last_peer_id {
-                                                if let Ok(pid) = pid_str.parse::<PeerId>() {
-                                                    // F12: `last_seen` here is attacker-chosen.
-                                                    // The wire-specific recorder clamps future
-                                                    // values and drops stale ones instead of
-                                                    // letting u64::MAX pin a route forever.
-                                                    multi_path_delivery.record_recipient_seen_via_relay_from_wire(
-                                                        peer,
-                                                        pid,
-                                                        entry.last_seen,
-                                                    );
-                                                    if let Ok(addr) = entry.multiaddr.parse::<Multiaddr>() {
-                                                        if is_discoverable_multiaddr(&addr) {
-                                                            swarm.behaviour_mut().kademlia.add_address(&pid, addr);
-                                                            new_count += 1;
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            // Auto-subscribe to any topics from the shared entries
-                                            for topic_str in &entry.known_topics {
-                                                if !subscribed_topics.contains(topic_str) {
-                                                    let ident_topic = libp2p::gossipsub::IdentTopic::new(topic_str.clone());
-                                                    if swarm.behaviour_mut().gossipsub.subscribe(&ident_topic).is_ok() {
-                                                        tracing::info!("Auto-subscribed to topic from ledger: {}", topic_str);
-                                                        subscribed_topics.insert(topic_str.clone());
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        // Reciprocate from the core ledger directly.
+                                        // RATE LIMIT BEFORE ANY WORK (re-review NEW-5).
                                         //
-                                        // This used to answer with an empty list on the
-                                        // assumption that the application layer would follow
-                                        // up with a ShareLedger command. Only the CLI ever
-                                        // did. Android, iOS and WASM never call share_ledger
-                                        // (it is not exposed over UniFFI), so two mobile
-                                        // devices exchanged nothing at all: each received the
-                                        // other's ledger and answered with silence. Answering
-                                        // here means every node reciprocates regardless of
-                                        // platform, and no client author can forget to.
+                                        // The bucket used to sit further down, immediately
+                                        // before building the reply, which meant an
+                                        // over-quota peer had ALREADY had us clone its whole
+                                        // `peers` vector, `await` it into the bounded event
+                                        // channel, run every entry through the recency
+                                        // recorder and `kademlia.add_address`, and subscribe
+                                        // gossipsub to every string it called a topic. It
+                                        // gated the disclosure and nothing else, so the
+                                        // expensive half of F6 was never rate limited at all.
                                         //
-                                        // DISCLOSURE CONTROLS (review F6). This reply goes to
-                                        // ANY peer that completed a Noise handshake, with no
-                                        // app-layer opt-in, so it is rate-limited and filtered
-                                        // here rather than trusted to callers:
-                                        //  1. per-peer token bucket, same mechanism as the
-                                        //     relay path (`RelayAbuseGuardrails`), so a peer
-                                        //     cannot poll us for a live topology feed;
-                                        //  2. `exchange_response_entries` applies the 64 cap
-                                        //     BEFORE cloning, filters every address through
-                                        //     `addr_filter::is_dialable_multiaddr` (no
-                                        //     loopback/link-local/RFC1918-on-public leakage),
-                                        //     and drops `known_topics` entirely -- topic names
-                                        //     are third-party group membership, not routing
-                                        //     data.
+                                        // Now: consume the token first; if it is gone, answer
+                                        // an empty list and do NOT touch `request.peers`.
                                         let requester = peer.to_string();
                                         let exchange_now_ms = SystemTime::now()
                                             .duration_since(UNIX_EPOCH)
                                             .unwrap_or_default()
                                             .as_millis() as u64;
-                                        let disclosure_allowed = ledger_exchange_guardrails
+                                        let exchange_allowed = ledger_exchange_guardrails
                                             .consume_peer_token(
                                                 &requester,
                                                 exchange_now_ms,
                                                 LEDGER_EXCHANGE_BUCKET_MULTIPLIER,
                                             );
-                                        if !disclosure_allowed {
+
+                                        let offered = request.peers.len();
+                                        tracing::info!(
+                                            "Ledger exchange from {}: offered {} peer entries (v{}, allowed={})",
+                                            peer,
+                                            offered,
+                                            request.version,
+                                            exchange_allowed,
+                                        );
+
+                                        let mut new_count = 0u32;
+                                        let mut response_peers: Vec<SharedPeerEntry> = Vec::new();
+
+                                        if !exchange_allowed {
                                             tracing::warn!(
-                                                "Ledger exchange rate limit hit for {} — replying with an empty peer list",
-                                                peer
+                                                "Ledger exchange rate limit hit for {} — dropping {} offered entries and replying empty",
+                                                peer,
+                                                offered,
                                             );
-                                        }
-                                        let response_peers: Vec<SharedPeerEntry> = if disclosure_allowed {
-                                            core_handle
+                                        } else {
+                                            // CAP BEFORE THE CLONE (re-review NEW-5, and the
+                                            // driver of NEW-3). `behaviour.rs` MAX_REQUEST_SIZE
+                                            // is 4 MiB, i.e. ~80 000 entries in ONE request,
+                                            // and every one of them used to become a recency
+                                            // insert, a Kademlia insert and a gossipsub
+                                            // subscribe on the `select!` thread that also owns
+                                            // the swarm poll and the dial sweep. Symmetric with
+                                            // LEDGER_EXCHANGE_MAX_RESPONSE_PEERS: we accept no
+                                            // more than we would ever send.
+                                            let accepted: Vec<SharedPeerEntry> = request
+                                                .peers
+                                                .into_iter()
+                                                .take(LEDGER_EXCHANGE_MAX_REQUEST_PEERS)
+                                                .collect();
+                                            if offered > accepted.len() {
+                                                tracing::warn!(
+                                                    "Ledger exchange from {} capped: {} offered, {} accepted",
+                                                    peer,
+                                                    offered,
+                                                    accepted.len(),
+                                                );
+                                            }
+
+                                            // Forward received entries to the application layer
+                                            // The app will merge them into its persistent ledger
+                                            let _ = event_tx.send(SwarmEvent2::LedgerReceived {
+                                                from_peer: peer,
+                                                entries: accepted.clone(),
+                                            }).await;
+
+                                            // Also add any addresses with known PeerIDs to Kademlia RIGHT NOW
+                                            // for immediate discoverability
+                                            for entry in &accepted {
+                                                if let Some(ref pid_str) = entry.last_peer_id {
+                                                    if let Ok(pid) = pid_str.parse::<PeerId>() {
+                                                        // F12: `last_seen` here is attacker-chosen.
+                                                        // The wire-specific recorder clamps future
+                                                        // values and drops stale ones instead of
+                                                        // letting u64::MAX pin a route forever.
+                                                        multi_path_delivery.record_recipient_seen_via_relay_from_wire(
+                                                            peer,
+                                                            pid,
+                                                            entry.last_seen,
+                                                        );
+                                                        if let Ok(addr) = entry.multiaddr.parse::<Multiaddr>() {
+                                                            if is_discoverable_multiaddr(&addr) {
+                                                                swarm.behaviour_mut().kademlia.add_address(&pid, addr);
+                                                                new_count += 1;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // NO WIRE-DRIVEN GOSSIPSUB AUTO-SUBSCRIBE
+                                            // (re-review NEW-5). There used to be a loop here
+                                            // that subscribed to every `known_topics` string in
+                                            // the request. That is an unauthenticated peer
+                                            // choosing this node's gossipsub mesh membership:
+                                            // unbounded distinct topics, unbounded per-topic
+                                            // state and traffic, and it worked before the rate
+                                            // limit was even consulted. It also disclosed our
+                                            // interest in whatever the attacker named.
+                                            //
+                                            // Nothing legitimate depended on it: our own reply
+                                            // path (`ledger_entry_to_shared_routing_only`)
+                                            // blanks `known_topics` for exactly the same
+                                            // privacy reason (F6), so honest SCMessenger nodes
+                                            // never populate the field. Genuine topic discovery
+                                            // still happens through
+                                            // `gossipsub::Event::Subscribed`, which is driven by
+                                            // peers we are actually meshed with.
+
+                                            // Reciprocate from the core ledger directly.
+                                            //
+                                            // This used to answer with an empty list on the
+                                            // assumption that the application layer would follow
+                                            // up with a ShareLedger command. Only the CLI ever
+                                            // did. Android, iOS and WASM never call share_ledger
+                                            // (it is not exposed over UniFFI), so two mobile
+                                            // devices exchanged nothing at all: each received the
+                                            // other's ledger and answered with silence. Answering
+                                            // here means every node reciprocates regardless of
+                                            // platform, and no client author can forget to.
+                                            //
+                                            // DISCLOSURE CONTROLS (review F6, re-review NEW-2).
+                                            // This reply goes to ANY peer that completed a Noise
+                                            // handshake, with no app-layer opt-in:
+                                            //  1. the per-peer token bucket above (checked
+                                            //     first, see NEW-5);
+                                            //  2. `exchange_response_entries` applies the 64 cap
+                                            //     BEFORE cloning, drops `known_topics`, and
+                                            //     filters every address through
+                                            //     `addr_filter::is_disclosable_multiaddr`. That
+                                            //     predicate takes NO `NetworkMode`: this call
+                                            //     site used to pass `Local`, which skips the
+                                            //     RFC1918 check, so every LAN neighbour we had
+                                            //     dialed -- subnet, host:port and peer id --
+                                            //     was disclosed to internet peers.
+                                            response_peers = core_handle
                                                 .as_ref()
                                                 .and_then(|w| w.upgrade())
                                                 .map(|core| {
                                                     core.ledger_manager.exchange_response_entries(
                                                         LEDGER_EXCHANGE_MAX_RESPONSE_PEERS,
-                                                        crate::transport::addr_filter::NetworkMode::Local,
                                                         &requester,
                                                     )
                                                 })
-                                                .unwrap_or_default()
-                                        } else {
-                                            Vec::new()
-                                        };
+                                                .unwrap_or_default();
+                                        }
 
                                         tracing::debug!(
                                             "Ledger exchange reply to {}: sending {} peer entries",
@@ -3778,15 +3907,28 @@ pub async fn start_swarm_with_config(
                                             response.peers.len(),
                                         );
 
+                                        // Same cap as the request arm (re-review NEW-5). A
+                                        // RESPONSE is no less attacker-supplied than a
+                                        // request -- we chose to talk to this peer, not to
+                                        // trust it -- and `MAX_RESPONSE_SIZE` is as generous
+                                        // as `MAX_REQUEST_SIZE`. Capping before the clone
+                                        // keeps the per-entry loop below, which feeds the
+                                        // recency map and Kademlia, bounded per message.
+                                        let response_peers: Vec<SharedPeerEntry> = response
+                                            .peers
+                                            .into_iter()
+                                            .take(LEDGER_EXCHANGE_MAX_REQUEST_PEERS)
+                                            .collect();
+
                                         // If they sent peers back in the response, merge those too
-                                        if !response.peers.is_empty() {
+                                        if !response_peers.is_empty() {
                                             let _ = event_tx.send(SwarmEvent2::LedgerReceived {
                                                 from_peer: peer,
-                                                entries: response.peers.clone(),
+                                                entries: response_peers.clone(),
                                             }).await;
 
                                             // Add routable addresses to Kademlia
-                                            for entry in &response.peers {
+                                            for entry in &response_peers {
                                                 if let Some(ref pid_str) = entry.last_peer_id {
                                                     if let Ok(pid) = pid_str.parse::<PeerId>() {
                                                         // F12: wire-supplied timestamp, clamped.
@@ -6230,9 +6372,24 @@ pub async fn start_swarm_with_config(
                                 if let request_response::Event::Message { peer, message, .. } = ev {
                                     match message {
                                         request_response::Message::Request { request, channel, .. } => {
+                                            // Cap before the clone, same reasoning and same
+                                            // constant as the native arm (re-review NEW-5):
+                                            // one 4 MiB message can carry ~80 000 entries and
+                                            // wasm has a single-threaded event loop, so an
+                                            // uncapped clone plus an `await`ed send is a
+                                            // browser-tab freeze. This arm never had the
+                                            // gossipsub auto-subscribe or the disclosure path
+                                            // -- it replies empty because wasm32 has no
+                                            // `IronCore::ledger_manager` -- so the cap is the
+                                            // whole fix here.
+                                            let entries: Vec<_> = request
+                                                .peers
+                                                .into_iter()
+                                                .take(LEDGER_EXCHANGE_MAX_REQUEST_PEERS)
+                                                .collect();
                                             let _ = event_tx.send(SwarmEvent2::LedgerReceived {
                                                 from_peer: peer,
-                                                entries: request.peers.clone(),
+                                                entries,
                                             }).await;
                                             let _ = swarm.behaviour_mut().ledger_exchange.send_response(
                                                 channel,
@@ -6246,10 +6403,15 @@ pub async fn start_swarm_with_config(
                                             ledger_exchanged_peers.insert(peer);
                                         }
                                         request_response::Message::Response { response, .. } => {
-                                            if !response.peers.is_empty() {
+                                            let entries: Vec<_> = response
+                                                .peers
+                                                .into_iter()
+                                                .take(LEDGER_EXCHANGE_MAX_REQUEST_PEERS)
+                                                .collect();
+                                            if !entries.is_empty() {
                                                 let _ = event_tx.send(SwarmEvent2::LedgerReceived {
                                                     from_peer: peer,
-                                                    entries: response.peers,
+                                                    entries,
                                                 }).await;
                                             }
                                         }
@@ -7048,7 +7210,8 @@ async fn resolve_dns_multiaddr(multiaddr: &libp2p::Multiaddr) -> Vec<libp2p::Mul
 mod ledger_seeding_hardening_tests {
     use super::{
         build_seed_dial_candidates, is_discoverable_multiaddr, RelayAbuseGuardrails,
-        LEDGER_EXCHANGE_BUCKET_MULTIPLIER, SEED_DIAL_LEDGER_CANDIDATES, SEED_DIAL_MAX_CANDIDATES,
+        LEDGER_EXCHANGE_BUCKET_MULTIPLIER, LEDGER_EXCHANGE_MAX_REQUEST_PEERS,
+        LEDGER_EXCHANGE_MAX_RESPONSE_PEERS, SEED_DIAL_LEDGER_CANDIDATES, SEED_DIAL_MAX_CANDIDATES,
     };
     use crate::store::ledger_entry::LedgerEntry;
     use crate::transport::addr_filter::NetworkMode;
@@ -7266,5 +7429,98 @@ mod ledger_seeding_hardening_tests {
             let parsed: Multiaddr = addr.parse().expect("test fixture parses");
             assert!(is_discoverable_multiaddr(&parsed), "{addr} was rejected");
         }
+    }
+
+    // ------------------------------------------------------------------
+    // NEW-1 -- DNS bypasses all address validation
+    // ------------------------------------------------------------------
+
+    /// The seed tier is the attacker-suppliable one (invite `seed_ledger`,
+    /// wire-learned entries), and it is the tier the finding names. A name is
+    /// unvalidatable, so it must not reach `swarm.dial()` from there.
+    #[test]
+    fn dns_seed_entries_never_become_dial_candidates() {
+        let hostile = [
+            "/dns4/evil.example/tcp/80",
+            "/dns6/evil.example/tcp/80",
+            "/dns/evil.example/tcp/80",
+            "/dnsaddr/evil.example",
+            // Laundered through the circuit short-circuit: the relay hop is the
+            // socket we would really open.
+            "/dns4/evil.example/tcp/443/p2p-circuit",
+        ];
+        let seeds: Vec<LedgerEntry> = hostile.iter().map(|a| entry(a, 0)).collect();
+
+        let candidates =
+            build_seed_dial_candidates(Vec::new(), seeds, &[], &[], NetworkMode::Local);
+
+        assert!(
+            candidates.is_empty(),
+            "a remote-supplied DNS name reached the dial path: {:?} -- \
+             publish `A evil.example -> 169.254.169.254` and the resolver does the rest",
+            candidates
+        );
+    }
+
+    /// The DNS rule is provenance-based, not a blanket ban: the operator's own
+    /// bootstrap relay is normally a name, and that tier must keep working or
+    /// the internet-relay step of the transport priority order dies.
+    #[test]
+    fn locally_configured_dns_bootstrap_is_still_dialable() {
+        let bootstrap: Vec<Multiaddr> = ["/dns4/relay.example/tcp/443", "/dnsaddr/boot.example"]
+            .iter()
+            .filter_map(|a| a.parse::<Multiaddr>().ok())
+            .collect();
+
+        let candidates =
+            build_seed_dial_candidates(Vec::new(), Vec::new(), &bootstrap, &[], NetworkMode::Local);
+
+        assert_eq!(
+            candidates.len(),
+            2,
+            "operator-configured bootstrap names were dropped: {:?}",
+            candidates
+        );
+    }
+
+    /// The other half of the DNS path: a wire entry with a peer id goes into
+    /// Kademlia, which dials on its own schedule. A bare `/dns4/...` already
+    /// failed the `has_ip` requirement, but the circuit form took the
+    /// unconditional allowance.
+    #[test]
+    fn kademlia_gate_rejects_dns_including_the_circuit_form() {
+        for addr in [
+            "/dns4/evil.example/tcp/80",
+            "/dns6/evil.example/tcp/80",
+            "/dns/evil.example/tcp/80",
+            "/dnsaddr/evil.example",
+            "/dns4/evil.example/tcp/443/p2p-circuit",
+            "/dns4/evil.example/tcp/443/p2p-circuit/p2p/12D3KooWSHj3RRbBjD15g6wekV8y3mm57Pobmps2g2WJm6F67Lay",
+        ] {
+            let parsed: Multiaddr = addr.parse().expect("test fixture parses");
+            assert!(
+                !is_discoverable_multiaddr(&parsed),
+                "{addr} was accepted into the DHT"
+            );
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // NEW-5 -- the bucket must gate the work, not just the reply
+    // ------------------------------------------------------------------
+
+    /// The per-message caps are what keep the `select!` thread bounded. This
+    /// asserts the constant relationship the handler relies on rather than
+    /// re-testing `Iterator::take`: we must never accept more entries per
+    /// message than we would ever send, and the cap must be far below the
+    /// ~80 000 entries a 4 MiB message can carry.
+    #[test]
+    fn inbound_exchange_entry_cap_is_symmetric_and_small() {
+        assert_eq!(
+            LEDGER_EXCHANGE_MAX_REQUEST_PEERS, LEDGER_EXCHANGE_MAX_RESPONSE_PEERS,
+            "accepting more than we send lets a peer do more work on our event \
+             loop than any honest exchange ever needs"
+        );
+        assert!(LEDGER_EXCHANGE_MAX_REQUEST_PEERS <= 64);
     }
 }

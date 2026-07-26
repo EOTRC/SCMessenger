@@ -2001,9 +2001,14 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>) -> Result<()> {
                                         // link-local, site-local) a peer may
                                         // advertise -- dialing them fails forever
                                         // and storms the request_response handler.
+                                        // `DnsPolicy::Reject`: these entries were
+                                        // learned from a peer's ledger, and a
+                                        // name resolves to whatever its owner
+                                        // says at dial time (re-review NEW-1).
                                         if !ledger::is_dialable_multiaddr(
                                             &addr_str,
                                             ledger::NetworkMode::Local,
+                                            ledger::DnsPolicy::Reject,
                                         ) {
                                             continue;
                                         }
@@ -2961,7 +2966,9 @@ async fn cmd_relay(
                                 // Skip non-routable addresses (loopback, link-local,
                                 // site-local) a peer may advertise -- dialing them
                                 // fails forever and storms the request_response handler.
-                                if !ledger::is_dialable_multiaddr(&addr_str, ledger::NetworkMode::Local) {
+                                // `DnsPolicy::Reject`: wire-learned candidate, see
+                                // re-review NEW-1.
+                                if !ledger::is_dialable_multiaddr(&addr_str, ledger::NetworkMode::Local, ledger::DnsPolicy::Reject) {
                                     continue;
                                 }
                                 if !ledger::is_dialable_for_this_node(&addr_str, ledger::NetworkMode::Local, &my_addrs) {
@@ -2980,7 +2987,20 @@ async fn cmd_relay(
                     SwarmEvent::PeerIdentified { peer_id, listen_addrs, .. } => {
                         let mut l = ledger_rx.lock().await;
                         for addr in &listen_addrs {
-                            l.record_connection(&addr.to_string(), &peer_id.to_string());
+                            let addr_str = addr.to_string();
+                            // `listen_addrs` is whatever the REMOTE chose to
+                            // advertise, but `record_connection` treats what it
+                            // stores as locally verified -- including DNS names,
+                            // which `dialable_addresses` then allows. Gate the
+                            // remote-supplied side here (re-review NEW-1).
+                            if !ledger::is_dialable_multiaddr(
+                                &addr_str,
+                                ledger::NetworkMode::Local,
+                                ledger::DnsPolicy::Reject,
+                            ) {
+                                continue;
+                            }
+                            l.record_connection(&addr_str, &peer_id.to_string());
                         }
                     }
                     SwarmEvent::TopicDiscovered { peer_id, topic } => {

@@ -1150,7 +1150,13 @@ mod tests {
     /// fails here even if every other test still compiles.
     #[test]
     fn test_encoded_invite_leaks_no_third_party_identity() {
-        const PEER_ID: &str = "12D3KooWEvilNeighbourRx7qLm4TdVzB9nHsCpWyXaEgJkQvFu";
+        // A REAL peer id, not a hand-written lookalike. The previous fixture did
+        // not parse as a multihash, so `strip_peer_id_component` returned the
+        // address unchanged and the whole export path was exercised on a string
+        // that no `Multiaddr` gate could ever accept -- which is also how the
+        // NEW-7 filter surfaced it.
+        let peer_id = libp2p::PeerId::random().to_string();
+        let peer_id: &str = &peer_id;
         const PUBLIC_KEY: &str = "b7f3c1a95e2d40886af1c0d3e9b25714aa0c6f8d1e3b5972c4a8d60f1e2b3c4d";
         const NICKNAME: &str = "carol-thinkpad";
 
@@ -1161,12 +1167,12 @@ mod tests {
             dir.path().to_string_lossy().to_string(),
         );
         ledger.record_connection(
-            format!("/ip4/203.0.113.9/tcp/9001/p2p/{}", PEER_ID),
-            PEER_ID.to_string(),
+            format!("/ip4/203.0.113.9/tcp/9001/p2p/{}", peer_id),
+            peer_id.to_string(),
         );
         ledger.annotate_identity(
-            format!("/ip4/203.0.113.9/tcp/9001/p2p/{}", PEER_ID),
-            PEER_ID.to_string(),
+            format!("/ip4/203.0.113.9/tcp/9001/p2p/{}", peer_id),
+            peer_id.to_string(),
             Some(PUBLIC_KEY.to_string()),
             Some(NICKNAME.to_string()),
         );
@@ -1186,7 +1192,7 @@ mod tests {
         let payload = token.to_qr_payload().expect("encode");
         let raw_text = String::from_utf8_lossy(&raw).to_string();
 
-        for needle in [PEER_ID, PUBLIC_KEY, NICKNAME, "/p2p/"] {
+        for needle in [peer_id, PUBLIC_KEY, NICKNAME, "/p2p/"] {
             assert!(
                 !raw_text.contains(needle),
                 "serialised invite leaked third-party identity: {}",

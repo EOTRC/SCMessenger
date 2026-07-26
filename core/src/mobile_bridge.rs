@@ -963,11 +963,19 @@ impl MeshService {
                                                         // dial and re-gossip --
                                                         // /ip4/169.254.169.254/tcp/80 or a
                                                         // loopback service on our own host.
+                                                        //
+                                                        // Re-review NEW-1: `DnsPolicy::Reject`,
+                                                        // because a peer that advertises
+                                                        // /dns4/evil.example/tcp/80 in Identify
+                                                        // picks the resolved IP at dial time and
+                                                        // can re-point it between probes -- the
+                                                        // IP rules above never run on a name.
                                                         for addr in &listen_addrs {
                                                             let addr_str = addr.to_string();
                                                             if !crate::transport::addr_filter::is_dialable_multiaddr(
                                                                 &addr_str,
                                                                 crate::transport::addr_filter::NetworkMode::Local,
+                                                                crate::transport::addr_filter::DnsPolicy::Reject,
                                                             ) {
                                                                 tracing::debug!(
                                                                     "Ignoring non-routable Identify address from {}: {}",
@@ -1045,9 +1053,17 @@ impl MeshService {
                                                             crate::transport::addr_filter::strip_peer_id(
                                                                 &entry.multiaddr,
                                                             );
+                                                        // `DnsPolicy::Reject` (re-review NEW-1):
+                                                        // this is the exact path the finding
+                                                        // describes -- a ledger-exchange entry
+                                                        // naming /dns4/evil.example/tcp/80 was
+                                                        // stored here, became a seed-dial
+                                                        // candidate, and the desktop swarm wires
+                                                        // a real resolver.
                                                         if !crate::transport::addr_filter::is_dialable_multiaddr(
                                                             &stripped,
                                                             crate::transport::addr_filter::NetworkMode::Local,
+                                                            crate::transport::addr_filter::DnsPolicy::Reject,
                                                         ) {
                                                             tracing::debug!(
                                                                 "Dropping non-routable ledger entry from the wire: {}",

@@ -8,7 +8,7 @@
 
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use web_time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Route reason: direct-first policy candidate.
@@ -80,6 +80,30 @@ pub const RECENCY_MAX_AGE_SECS: u64 = 7 * 24 * 60 * 60;
 /// Upper bound on tracked `(relay, recipient)` recency pairs. The key is built
 /// entirely from remote-supplied peer ids, so it needs a ceiling.
 pub const RECENCY_MAX_TRACKED_ROUTES: usize = 4096;
+
+/// Low-water mark the pruner drops to once [`RECENCY_MAX_TRACKED_ROUTES`] is
+/// exceeded.
+///
+/// HYSTERESIS, NOT A TRIM (re-review NEW-3). The first remediation pass pruned
+/// on EVERY insert and, past the ceiling, collected the whole map into a `Vec`
+/// and sorted it -- to remove exactly ONE entry. That is O(n log n) per insert
+/// with zero amortisation, driven directly from the ledger-exchange handler on
+/// the `select!` thread that also owns the swarm poll and the dial sweep: the
+/// F12 fix reintroduced the F4 event-loop DoS it was written next to. Dropping
+/// to a low-water mark amortises the work over
+/// `RECENCY_MAX_TRACKED_ROUTES - RECENCY_PRUNE_TARGET_ROUTES` inserts, and the
+/// pruner no longer sorts at all.
+pub const RECENCY_PRUNE_TARGET_ROUTES: usize = 3072;
+
+/// Maximum `(relay, recipient)` routes a SINGLE relay peer may occupy.
+///
+/// Re-review NEW-4: without this, one peer can fill all
+/// [`RECENCY_MAX_TRACKED_ROUTES`] slots and flush every honest route out of the
+/// map, making `recipient_recency_by_route` -- the primary descending sort key
+/// in [`MultiPathDelivery::ranked_routes`] -- entirely its own. 64 is symmetric
+/// with the ledger-exchange response cap, i.e. exactly one full honest exchange
+/// fits, and a peer that exceeds it evicts only ITS OWN oldest route.
+pub const RECENCY_MAX_ROUTES_PER_RELAY: usize = 64;
 
 // ============================================================================
 // PHASE 3: RELAY CAPABILITY
@@ -377,6 +401,28 @@ pub struct MultiPathDelivery {
     reputation: ReputationTracker,
     /// Recipient-recency signals keyed by (relay, recipient)
     recipient_recency_by_route: HashMap<(PeerId, PeerId), u64>,
+    /// Keys of `recipient_recency_by_route` in FIRST-INSERTION order.
+    ///
+    /// Re-review NEW-4: eviction must not be driven by any value the attacker
+    /// supplies. The previous pruner sorted ascending by `seen_at` and dropped
+    /// the front, but `seen_at` is wire data clamped only to
+    /// `now + RECENCY_MAX_CLOCK_SKEW_SECS` -- so 4096 entries asserting
+    /// `now + 300` evicted every honest route and left the ranking key entirely
+    /// attacker-controlled. Cheaper than the `u64::MAX` pin F12 was filed for.
+    /// Insertion order is chosen by US and cannot be influenced by the contents
+    /// of a message.
+    ///
+    /// Re-observing an existing route deliberately does NOT refresh its
+    /// position: if it did, an attacker could hold its own entries at the back
+    /// of the queue by re-asserting them, which is the same steerability
+    /// through a different door.
+    ///
+    /// May contain keys already removed by the per-relay quota; such tombstones
+    /// are skipped on pop and compacted out in `prune_recipient_recency`.
+    recency_insert_order: VecDeque<(PeerId, PeerId)>,
+    /// Live recipients per relay peer, in insertion order, for the per-relay
+    /// quota ([`RECENCY_MAX_ROUTES_PER_RELAY`]). Never holds tombstones.
+    recency_routes_by_relay: HashMap<PeerId, VecDeque<PeerId>>,
     /// Latest successful relay path order keyed by (relay, recipient)
     latest_success_by_route: HashMap<(PeerId, PeerId), u64>,
     /// Monotonic sequence for deterministic "latest successful path" tie-breaks
@@ -395,6 +441,8 @@ impl MultiPathDelivery {
             attempts: HashMap::new(),
             reputation: ReputationTracker::new(),
             recipient_recency_by_route: HashMap::new(),
+            recency_insert_order: VecDeque::new(),
+            recency_routes_by_relay: HashMap::new(),
             latest_success_by_route: HashMap::new(),
             success_sequence: 0,
         }
@@ -432,8 +480,32 @@ impl MultiPathDelivery {
         let ceiling = unix_now_secs().saturating_add(RECENCY_MAX_CLOCK_SKEW_SECS);
         let clamped = seen_at.min(ceiling);
         let key = (relay_peer, recipient_peer);
-        let entry = self.recipient_recency_by_route.entry(key).or_insert(0);
-        *entry = (*entry).max(clamped);
+
+        // Updating a route we already track changes no structure: no new key,
+        // no quota consumption, no prune. This is also what keeps a peer from
+        // moving its own entries to the back of the eviction queue by
+        // re-asserting them (see `recency_insert_order`).
+        if let Some(existing) = self.recipient_recency_by_route.get_mut(&key) {
+            *existing = (*existing).max(clamped);
+            return;
+        }
+
+        self.recipient_recency_by_route.insert(key, clamped);
+        self.recency_insert_order.push_back(key);
+
+        // Per-relay quota (NEW-4): a relay that exceeds its allowance evicts its
+        // OWN oldest route. Bounded at RECENCY_MAX_ROUTES_PER_RELAY, so this
+        // loop runs at most once per insert.
+        let per_relay = self.recency_routes_by_relay.entry(relay_peer).or_default();
+        per_relay.push_back(recipient_peer);
+        while per_relay.len() > RECENCY_MAX_ROUTES_PER_RELAY {
+            let Some(evicted) = per_relay.pop_front() else {
+                break;
+            };
+            self.recipient_recency_by_route
+                .remove(&(relay_peer, evicted));
+        }
+
         self.prune_recipient_recency();
     }
 
@@ -461,22 +533,74 @@ impl MultiPathDelivery {
     }
 
     /// Bound `recipient_recency_by_route`, which is keyed by a pair of
-    /// remote-supplied peer ids and previously grew without limit. Evicts the
-    /// oldest sightings first, which is also the least useful ranking data.
+    /// remote-supplied peer ids and previously grew without limit.
+    ///
+    /// Two properties this must have, both learned the hard way:
+    ///
+    /// 1. AMORTISED (NEW-3). It runs on the swarm `select!` thread, once per
+    ///    inserted wire entry. Sorting the whole map to drop one entry made a
+    ///    single ledger-exchange request stall the event loop. Instead: cross
+    ///    the ceiling, then pop down to [`RECENCY_PRUNE_TARGET_ROUTES`], so the
+    ///    cost is spread over the next 1024 inserts and there is no sort.
+    /// 2. NOT ATTACKER-STEERABLE (NEW-4). Eviction order is first-insertion
+    ///    order, never a value that arrived over the wire.
     fn prune_recipient_recency(&mut self) {
-        if self.recipient_recency_by_route.len() <= RECENCY_MAX_TRACKED_ROUTES {
-            return;
+        if self.recipient_recency_by_route.len() > RECENCY_MAX_TRACKED_ROUTES {
+            while self.recipient_recency_by_route.len() > RECENCY_PRUNE_TARGET_ROUTES {
+                let Some(key) = self.recency_insert_order.pop_front() else {
+                    // Order queue exhausted before the map: cannot happen, but
+                    // spinning here would hang the event loop, so stop.
+                    break;
+                };
+                if self.recipient_recency_by_route.remove(&key).is_some() {
+                    if let Some(recipients) = self.recency_routes_by_relay.get_mut(&key.0) {
+                        // Bounded by RECENCY_MAX_ROUTES_PER_RELAY (64).
+                        if let Some(pos) = recipients.iter().position(|r| *r == key.1) {
+                            recipients.remove(pos);
+                        }
+                        if recipients.is_empty() {
+                            self.recency_routes_by_relay.remove(&key.0);
+                        }
+                    }
+                }
+            }
         }
-        let mut by_age: Vec<((PeerId, PeerId), u64)> = self
-            .recipient_recency_by_route
-            .iter()
-            .map(|(k, v)| (*k, *v))
-            .collect();
-        by_age.sort_by_key(|(_, seen_at)| *seen_at);
-        let excess = by_age.len() - RECENCY_MAX_TRACKED_ROUTES;
-        for (key, _) in by_age.into_iter().take(excess) {
-            self.recipient_recency_by_route.remove(&key);
+
+        // Per-relay quota evictions leave tombstones in the order queue. Compact
+        // them out on a high-water mark so the queue cannot grow without bound;
+        // amortised over at least RECENCY_MAX_TRACKED_ROUTES evictions.
+        if self.recency_insert_order.len() > 2 * RECENCY_MAX_TRACKED_ROUTES {
+            let live = &self.recipient_recency_by_route;
+            self.recency_insert_order
+                .retain(|key| live.contains_key(key));
         }
+    }
+
+    /// Recency value currently held for `(relay_peer, recipient_peer)`, if any.
+    ///
+    /// Read-only observability for the bounds and eviction-order invariants of
+    /// `recipient_recency_by_route` (re-review NEW-3/NEW-4), which are otherwise
+    /// only visible through `ranked_routes` and therefore only for peers that
+    /// also have a reputation entry.
+    pub fn recipient_recency(&self, relay_peer: &PeerId, recipient_peer: &PeerId) -> Option<u64> {
+        self.recipient_recency_by_route
+            .get(&(*relay_peer, *recipient_peer))
+            .copied()
+    }
+
+    /// Number of `(relay, recipient)` routes currently tracked. Bounded by
+    /// [`RECENCY_MAX_TRACKED_ROUTES`].
+    pub fn tracked_recency_routes(&self) -> usize {
+        self.recipient_recency_by_route.len()
+    }
+
+    /// Number of tracked routes attributed to one relay peer. Bounded by
+    /// [`RECENCY_MAX_ROUTES_PER_RELAY`].
+    pub fn tracked_recency_routes_for_relay(&self, relay_peer: &PeerId) -> usize {
+        self.recency_routes_by_relay
+            .get(relay_peer)
+            .map(|recipients| recipients.len())
+            .unwrap_or(0)
     }
 
     /// Record a "seen now" recipient-recency signal.
@@ -853,5 +977,214 @@ mod tests {
             );
         }
         assert!(delivery.recipient_recency_by_route.len() <= RECENCY_MAX_TRACKED_ROUTES);
+    }
+
+    // ------------------------------------------------------------------
+    // NEW-3 -- the F12 pruner reintroduced the F4 event-loop DoS
+    // ------------------------------------------------------------------
+
+    /// Past the ceiling, the previous pruner collected the entire map into a
+    /// `Vec` and sorted it on EVERY insert, to remove exactly one entry. This
+    /// runs on the swarm `select!` thread that also owns the swarm poll and the
+    /// dial sweep.
+    ///
+    /// The bound is deliberately loose (a wall-clock assertion in a debug-build
+    /// test suite on a shared machine cannot be tight); the point is the
+    /// difference between amortised-constant and n log n per insert, which at
+    /// this size is roughly two orders of magnitude.
+    #[test]
+    fn pruning_is_amortised_not_per_insert() {
+        let mut delivery = MultiPathDelivery::new();
+        let now = unix_now_secs();
+        let inserts = RECENCY_MAX_TRACKED_ROUTES * 8;
+
+        let started = std::time::Instant::now();
+        for i in 0..inserts {
+            // Distinct relay per insert so the per-relay quota is not what is
+            // being measured here.
+            delivery.record_recipient_seen_via_relay(
+                PeerId::random(),
+                PeerId::random(),
+                now - (i as u64 % 600),
+            );
+        }
+        let elapsed = started.elapsed();
+
+        assert!(
+            delivery.recipient_recency_by_route.len() <= RECENCY_MAX_TRACKED_ROUTES,
+            "map exceeded its ceiling"
+        );
+        assert!(
+            delivery.recency_insert_order.len() <= 2 * RECENCY_MAX_TRACKED_ROUTES + 1,
+            "the eviction-order queue grew without bound: {}",
+            delivery.recency_insert_order.len()
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "{inserts} inserts took {elapsed:?} on the event-loop thread"
+        );
+    }
+
+    /// Crossing the ceiling must drop to the low-water mark, so the next
+    /// `RECENCY_MAX_TRACKED_ROUTES - RECENCY_PRUNE_TARGET_ROUTES` inserts do no
+    /// pruning work at all.
+    #[test]
+    fn prune_drops_to_the_low_water_mark() {
+        let mut delivery = MultiPathDelivery::new();
+        let now = unix_now_secs();
+        for _ in 0..=RECENCY_MAX_TRACKED_ROUTES {
+            delivery.record_recipient_seen_via_relay(PeerId::random(), PeerId::random(), now);
+        }
+        assert_eq!(
+            delivery.recipient_recency_by_route.len(),
+            RECENCY_PRUNE_TARGET_ROUTES,
+            "pruner trimmed to the ceiling instead of the low-water mark, so \
+             every subsequent insert prunes again"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // NEW-4 -- eviction must not be steerable by wire data
+    // ------------------------------------------------------------------
+
+    /// The previous pruner sorted ascending by `seen_at` and evicted the front.
+    /// `seen_at` is wire data, clamped only to `now + 300s` and kept verbatim
+    /// below that, so a handful of connected peers asserting `now + 300` filled
+    /// the map and evicted every honest route -- and `recipient_recency_by_route`
+    /// is the PRIMARY descending sort key in `ranked_routes`, so the ranking
+    /// became entirely theirs. That is cheaper than the `u64::MAX` pin F12 was
+    /// written to stop.
+    ///
+    /// The defence is the per-relay quota: every route key needs a relay peer
+    /// id, and a peer id costs a Noise handshake, so a fixed number of attacker
+    /// identities can hold at most `n * RECENCY_MAX_ROUTES_PER_RELAY` slots no
+    /// matter how many messages they send.
+    #[test]
+    fn future_dated_flood_from_bounded_identities_cannot_evict_honest_routes() {
+        let mut delivery = MultiPathDelivery::new();
+        let now = unix_now_secs();
+        let target = PeerId::random();
+
+        // An honest, live sighting recorded first -- i.e. the one an
+        // insertion-ordered pruner would reach first, so this is not passing by
+        // accident of ordering.
+        let honest_relay = PeerId::random();
+        delivery.record_recipient_seen_now(honest_relay, target);
+        assert!(delivery
+            .recipient_recency_by_route
+            .contains_key(&(honest_relay, target)));
+
+        // Eight attacker identities, each sending far more than the whole map
+        // could hold, all at the maximum timestamp the clamp permits.
+        let attackers: Vec<PeerId> = (0..8).map(|_| PeerId::random()).collect();
+        let future = now + RECENCY_MAX_CLOCK_SKEW_SECS;
+        for i in 0..(RECENCY_MAX_TRACKED_ROUTES * 4) {
+            delivery.record_recipient_seen_via_relay_from_wire(
+                attackers[i % attackers.len()],
+                PeerId::random(),
+                future,
+            );
+        }
+
+        assert!(
+            delivery
+                .recipient_recency_by_route
+                .contains_key(&(honest_relay, target)),
+            "the honest route was evicted by a future-dated flood; the primary \
+             ranking key is now attacker-controlled"
+        );
+        assert!(
+            delivery.recipient_recency_by_route.len()
+                <= 1 + attackers.len() * RECENCY_MAX_ROUTES_PER_RELAY,
+            "8 identities occupied {} slots",
+            delivery.recipient_recency_by_route.len()
+        );
+    }
+
+    /// One relay must not be able to occupy the whole map, however many
+    /// recipients it claims to have seen.
+    #[test]
+    fn one_relay_cannot_exceed_its_route_quota() {
+        let mut delivery = MultiPathDelivery::new();
+        let now = unix_now_secs();
+        let greedy = PeerId::random();
+
+        for _ in 0..(RECENCY_MAX_ROUTES_PER_RELAY * 20) {
+            delivery.record_recipient_seen_via_relay_from_wire(greedy, PeerId::random(), now);
+        }
+
+        let held = delivery
+            .recipient_recency_by_route
+            .keys()
+            .filter(|(relay, _)| *relay == greedy)
+            .count();
+        assert_eq!(
+            held, RECENCY_MAX_ROUTES_PER_RELAY,
+            "one relay holds {held} of {RECENCY_MAX_TRACKED_ROUTES} route slots"
+        );
+        assert_eq!(
+            delivery
+                .recency_routes_by_relay
+                .get(&greedy)
+                .map(|d| d.len()),
+            Some(RECENCY_MAX_ROUTES_PER_RELAY),
+            "the per-relay index drifted out of sync with the map"
+        );
+    }
+
+    /// A relay at quota evicts only its own routes, never a neighbour's.
+    #[test]
+    fn relay_quota_eviction_does_not_touch_other_relays() {
+        let mut delivery = MultiPathDelivery::new();
+        let now = unix_now_secs();
+        let victim_relay = PeerId::random();
+        let victim_target = PeerId::random();
+        delivery.record_recipient_seen_via_relay(victim_relay, victim_target, now);
+
+        let greedy = PeerId::random();
+        for _ in 0..(RECENCY_MAX_ROUTES_PER_RELAY * 5) {
+            delivery.record_recipient_seen_via_relay_from_wire(greedy, PeerId::random(), now);
+        }
+
+        assert!(delivery
+            .recipient_recency_by_route
+            .contains_key(&(victim_relay, victim_target)));
+    }
+
+    /// Re-asserting a route we already hold must not move it to the back of the
+    /// eviction queue -- that would restore steerability through the update
+    /// path instead of the insert path.
+    #[test]
+    fn reasserting_a_known_route_does_not_refresh_its_eviction_position() {
+        let mut delivery = MultiPathDelivery::new();
+        let now = unix_now_secs();
+        let relay = PeerId::random();
+        let target = PeerId::random();
+
+        delivery.record_recipient_seen_via_relay(relay, target, now - 10);
+        let order_len_before = delivery.recency_insert_order.len();
+        for _ in 0..50 {
+            delivery.record_recipient_seen_via_relay(relay, target, now);
+        }
+
+        assert_eq!(
+            delivery.recency_insert_order.len(),
+            order_len_before,
+            "a repeated observation queued a duplicate eviction-order entry"
+        );
+        assert_eq!(
+            delivery.recency_insert_order.front(),
+            Some(&(relay, target)),
+            "re-asserting moved the route out of the eviction front"
+        );
+        // The value still updates -- this must not have broken the recency
+        // signal itself.
+        assert_eq!(
+            delivery
+                .recipient_recency_by_route
+                .get(&(relay, target))
+                .copied(),
+            Some(now)
+        );
     }
 }

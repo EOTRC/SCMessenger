@@ -1,4 +1,6 @@
-use crate::transport::addr_filter::{is_dialable_multiaddr, NetworkMode};
+use crate::transport::addr_filter::{
+    is_dialable_multiaddr, is_disclosable_multiaddr, DnsPolicy, NetworkMode,
+};
 use libp2p::Multiaddr;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -96,6 +98,24 @@ fn get_multiaddr_port(addr_str: &str) -> Option<u16> {
         }
     }
     None
+}
+
+/// Who an invite's `seed_ledger` is going to.
+///
+/// Re-review NEW-7: an invite QR is a durable, forwardable artefact, so its
+/// default audience has to be "a stranger, eventually". Only a caller that
+/// knows the invite is handed over in person may widen it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SeedExportAudience {
+    /// Assume the invite will be forwarded, photographed or posted. Only
+    /// globally routable, non-DNS addresses survive.
+    #[default]
+    Untrusted,
+    /// The invite is being shown to someone physically present on the same
+    /// network, so an RFC1918 address is the entire point. Loopback,
+    /// link-local, multicast, broadcast, `0/8`, `192.0.0.0/24` and DNS forms
+    /// are STILL dropped -- this widens exactly one rule, not the gate.
+    LocalMesh,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Object))]
@@ -321,13 +341,25 @@ impl LedgerManager {
     /// see the type-level note on [`SeedLedgerEntry`]. This is the only export
     /// path for invites, so it is also the choke point that keeps third-party
     /// identity out of them.
+    ///
+    /// ADDRESS FILTERING (re-review NEW-7). This had no address filter at all,
+    /// so a node that had dialed loopback or its own LAN baked those addresses
+    /// into an invite QR -- a durable, forwardable artefact, which is strictly
+    /// worse than the wire disclosure NEW-2 covers. It now runs the SAME
+    /// predicate as the ledger-exchange reply
+    /// ([`crate::transport::addr_filter::is_disclosable_multiaddr`]), so an
+    /// invite can only ever carry globally routable, non-DNS addresses.
+    ///
+    /// CONSEQUENCE, called out because it is a real functional limit and not an
+    /// oversight: an invite can no longer carry an RFC1918 address, so the
+    /// "invite the person next to me onto my LAN mesh" cold start is not served
+    /// by this function. Wiring that case up needs a caller that knows the
+    /// invite is being handed over in person; [`Self::export_seed_entries_for`]
+    /// exists for it and is deliberately not the default. Today nothing accepts
+    /// an invite at all (review F2), so this closes a latent leak rather than
+    /// removing a working feature.
     pub fn export_seed_entries(&self, limit: u32) -> Vec<SeedLedgerEntry> {
-        self.get_preferred_relays(limit)
-            .into_iter()
-            .map(|entry| SeedLedgerEntry {
-                multiaddr: strip_peer_id_component(&entry.multiaddr),
-            })
-            .collect()
+        self.export_seed_entries_for(limit, SeedExportAudience::Untrusted)
     }
 
     /// Merge seed entries learned out-of-band (invite / QR) into the ledger.
@@ -412,6 +444,30 @@ impl LedgerManager {
         }
     }
 
+    /// [`Self::export_seed_entries`] with an explicit audience.
+    ///
+    /// Not `uniffi::export`ed: [`SeedExportAudience`] is a security decision
+    /// that must be made by a call site that knows how the invite is delivered,
+    /// and "pick an enum variant" is exactly the kind of choice a binding
+    /// consumer gets wrong by default.
+    pub fn export_seed_entries_for(
+        &self,
+        limit: u32,
+        audience: SeedExportAudience,
+    ) -> Vec<SeedLedgerEntry> {
+        self.get_preferred_relays(limit)
+            .into_iter()
+            .map(|entry| strip_peer_id_component(&entry.multiaddr))
+            .filter(|addr| match audience {
+                SeedExportAudience::Untrusted => is_disclosable_multiaddr(addr),
+                SeedExportAudience::LocalMesh => {
+                    is_dialable_multiaddr(addr, NetworkMode::Local, DnsPolicy::Reject)
+                }
+            })
+            .map(|multiaddr| SeedLedgerEntry { multiaddr })
+            .collect()
+    }
+
     /// [`Self::import_seed_entries`] with an explicit network mode.
     ///
     /// Every rejection reason is deliberate; see review F3 and F9:
@@ -444,7 +500,10 @@ impl LedgerManager {
                 tracing::debug!("Dropping seed multiaddr with no transport component");
                 continue;
             }
-            if !is_dialable_multiaddr(&stripped, mode) {
+            // `DnsPolicy::Reject`: an invite's `seed_ledger` is supplied by
+            // whoever produced the invite, so a `/dns4/...` entry would let them
+            // re-point our dial target after the fact (re-review NEW-1).
+            if !is_dialable_multiaddr(&stripped, mode, DnsPolicy::Reject) {
                 tracing::debug!("Dropping non-routable seed multiaddr: {}", stripped);
                 continue;
             }
@@ -491,10 +550,20 @@ impl LedgerManager {
     ///   them directly contradicts the "where to knock, not who lives there"
     ///   principle this feature is documented on (see [`SeedLedgerEntry`]).
     /// - The requester is never echoed back to itself.
+    ///
+    /// NO `NetworkMode` PARAMETER, deliberately (re-review NEW-2). This used to
+    /// take one and the swarm hardcoded `NetworkMode::Local` at the call site,
+    /// which is the mode that SKIPS the `is_private()` check. Since
+    /// `record_connection` is intentionally unfiltered, every LAN peer we had
+    /// ever dialed was a proven, disclosable record -- internal subnet, live
+    /// host:port and the neighbour's `last_peer_id` -- shipped to any peer that
+    /// completed a Noise handshake. Disclosure is a different question from
+    /// dialability and now uses
+    /// [`crate::transport::addr_filter::is_disclosable_multiaddr`], which has no
+    /// knob a caller can turn the wrong way.
     pub fn exchange_response_entries(
         &self,
         limit: usize,
-        mode: NetworkMode,
         requester_peer_id: &str,
     ) -> Vec<SharedPeerEntry> {
         let entries = self.entries.lock();
@@ -502,7 +571,7 @@ impl LedgerManager {
             .iter()
             .filter(|e| e.success_count > 0 && e.failure_count < 5)
             .filter(|e| e.peer_id.as_deref() != Some(requester_peer_id))
-            .filter(|e| is_dialable_multiaddr(&strip_peer_id_component(&e.multiaddr), mode))
+            .filter(|e| is_disclosable_multiaddr(&strip_peer_id_component(&e.multiaddr)))
             .take(limit)
             .map(ledger_entry_to_shared_routing_only)
             .collect()
@@ -801,8 +870,8 @@ mod tests {
     fn export_seed_entries_only_exports_proven_peers_without_identity() {
         let (_dir, mgr) = manager();
         let proven = peer();
-        let proven_addr = format!("/ip4/10.0.0.1/tcp/9001/p2p/{proven}");
-        mgr.import_seed_entries(vec![seed("/ip4/10.0.0.9/tcp/9001")]);
+        let proven_addr = format!("/ip4/198.51.100.1/tcp/9001/p2p/{proven}");
+        mgr.import_seed_entries(vec![seed("/ip4/198.51.100.9/tcp/9001")]);
         mgr.record_connection(proven_addr.clone(), proven.clone());
         mgr.annotate_identity(
             proven_addr,
@@ -814,7 +883,58 @@ mod tests {
         let exported = mgr.export_seed_entries(16);
         assert_eq!(exported.len(), 1);
         // Peer-id-stripped, and the struct has no room for identity at all.
-        assert_eq!(exported[0].multiaddr, "/ip4/10.0.0.1/tcp/9001");
+        assert_eq!(exported[0].multiaddr, "/ip4/198.51.100.1/tcp/9001");
+    }
+
+    // ------------------------------------------------------------------
+    // NEW-7 -- an invite QR must not bake in loopback / LAN addresses
+    // ------------------------------------------------------------------
+
+    /// `export_seed_entries` had NO address filter, so any proven entry became
+    /// invite content. A node that had dialed `127.0.0.1` (every developer
+    /// build, every loopback smoke test) or its own `192.168.x.y` LAN shipped
+    /// those in a QR code that outlives the session and can be forwarded.
+    #[test]
+    fn export_seed_entries_never_bakes_loopback_or_lan_into_an_invite() {
+        let (_dir, mgr) = manager();
+        for addr in [
+            "/ip4/127.0.0.1/tcp/8080",
+            "/ip6/::1/tcp/8080",
+            "/ip4/169.254.169.254/tcp/80",
+            "/ip4/192.168.7.7/tcp/9001",
+            "/ip4/10.1.2.3/tcp/9001",
+            "/dns4/nas.corp.internal/tcp/443",
+            "/ip4/198.51.100.4/tcp/9001",
+        ] {
+            mgr.record_connection(addr.to_string(), peer());
+        }
+
+        let exported = mgr.export_seed_entries(64);
+        let addrs: Vec<&str> = exported.iter().map(|e| e.multiaddr.as_str()).collect();
+        assert_eq!(
+            addrs,
+            vec!["/ip4/198.51.100.4/tcp/9001"],
+            "invite carried a non-disclosable address: {addrs:?}"
+        );
+    }
+
+    /// The LAN cold-start case is still reachable, but only by opting in, and
+    /// opting in must not also re-enable loopback or an internal hostname.
+    #[test]
+    fn local_mesh_export_widens_rfc1918_only() {
+        let (_dir, mgr) = manager();
+        for addr in [
+            "/ip4/127.0.0.1/tcp/8080",
+            "/ip4/169.254.169.254/tcp/80",
+            "/dns4/nas.corp.internal/tcp/443",
+            "/ip4/192.168.7.7/tcp/9001",
+        ] {
+            mgr.record_connection(addr.to_string(), peer());
+        }
+
+        let exported = mgr.export_seed_entries_for(64, SeedExportAudience::LocalMesh);
+        let addrs: Vec<&str> = exported.iter().map(|e| e.multiaddr.as_str()).collect();
+        assert_eq!(addrs, vec!["/ip4/192.168.7.7/tcp/9001"], "got {addrs:?}");
     }
 
     #[test]
@@ -971,7 +1091,7 @@ mod tests {
         let requester = peer();
         mgr.record_connection("/ip4/203.0.113.9/tcp/9001".to_string(), requester.clone());
 
-        let response = mgr.exchange_response_entries(16, NetworkMode::Public, &requester);
+        let response = mgr.exchange_response_entries(16, &requester);
 
         assert_eq!(response.len(), 16, "response cap not applied");
         assert!(
@@ -990,6 +1110,68 @@ mod tests {
                 .any(|e| e.last_peer_id.as_deref() == Some(requester.as_str())),
             "requester echoed back to itself"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // NEW-2 -- RFC1918 must never be disclosed, whatever the caller wants
+    // ------------------------------------------------------------------
+
+    /// The previous test only proved the filter worked when the CALLER passed
+    /// `NetworkMode::Public`, and the swarm passed `Local`. There is no longer a
+    /// parameter to get wrong, and this asserts it directly: a ledger made
+    /// entirely of LAN neighbours discloses nothing at all.
+    #[test]
+    fn exchange_response_never_discloses_private_ranges() {
+        let (_dir, mgr) = manager();
+        for addr in [
+            "/ip4/192.168.1.10/tcp/9001",
+            "/ip4/192.168.1.11/tcp/9001",
+            "/ip4/10.0.2.16/tcp/9001",
+            "/ip4/172.20.0.1/tcp/9001",
+            "/ip6/fd00::1/tcp/9001",
+            "/ip4/127.0.0.1/tcp/8080",
+            "/ip4/169.254.169.254/tcp/80",
+            "/dns4/nas.corp.internal/tcp/443",
+        ] {
+            mgr.record_connection(addr.to_string(), peer());
+        }
+        // One genuinely public neighbour, so an empty result cannot pass by
+        // accident.
+        mgr.record_connection("/ip4/198.51.100.5/tcp/9001".to_string(), peer());
+
+        let response = mgr.exchange_response_entries(64, "some-other-peer");
+        let disclosed: Vec<&str> = response.iter().map(|e| e.multiaddr.as_str()).collect();
+
+        assert_eq!(
+            disclosed,
+            vec!["/ip4/198.51.100.5/tcp/9001"],
+            "internal topology disclosed to an unauthenticated peer: {disclosed:?}"
+        );
+        assert!(
+            response.iter().all(|e| e.known_topics.is_empty()),
+            "known_topics leaked"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // NEW-1 -- a DNS name resolves to whatever its owner says
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn import_seed_entries_rejects_dns_forms() {
+        let (_dir, mgr) = manager();
+        assert_eq!(
+            mgr.import_seed_entries(vec![
+                seed("/dns4/evil.example/tcp/80"),
+                seed("/dns6/evil.example/tcp/80"),
+                seed("/dns/evil.example/tcp/80"),
+                seed("/dnsaddr/evil.example"),
+                seed("/dns4/evil.example/tcp/443/p2p-circuit"),
+            ]),
+            0,
+            "a DNS seed was imported; its owner can re-point it at 169.254.169.254"
+        );
+        assert!(mgr.seed_addresses(64).is_empty());
     }
 
     // ------------------------------------------------------------------

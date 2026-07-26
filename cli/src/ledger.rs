@@ -349,7 +349,17 @@ impl ConnectionLedger {
     /// Add or update a peer after successful connection
     pub fn record_connection(&mut self, multiaddr: &str, peer_id: &str) {
         let stripped = strip_peer_id(multiaddr);
-        if !is_dialable_multiaddr(&stripped, NetworkMode::Local) {
+        // `AllowLocallyConfigured`: this records an address we CONNECTED to (or
+        // a configured bootstrap name), not one a peer merely claimed. The
+        // remote-supplied feed into this function -- the `PeerIdentified`
+        // handler in `main.rs`, which passes the peer's advertised
+        // `listen_addrs` -- applies `DnsPolicy::Reject` at its own call site,
+        // because those ARE attacker-chosen.
+        if !is_dialable_multiaddr(
+            &stripped,
+            NetworkMode::Local,
+            DnsPolicy::AllowLocallyConfigured,
+        ) {
             return;
         }
 
@@ -406,7 +416,15 @@ impl ConnectionLedger {
         self.entries
             .values()
             .filter(|e| e.should_attempt())
-            .filter(|e| is_dialable_multiaddr(&e.multiaddr, NetworkMode::Local))
+            // `AllowLocallyConfigured`: see the module note by the re-exports.
+            // A name can only be in this store if `add_bootstrap` put it there.
+            .filter(|e| {
+                is_dialable_multiaddr(
+                    &e.multiaddr,
+                    NetworkMode::Local,
+                    DnsPolicy::AllowLocallyConfigured,
+                )
+            })
             .filter(|e| {
                 if let (Some(local), Some(last)) = (local_peer_id, &e.last_peer_id) {
                     local != last
@@ -475,7 +493,9 @@ impl ConnectionLedger {
         for entry in entries {
             let stripped = strip_peer_id(&entry.multiaddr);
 
-            if !is_dialable_multiaddr(&stripped, NetworkMode::Local) {
+            // `DnsPolicy::Reject` (re-review NEW-1): this is the wire path, and
+            // it is the gate that lets `dialable_addresses` keep allowing names.
+            if !is_dialable_multiaddr(&stripped, NetworkMode::Local, DnsPolicy::Reject) {
                 continue;
             }
 
@@ -683,8 +703,16 @@ impl ConnectionLedger {
 // Public mode) are now rejected, and a string with no transport component at
 // all -- including `""`, which `Multiaddr` happily parses -- is no longer
 // reported as dialable.
+//
+// Re-review NEW-1: `is_dialable_multiaddr` now also takes a [`DnsPolicy`],
+// because a `/dns4/...` address resolves to whatever its zone owner chooses at
+// dial time, so none of the IP rules can be applied to it. The invariant this
+// file maintains is: **a DNS-form address may enter the CLI ledger only through
+// `add_bootstrap`, i.e. from local configuration.** `merge_shared_entries` (the
+// wire path) rejects names; `dialable_addresses` therefore allows them, because
+// by then they can only have come from the operator.
 pub use scmessenger_core::transport::addr_filter::{
-    is_dialable_multiaddr, is_self_address, strip_peer_id, NetworkMode,
+    is_dialable_multiaddr, is_self_address, strip_peer_id, DnsPolicy, NetworkMode,
 };
 
 /// Extract the first `/ip4/x.x.x.x/` component of a multiaddr, if any.
@@ -921,33 +949,110 @@ mod tests {
 
     #[test]
     fn test_is_dialable_multiaddr() {
+        use DnsPolicy::{AllowLocallyConfigured, Reject};
         use NetworkMode::{Local, Public};
         // Non-routable: rejected regardless of mode.
-        assert!(!is_dialable_multiaddr("/ip4/127.0.0.1/tcp/9001", Local));
-        assert!(!is_dialable_multiaddr("/ip4/0.0.0.0/tcp/9001", Local));
-        assert!(!is_dialable_multiaddr("/ip4/169.254.1.2/tcp/9001", Local));
-        assert!(!is_dialable_multiaddr("/ip6/::1/tcp/9001", Local));
+        assert!(!is_dialable_multiaddr(
+            "/ip4/127.0.0.1/tcp/9001",
+            Local,
+            Reject
+        ));
+        assert!(!is_dialable_multiaddr(
+            "/ip4/0.0.0.0/tcp/9001",
+            Local,
+            Reject
+        ));
+        assert!(!is_dialable_multiaddr(
+            "/ip4/169.254.1.2/tcp/9001",
+            Local,
+            Reject
+        ));
+        assert!(!is_dialable_multiaddr("/ip6/::1/tcp/9001", Local, Reject));
         assert!(!is_dialable_multiaddr(
             "/ip6/fe80::1897:a8ff:fec5:3d16/tcp/443",
-            Local
+            Local,
+            Reject
         ));
-        assert!(!is_dialable_multiaddr("/ip6/fec0::1/tcp/9001", Local));
+        assert!(!is_dialable_multiaddr(
+            "/ip6/fec0::1/tcp/9001",
+            Local,
+            Reject
+        ));
         // Globally routable: accepted.
-        assert!(is_dialable_multiaddr("/ip4/1.2.3.4/tcp/9001", Local));
+        assert!(is_dialable_multiaddr(
+            "/ip4/1.2.3.4/tcp/9001",
+            Local,
+            Reject
+        ));
         assert!(is_dialable_multiaddr(
             "/ip6/2606:4700:4700::1111/tcp/9001",
-            Local
+            Local,
+            Reject
         ));
         // Private/LAN: kept in Local, dropped in Public.
-        assert!(is_dialable_multiaddr("/ip4/10.0.2.16/tcp/9001", Local));
-        assert!(is_dialable_multiaddr("/ip4/192.168.1.5/tcp/9001", Local));
-        assert!(!is_dialable_multiaddr("/ip4/10.0.2.16/tcp/9001", Public));
-        assert!(!is_dialable_multiaddr("/ip4/192.168.1.5/tcp/9001", Public));
+        assert!(is_dialable_multiaddr(
+            "/ip4/10.0.2.16/tcp/9001",
+            Local,
+            Reject
+        ));
+        assert!(is_dialable_multiaddr(
+            "/ip4/192.168.1.5/tcp/9001",
+            Local,
+            Reject
+        ));
+        assert!(!is_dialable_multiaddr(
+            "/ip4/10.0.2.16/tcp/9001",
+            Public,
+            Reject
+        ));
+        assert!(!is_dialable_multiaddr(
+            "/ip4/192.168.1.5/tcp/9001",
+            Public,
+            Reject
+        ));
         // p2p-circuit always allowed (relay path).
         assert!(is_dialable_multiaddr(
             "/ip4/1.2.3.4/tcp/9001/p2p-circuit",
-            Local
+            Local,
+            Reject
         ));
+        // A name is only as trustworthy as whoever supplied it.
+        assert!(!is_dialable_multiaddr(
+            "/dns4/relay.example/tcp/443",
+            Local,
+            Reject
+        ));
+        assert!(is_dialable_multiaddr(
+            "/dns4/relay.example/tcp/443",
+            Local,
+            AllowLocallyConfigured
+        ));
+    }
+
+    /// Re-review NEW-1, CLI half: the wire merge path must not let a peer put a
+    /// DNS name into the ledger, because `dialable_addresses` deliberately
+    /// allows names (they can only have come from `add_bootstrap`) and the
+    /// dial scheduler resolves whatever it is handed.
+    #[test]
+    fn merge_shared_entries_rejects_dns_forms() {
+        let mut ledger = ConnectionLedger::default();
+        let hostile: Vec<scmessenger_core::transport::SharedPeerEntry> = [
+            "/dns4/evil.example/tcp/80",
+            "/dns6/evil.example/tcp/80",
+            "/dns/evil.example/tcp/80",
+            "/dnsaddr/evil.example",
+        ]
+        .iter()
+        .map(|addr| scmessenger_core::transport::SharedPeerEntry {
+            multiaddr: addr.to_string(),
+            last_peer_id: None,
+            last_seen: 0,
+            known_topics: Vec::new(),
+        })
+        .collect();
+
+        assert_eq!(ledger.merge_shared_entries(&hostile), 0);
+        assert!(ledger.dialable_addresses(None).is_empty());
     }
 
     #[test]

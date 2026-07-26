@@ -1,6 +1,6 @@
 # Adversarial review -- ledger seeding / gossip / seed dial (commit 02321e4d)
 
-Status: blockers CLOSED -- re-review required before push
+Status: BLOCK (re-review 2026-07-25 20:5x) -- 3 HIGH open, 2 introduced by the remediation itself
 Date: 2026-07-25
 Last updated: 2026-07-25 (remediation pass)
 
@@ -10,14 +10,14 @@ Last updated: 2026-07-25 (remediation pass)
 |---|---|---|
 | F1 invite signatures never verified | CRITICAL | **CLOSED** -- `30181941`. Real Ed25519 + ML-DSA-65 verification, domain separated, `TAMPERED` stub deleted |
 | F2 signed import path dead; live path unauthenticated | HIGH | **OPEN** -- `verify()` exists but nothing accepts an invite yet |
-| F3 no address validation (SSRF) | HIGH | **CLOSED** -- shared `transport/addr_filter.rs`, applied at all three sites |
+| F3 no address validation (SSRF) | HIGH | **NOT CLOSED** -- DNS multiaddrs bypass every IP check (NEW-1). IP-form addresses are filtered; `/dns4/...` is not. |
 | F4 unbounded O(n^2) on event loop | HIGH | **CLOSED** -- per-tier + global caps, `HashSet` dedupe, bounded `seed_addresses(limit)` |
 | F5 startup deadlock | HIGH | **CLOSED** -- `30181941`. Seed dial detached with `tokio::spawn` |
-| F6 unauthenticated topology harvesting | HIGH | **CLOSED** -- per-peer token bucket, address filtering, `known_topics` dropped, cap before clone |
+| F6 unauthenticated topology harvesting | HIGH | **PARTIAL** -- filter runs in `NetworkMode::Local`, which disables the RFC1918 check, so LAN addresses + neighbour peer ids are disclosed to internet peers (NEW-2). Bucket is checked after the expensive work (NEW-5) and is Sybil-bypassable (NEW-6). |
 | F7 dial-policy bypass / no `record_failure` | MEDIUM | **OPEN** |
 | F8 circuit addresses collapsed to relay | MEDIUM | **CLOSED** -- protocol-iterating strip, `P2pCircuit` preserved |
 | F9 `""` parses as valid Multiaddr | MEDIUM | **CLOSED** -- empty + no-transport rejected |
-| F10 unbounded ledger growth, O(n^2) disk I/O | MEDIUM | **OPEN -- and made worse**: `record_connection` now fires per outbound connection and still whole-file rewrites with `to_string_pretty` on the swarm thread |
+| F10 unbounded ledger growth, O(n^2) disk I/O | MEDIUM | **OPEN -- attacker-driven and unbounded** (my earlier 'bounded by connection rate' note was WRONG). `annotate_identity` runs once per wire entry with no cap and each call whole-file rewrites; one 4 MiB request implies ~160 GB of writes. F11 made it persistent across restarts. |
 | F11 core ledger never loaded/populated | MEDIUM | **CLOSED** -- `load()` in constructors, `record_connection` on `ConnectionEstablished`, `IronCore::new()` no longer uses `temp_dir()` |
 | F12 wire `last_seen` ranking poison | MEDIUM | **PARTIAL** -- future-clamp + bounded map + 7-day floor, but the floor sits at the wire boundary, not inside `record_recipient_seen_via_relay` |
 | F13 inbound connection resolves pending dial | LOW | **OPEN** |
