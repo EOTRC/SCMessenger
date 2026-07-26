@@ -670,59 +670,22 @@ impl ConnectionLedger {
     }
 }
 
-/// Network context for address filtering. `Local` (WiFi/LAN) keeps private/LAN
-/// ranges dialable for local mesh discovery; `Public` (cellular / public-only)
-/// additionally drops private ranges since a public-only node cannot reach
-/// anyone's LAN. Defaults to the conservative `Local`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum NetworkMode {
-    #[default]
-    Local,
-    Public,
-}
-
-/// Returns true iff `multiaddr` is worth dialing. Always rejects non-routable
-/// addresses that a remote node can never reach: loopback, unspecified, IPv4
-/// link-local (169.254/16), IPv6 link-local (fe80::/10) and IPv6 site-local
-/// (fec0::/10). `/p2p-circuit` addresses are always allowed (the only way to
-/// reach a relayed peer). Private/LAN IPv4 ranges are rejected only when
-/// `mode == NetworkMode::Public`.
-pub fn is_dialable_multiaddr(multiaddr: &str, mode: NetworkMode) -> bool {
-    let parts: Vec<&str> = multiaddr.split('/').collect();
-    let mut i = 0;
-    while i + 1 < parts.len() {
-        match parts[i] {
-            "p2p-circuit" => return true,
-            "ip4" => {
-                if let Ok(ip) = parts[i + 1].parse::<std::net::Ipv4Addr>() {
-                    if ip.is_loopback() || ip.is_unspecified() || ip.is_link_local() {
-                        return false;
-                    }
-                    if mode == NetworkMode::Public && ip.is_private() {
-                        return false;
-                    }
-                }
-            }
-            "ip6" => {
-                if let Ok(ip) = parts[i + 1].parse::<std::net::Ipv6Addr>() {
-                    if ip.is_loopback() || ip.is_unspecified() {
-                        return false;
-                    }
-                    // fe80::/10 link-local and fec0::/10 site-local: check the
-                    // top 10 bits of the first 16-bit segment (std lacks stable
-                    // helpers for these on this toolchain).
-                    let top10 = ip.segments()[0] & 0xffc0;
-                    if top10 == 0xfe80 || top10 == 0xfec0 {
-                        return false;
-                    }
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    true
-}
+// Address filtering lives in the core crate now (adversarial review F3): core's
+// ledger-seed import, its seed-dial candidate build and its ledger-exchange
+// response all need the same rules, and having two definitions of "dialable" in
+// one workspace is how core ended up with none. These re-exports keep every
+// existing `ledger::is_dialable_multiaddr` / `ledger::NetworkMode` call site
+// working unchanged.
+//
+// Behavioural deltas versus the previous CLI-local implementation, all
+// strictly-tightening: multicast, broadcast, 0.0.0.0/8, 192.0.0.0/24,
+// IPv4-mapped IPv6 (`::ffff:127.0.0.1`) and IPv6 unique-local (`fc00::/7`, in
+// Public mode) are now rejected, and a string with no transport component at
+// all -- including `""`, which `Multiaddr` happily parses -- is no longer
+// reported as dialable.
+pub use scmessenger_core::transport::addr_filter::{
+    is_dialable_multiaddr, is_self_address, strip_peer_id, NetworkMode,
+};
 
 /// Extract the first `/ip4/x.x.x.x/` component of a multiaddr, if any.
 fn extract_ipv4(multiaddr: &str) -> Option<std::net::Ipv4Addr> {
@@ -750,18 +713,6 @@ fn rfc1918_class(ip: &std::net::Ipv4Addr) -> Option<u8> {
     } else {
         None
     }
-}
-
-/// Returns true iff `candidate` is one of this node's own known addresses
-/// (listen or external) -- i.e. dialing it would be a self-dial. Compares
-/// the transport address only (strips any `/p2p/` peer-id suffix on both
-/// sides), since the same node can be observed with or without its own
-/// peer-id attached depending on which ledger entry produced it.
-pub fn is_self_address(candidate: &str, my_addrs: &[String]) -> bool {
-    let stripped_candidate = strip_peer_id(candidate);
-    my_addrs
-        .iter()
-        .any(|a| strip_peer_id(a) == stripped_candidate)
 }
 
 /// Returns true iff `candidate` is worth dialing given this node's own known
@@ -805,16 +756,6 @@ pub fn is_dialable_for_this_node(multiaddr: &str, mode: NetworkMode, my_addrs: &
     true
 }
 
-/// Strip the /p2p/PeerID suffix from a multiaddr string, leaving just the transport address.
-/// This is the core of "promiscuous" dialing — we dial the IP, not the identity.
-pub fn strip_peer_id(multiaddr: &str) -> String {
-    if let Some(idx) = multiaddr.find("/p2p/") {
-        multiaddr[..idx].to_string()
-    } else {
-        multiaddr.to_string()
-    }
-}
-
 /// Extract IP:Port from a multiaddr string for human-readable display
 pub fn extract_ip_port(multiaddr: &str) -> Option<String> {
     // Parse /ip4/1.2.3.4/tcp/9001 -> 1.2.3.4:9001
@@ -841,16 +782,46 @@ pub fn extract_ip_port(multiaddr: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// A syntactically valid peer id.
+    ///
+    /// `strip_peer_id` now parses the multiaddr instead of truncating the
+    /// string at the first `/p2p/` (core review F8: the truncation collapsed
+    /// `/ip4/A/tcp/443/p2p/QmRelay/p2p-circuit/p2p/QmTarget` to the relay's
+    /// bare address). Short made-up ids like `12D3KooWSpoof` are not valid
+    /// multihashes and never occur on the wire, so the fixtures have to be
+    /// real.
+    fn test_peer_id() -> String {
+        PeerId::random().to_string()
+    }
+
     #[test]
     fn test_strip_peer_id() {
+        let pid = test_peer_id();
         assert_eq!(
-            strip_peer_id("/ip4/1.2.3.4/tcp/9001/p2p/12D3KooWGGdvGNJb3Jw"),
+            strip_peer_id(&format!("/ip4/1.2.3.4/tcp/9001/p2p/{pid}")),
             "/ip4/1.2.3.4/tcp/9001"
         );
         assert_eq!(
             strip_peer_id("/ip4/1.2.3.4/tcp/9001"),
             "/ip4/1.2.3.4/tcp/9001"
         );
+    }
+
+    /// Core review F8, asserted from the CLI side too: the two ledgers are
+    /// documented to dedupe on identical keys, so the CLI's key function must
+    /// have the same circuit behaviour as the core's.
+    #[test]
+    fn test_strip_peer_id_preserves_circuit_path() {
+        let relay = test_peer_id();
+        let target = test_peer_id();
+        let stripped = strip_peer_id(&format!(
+            "/ip4/1.2.3.4/tcp/443/p2p/{relay}/p2p-circuit/p2p/{target}"
+        ));
+        assert_eq!(
+            stripped,
+            format!("/ip4/1.2.3.4/tcp/443/p2p/{relay}/p2p-circuit")
+        );
+        assert!(!stripped.contains(&target));
     }
 
     #[test]
@@ -922,7 +893,10 @@ mod tests {
     fn test_ledger_crud() {
         let mut ledger = ConnectionLedger::default();
 
-        ledger.add_bootstrap("/ip4/1.2.3.4/tcp/9001/p2p/12D3KooW", None);
+        ledger.add_bootstrap(
+            &format!("/ip4/1.2.3.4/tcp/9001/p2p/{}", test_peer_id()),
+            None,
+        );
         assert_eq!(ledger.entries.len(), 1);
 
         let entry = ledger.entries.get("/ip4/1.2.3.4/tcp/9001").unwrap();
@@ -980,13 +954,13 @@ mod tests {
     fn test_is_self_address() {
         let my_addrs = vec![
             "/ip4/192.168.0.121/tcp/9001".to_string(),
-            "/ip4/1.2.3.4/tcp/9001/p2p/12D3KooWExample".to_string(),
+            format!("/ip4/1.2.3.4/tcp/9001/p2p/{}", test_peer_id()),
         ];
         // Exact match (own LAN address) -> self-dial.
         assert!(is_self_address("/ip4/192.168.0.121/tcp/9001", &my_addrs));
         // Own address with a peer-id suffix attached still matches after stripping.
         assert!(is_self_address(
-            "/ip4/192.168.0.121/tcp/9001/p2p/12D3KooWOther",
+            &format!("/ip4/192.168.0.121/tcp/9001/p2p/{}", test_peer_id()),
             &my_addrs
         ));
         // Own public address matches regardless of which side carries the peer-id.
@@ -1235,9 +1209,10 @@ mod tests {
     #[test]
     fn test_shared_entry_does_not_seed_known_good_until_locally_verified() {
         let mut ledger = ConnectionLedger::default();
+        let spoof = test_peer_id();
         let shared = scmessenger_core::transport::SharedPeerEntry {
-            multiaddr: "/ip4/1.2.3.4/tcp/9001/p2p/12D3KooWSpoof".to_string(),
-            last_peer_id: Some("12D3KooWSpoof".to_string()),
+            multiaddr: format!("/ip4/1.2.3.4/tcp/9001/p2p/{spoof}"),
+            last_peer_id: Some(spoof.clone()),
             last_seen: 1_700_000_000,
             known_topics: vec![],
         };
@@ -1251,7 +1226,7 @@ mod tests {
         let key = DialKey::Addr("/ip4/1.2.3.4/tcp/9001".to_string());
         assert!(!ledger.try_begin_dial(key.clone(), 0, true));
 
-        ledger.record_connection("/ip4/1.2.3.4/tcp/9001/p2p/12D3KooWSpoof", "12D3KooWSpoof");
+        ledger.record_connection(&format!("/ip4/1.2.3.4/tcp/9001/p2p/{spoof}"), &spoof);
         assert!(
             ledger
                 .entries
@@ -1265,7 +1240,10 @@ mod tests {
     #[test]
     fn test_add_bootstrap_seeds_known_good() {
         let mut ledger = ConnectionLedger::default();
-        ledger.add_bootstrap("/ip4/1.2.3.4/tcp/9001/p2p/12D3KooWBootstrap", None);
+        ledger.add_bootstrap(
+            &format!("/ip4/1.2.3.4/tcp/9001/p2p/{}", test_peer_id()),
+            None,
+        );
 
         let entry = ledger.entries.get("/ip4/1.2.3.4/tcp/9001").unwrap();
         assert!(entry.locally_verified);

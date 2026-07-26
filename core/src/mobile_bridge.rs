@@ -953,10 +953,31 @@ impl MeshService {
                                                 if let Some(core_ref) = core_guard.as_ref() {
                                                     #[cfg(not(target_arch = "wasm32"))]
                                                     {
-                                                        // Annotate identity in ledger for each listen address
+                                                        // Annotate identity in ledger for each
+                                                        // listen address.
+                                                        //
+                                                        // Review F3: `listen_addrs` is whatever
+                                                        // the remote chose to put in its
+                                                        // Identify response. Unfiltered, a peer
+                                                        // could have us persist -- and later
+                                                        // dial and re-gossip --
+                                                        // /ip4/169.254.169.254/tcp/80 or a
+                                                        // loopback service on our own host.
                                                         for addr in &listen_addrs {
+                                                            let addr_str = addr.to_string();
+                                                            if !crate::transport::addr_filter::is_dialable_multiaddr(
+                                                                &addr_str,
+                                                                crate::transport::addr_filter::NetworkMode::Local,
+                                                            ) {
+                                                                tracing::debug!(
+                                                                    "Ignoring non-routable Identify address from {}: {}",
+                                                                    peer_id,
+                                                                    addr_str
+                                                                );
+                                                                continue;
+                                                            }
                                                             core_ref.ledger_manager.annotate_identity(
-                                                                addr.to_string(),
+                                                                addr_str,
                                                                 peer_id.to_string(),
                                                                 public_key.clone(),
                                                                 None, // Nickname not available in Identify
@@ -1011,11 +1032,32 @@ impl MeshService {
                                             } => {
                                                 let core_guard = core.lock();
                                                 if let Some(core_ref) = core_guard.as_ref() {
+                                                    // Review F3: this is the ONLY live writer of
+                                                    // wire-learned ledger entries, fed straight
+                                                    // from /sc/ledger-exchange/1.0.0 data sent by
+                                                    // any connected peer. Whatever lands here
+                                                    // becomes a seed-dial candidate and is
+                                                    // re-gossiped, so it is filtered before it is
+                                                    // stored, not after.
                                                     #[cfg(not(target_arch = "wasm32"))]
                                                     for entry in entries {
+                                                        let stripped =
+                                                            crate::transport::addr_filter::strip_peer_id(
+                                                                &entry.multiaddr,
+                                                            );
+                                                        if !crate::transport::addr_filter::is_dialable_multiaddr(
+                                                            &stripped,
+                                                            crate::transport::addr_filter::NetworkMode::Local,
+                                                        ) {
+                                                            tracing::debug!(
+                                                                "Dropping non-routable ledger entry from the wire: {}",
+                                                                entry.multiaddr
+                                                            );
+                                                            continue;
+                                                        }
                                                         if let Some(peer_id) = entry.last_peer_id {
                                                             core_ref.ledger_manager.annotate_identity(
-                                                                entry.multiaddr.clone(),
+                                                                stripped,
                                                                 peer_id,
                                                                 None,
                                                                 None,

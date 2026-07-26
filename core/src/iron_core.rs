@@ -280,6 +280,30 @@ impl Default for IronCore {
     }
 }
 
+/// Build the connection ledger for a persistent core and hydrate it from disk.
+///
+/// Review F11: nothing in `core/src` ever called `LedgerManager::load()`. On a
+/// fresh process every entry's `success_count` was therefore 0, so
+/// `dialable_addresses()` was permanently empty, so the ledger-exchange
+/// RESPONSE shipped nothing and the seed-dial "proven" tier had no candidates
+/// -- leaving the unauthenticated seed tier as the only live candidate source.
+/// `IronCore` owns the ledger, so `IronCore` is where it gets loaded.
+///
+/// A load failure is not fatal: a corrupt or absent `ledger.json` means we
+/// start from an empty ledger and re-learn peers, which is exactly the
+/// cold-start path the mesh already supports.
+#[cfg(not(target_arch = "wasm32"))]
+fn hydrated_ledger_manager(path: String) -> crate::store::LedgerManager {
+    let manager = crate::store::LedgerManager::new(path);
+    if let Err(err) = manager.load() {
+        tracing::warn!(
+            "Connection ledger could not be loaded, starting empty: {:?}",
+            err
+        );
+    }
+    manager
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), uniffi::export)]
 impl IronCore {
     /// Create an in-memory IronCore with no persistent storage.
@@ -335,10 +359,12 @@ impl IronCore {
             auto_block_engine: Arc::new(RwLock::new(auto_block)),
             storage_path: None,
             log_directory: None,
+            // Review F11: this used to be `LedgerManager::new(temp_dir())`,
+            // which wrote the node's entire peer topology into a
+            // world-readable directory on every desktop platform. `new()` is
+            // the storage-less constructor, so its ledger is storage-less too.
             #[cfg(not(target_arch = "wasm32"))]
-            ledger_manager: crate::store::LedgerManager::new(
-                std::env::temp_dir().to_str().unwrap_or("/tmp").to_string(),
-            ),
+            ledger_manager: crate::store::LedgerManager::ephemeral(),
             running: Arc::new(RwLock::new(false)),
             routing_engine: Arc::new(RwLock::new(None)),
             cover_traffic_generator: Arc::new(RwLock::new(None)),
@@ -429,7 +455,7 @@ impl IronCore {
             storage_path: Some(path),
             log_directory: None,
             #[cfg(not(target_arch = "wasm32"))]
-            ledger_manager: crate::store::LedgerManager::new(p),
+            ledger_manager: hydrated_ledger_manager(p),
             running: Arc::new(RwLock::new(false)),
             routing_engine: Arc::new(RwLock::new(None)),
             cover_traffic_generator: Arc::new(RwLock::new(None)),
@@ -520,7 +546,7 @@ impl IronCore {
             storage_path: Some(path),
             log_directory: Some(log_dir),
             #[cfg(not(target_arch = "wasm32"))]
-            ledger_manager: crate::store::LedgerManager::new(p),
+            ledger_manager: hydrated_ledger_manager(p),
             running: Arc::new(RwLock::new(false)),
             routing_engine: Arc::new(RwLock::new(None)),
             cover_traffic_generator: Arc::new(RwLock::new(None)),

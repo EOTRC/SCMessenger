@@ -1,7 +1,51 @@
 # Adversarial review -- ledger seeding / gossip / seed dial (commit 02321e4d)
 
-Status: BLOCK -- must not ship until F1, F3, F4, F5, F6, F11 are closed
+Status: blockers CLOSED -- re-review required before push
 Date: 2026-07-25
+Last updated: 2026-07-25 (remediation pass)
+
+## Remediation status
+
+| Finding | Severity | State |
+|---|---|---|
+| F1 invite signatures never verified | CRITICAL | **CLOSED** -- `30181941`. Real Ed25519 + ML-DSA-65 verification, domain separated, `TAMPERED` stub deleted |
+| F2 signed import path dead; live path unauthenticated | HIGH | **OPEN** -- `verify()` exists but nothing accepts an invite yet |
+| F3 no address validation (SSRF) | HIGH | **CLOSED** -- shared `transport/addr_filter.rs`, applied at all three sites |
+| F4 unbounded O(n^2) on event loop | HIGH | **CLOSED** -- per-tier + global caps, `HashSet` dedupe, bounded `seed_addresses(limit)` |
+| F5 startup deadlock | HIGH | **CLOSED** -- `30181941`. Seed dial detached with `tokio::spawn` |
+| F6 unauthenticated topology harvesting | HIGH | **CLOSED** -- per-peer token bucket, address filtering, `known_topics` dropped, cap before clone |
+| F7 dial-policy bypass / no `record_failure` | MEDIUM | **OPEN** |
+| F8 circuit addresses collapsed to relay | MEDIUM | **CLOSED** -- protocol-iterating strip, `P2pCircuit` preserved |
+| F9 `""` parses as valid Multiaddr | MEDIUM | **CLOSED** -- empty + no-transport rejected |
+| F10 unbounded ledger growth, O(n^2) disk I/O | MEDIUM | **OPEN -- and made worse**: `record_connection` now fires per outbound connection and still whole-file rewrites with `to_string_pretty` on the swarm thread |
+| F11 core ledger never loaded/populated | MEDIUM | **CLOSED** -- `load()` in constructors, `record_connection` on `ConnectionEstablished`, `IronCore::new()` no longer uses `temp_dir()` |
+| F12 wire `last_seen` ranking poison | MEDIUM | **PARTIAL** -- future-clamp + bounded map + 7-day floor, but the floor sits at the wire boundary, not inside `record_recipient_seen_via_relay` |
+| F13 inbound connection resolves pending dial | LOW | **OPEN** |
+| F14 no self-dial guard | LOW | **CLOSED** |
+| F15 `println!` audit line | LOW | **CLOSED** -- `30181941` |
+| F16 stale UniFFI bindings | INFO | **OPEN** -- `seed_addresses(limit: u32)` is a signature change; regenerate before mobile calls it |
+
+Each closed fix was proven non-vacuous by sabotage-and-restore (revert the fix,
+confirm the new test fails, restore). `grep -rn SABOTAGE core/ cli/` is clean.
+
+### Residual gap a re-reviewer must weigh
+
+`NetworkMode::Local` is hardcoded at the three core call sites because core has
+no network-context signal. The mode plumbing exists but nothing ever sets
+`Public`, so **RFC1918 addresses remain dialable even on a cellular-only
+phone**. F3 is closed against loopback, link-local, multicast, broadcast,
+IPv4-mapped-IPv6 and self-addresses, but the private-range half of the SSRF
+surface is mitigated only when a caller opts into `Public`. Wiring a real
+network-context signal is follow-up work.
+
+Also unchanged: `is_discoverable_multiaddr` still allows `/p2p-circuit`
+unconditionally (including through `192.0.0.x`), deliberately, because the
+existing comment says it is required for the mobile/VPN internal NAT path.
+Reviewer's call.
+
+---
+## Original findings (as filed)
+
 Scope reviewed: `core/src/relay/invite.rs`, `core/src/store/ledger_entry.rs`,
 `core/src/transport/swarm.rs`, `core/src/mobile_bridge.rs`
 Mandated by `.claude/rules/security.md` (change touches `core/src/transport/`).

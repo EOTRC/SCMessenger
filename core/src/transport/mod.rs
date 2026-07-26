@@ -1,6 +1,7 @@
 // Transport module — libp2p swarm and networking
 
 pub mod abstraction;
+pub mod addr_filter;
 pub mod behaviour;
 pub mod ble;
 pub mod bootstrap;
@@ -30,6 +31,10 @@ pub mod wifi_direct;
 
 pub use crate::store::ledger_entry::{
     LedgerExchangeRequest, LedgerExchangeResponse, SharedPeerEntry,
+};
+pub use addr_filter::{
+    is_acceptable_peer_address, is_dialable_multiaddr, is_dialable_multiaddr_parsed,
+    is_self_address, strip_peer_id, strip_peer_id_multiaddr, NetworkMode,
 };
 pub use behaviour::{
     DeregistrationPayload, DeregistrationRequest, IronCoreBehaviour, Libp2pMessageRequest,

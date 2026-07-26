@@ -72,6 +72,14 @@ use web_time::{Duration, Instant, UNIX_EPOCH};
 /// - CGNAT (100.64.0.0/10)
 ///
 /// Allowing private IPs is essential for local WiFi mesh discovery via DHT.
+///
+/// TIGHTENED for review F3: multicast, broadcast and IPv4-mapped IPv6 forms are
+/// now rejected too. This function is NOT the F3 fix and must not be mistaken
+/// for it -- it gates Kademlia insertion only, and its unconditional
+/// `/p2p-circuit` allowance (deliberate: a relayed peer may only be reachable
+/// through a relay whose own IP looks internal) is deliberately weaker than
+/// `addr_filter::is_dialable_multiaddr`, which is what every dial-candidate and
+/// disclosure path must use.
 fn is_discoverable_multiaddr(addr: &Multiaddr) -> bool {
     use libp2p::multiaddr::Protocol;
     let mut is_p2p_circuit = false;
@@ -82,7 +90,12 @@ fn is_discoverable_multiaddr(addr: &Multiaddr) -> bool {
         match proto {
             Protocol::Ip4(ip) => {
                 has_ip = true;
-                if ip.is_loopback() || ip.is_unspecified() || ip.is_link_local() {
+                if ip.is_loopback()
+                    || ip.is_unspecified()
+                    || ip.is_link_local()
+                    || ip.is_multicast()
+                    || ip.is_broadcast()
+                {
                     ip_is_restricted = true;
                 }
                 // Special check for 192.0.0.x (IETF Protocol Assignments)
@@ -93,7 +106,18 @@ fn is_discoverable_multiaddr(addr: &Multiaddr) -> bool {
             }
             Protocol::Ip6(ip) => {
                 has_ip = true;
-                if ip.is_loopback() || ip.is_unspecified() {
+                // `::ffff:127.0.0.1` and friends are loopback/link-local wearing
+                // an IPv6 costume; unwrap before judging.
+                if let Some(v4) = ip.to_ipv4() {
+                    if v4.is_loopback()
+                        || v4.is_unspecified()
+                        || v4.is_link_local()
+                        || v4.is_multicast()
+                        || v4.is_broadcast()
+                    {
+                        ip_is_restricted = true;
+                    }
+                } else if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
                     ip_is_restricted = true;
                 }
             }
@@ -112,6 +136,90 @@ fn is_discoverable_multiaddr(addr: &Multiaddr) -> bool {
 
     // Otherwise, require an IP and it must not be restricted.
     has_ip && !ip_is_restricted
+}
+
+/// Append `addr` to the `ConnectToSeedPeers` candidate list if it survives
+/// every gate. Extracted from the event loop so the gates are unit-testable.
+///
+/// Review F3: this is the point where remote-supplied address data becomes a
+/// dial target. Unfiltered, an invite or a gossiped ledger entry naming
+/// `/ip4/169.254.169.254/tcp/80` (cloud metadata), `/ip4/127.0.0.1/tcp/8080`
+/// or an arbitrary RFC1918 host:port was dialed, and the dial outcome is a
+/// timing oracle: refused resolves in milliseconds via
+/// `OutgoingConnectionError`, filtered hangs to the 10s sweep. That is an
+/// open/closed port scanner for the victim's internal network.
+///
+/// Review F4: dedupe is a `HashSet`, not `Vec::contains`. This runs
+/// synchronously inside the `select!` task that also owns the swarm poll, the
+/// command channel and the dial sweep, and one 4 MiB ledger-exchange request
+/// can carry ~80 000 entries.
+#[cfg(not(target_arch = "wasm32"))]
+fn push_seed_dial_candidate(
+    addr: &Multiaddr,
+    out: &mut Vec<Multiaddr>,
+    seen: &mut HashSet<Multiaddr>,
+    my_addrs: &[String],
+    mode: crate::transport::addr_filter::NetworkMode,
+) {
+    if out.len() >= SEED_DIAL_MAX_CANDIDATES {
+        return;
+    }
+    let stripped = crate::transport::addr_filter::strip_peer_id_multiaddr(addr);
+    if stripped.is_empty() {
+        return;
+    }
+    if !crate::transport::addr_filter::is_acceptable_peer_address(
+        &stripped.to_string(),
+        mode,
+        my_addrs,
+    ) {
+        tracing::debug!("Skipping non-dialable seed candidate: {}", stripped);
+        return;
+    }
+    if seen.insert(stripped.clone()) {
+        out.push(stripped);
+    }
+}
+
+/// Build the `ConnectToSeedPeers` dial-candidate list.
+///
+/// Candidate order: proven ledger peers first (discovery is ledger sharing, not
+/// a shipped node list), then unproven seed entries -- typically imported from
+/// an invite; `get_preferred_relays` deliberately filters those out because it
+/// requires `success_count > 0`, so without them a freshly invited node has NO
+/// candidate at all, which is exactly the cold-start case invite seeding exists
+/// to serve -- and finally whatever addresses this swarm was started with.
+///
+/// EVERY tier is capped here as well as at the caller. The caller's caps are
+/// what keep the ledger clone small; these are what guarantee the event loop
+/// stays bounded even if a future caller forgets (review F4).
+#[cfg(not(target_arch = "wasm32"))]
+fn build_seed_dial_candidates(
+    proven: Vec<crate::store::ledger_entry::LedgerEntry>,
+    seeds: Vec<crate::store::ledger_entry::LedgerEntry>,
+    bootstrap_addrs: &[Multiaddr],
+    my_addrs: &[String],
+    mode: crate::transport::addr_filter::NetworkMode,
+) -> Vec<Multiaddr> {
+    let mut candidates: Vec<Multiaddr> = Vec::new();
+    let mut seen: HashSet<Multiaddr> = HashSet::new();
+    let tier_cap = SEED_DIAL_LEDGER_CANDIDATES as usize;
+
+    for entry in proven.iter().take(tier_cap) {
+        if let Ok(addr) = entry.multiaddr.parse::<Multiaddr>() {
+            push_seed_dial_candidate(&addr, &mut candidates, &mut seen, my_addrs, mode);
+        }
+    }
+    for entry in seeds.iter().take(tier_cap) {
+        if let Ok(addr) = entry.multiaddr.parse::<Multiaddr>() {
+            push_seed_dial_candidate(&addr, &mut candidates, &mut seen, my_addrs, mode);
+        }
+    }
+    for addr in bootstrap_addrs.iter().take(SEED_DIAL_MAX_CANDIDATES) {
+        push_seed_dial_candidate(addr, &mut candidates, &mut seen, my_addrs, mode);
+    }
+
+    candidates
 }
 
 /// Filter mDNS-advertised addresses to exclude circuit addresses that are too long for TXT records.
@@ -300,6 +408,17 @@ const BOOTSTRAP_BACKOFF_MAX_SECS: u64 = 960;
 #[cfg(not(target_arch = "wasm32"))]
 const LEDGER_EXCHANGE_MAX_RESPONSE_PEERS: usize = 64;
 
+/// Scales [`RELAY_PEER_BUCKET_BURST_CAPACITY`] / [`RELAY_PEER_BUCKET_REFILL_PER_SEC`]
+/// down for inbound ledger-exchange requests (review F6).
+///
+/// A legitimate peer opens `/sc/ledger-exchange/1.0.0` roughly once per
+/// connection, so 20 * 0.1 = 2 requests of burst and 4 * 0.1 = 0.4/s of refill
+/// (one every 2.5s) is generous for honest traffic and useless as a topology
+/// polling feed. Deliberately expressed as a multiplier on the existing relay
+/// constants so there is one token-bucket implementation in this file.
+#[cfg(not(target_arch = "wasm32"))]
+const LEDGER_EXCHANGE_BUCKET_MULTIPLIER: f64 = 0.1;
+
 /// How many ledger-derived addresses `ConnectToSeedPeers` considers before
 /// falling back to the addresses the swarm was started with.
 ///
@@ -307,6 +426,17 @@ const LEDGER_EXCHANGE_MAX_RESPONSE_PEERS: usize = 64;
 /// TCP/QUIC sockets), where the command returns an explicit error instead.
 #[cfg(not(target_arch = "wasm32"))]
 const SEED_DIAL_LEDGER_CANDIDATES: u32 = 8;
+
+/// Hard ceiling on the whole `ConnectToSeedPeers` candidate list, across the
+/// proven tier, the seed tier AND the startup bootstrap addresses.
+///
+/// Review F4: the per-tier caps bound what the ledger can contribute, but the
+/// list is built synchronously inside the `select!` task that also owns the
+/// swarm poll, the command channel and the dial sweep, so it needs an
+/// unconditional upper bound that does not depend on any caller getting its
+/// own cap right.
+#[cfg(not(target_arch = "wasm32"))]
+const SEED_DIAL_MAX_CANDIDATES: usize = 24;
 
 /// How long a `SwarmCommand::Dial` reply may wait for a real
 /// `ConnectionEstablished`/`OutgoingConnectionError` signal before the
@@ -2456,6 +2586,14 @@ pub async fn start_swarm_with_config(
             let mut relay_hour_start = web_time::Instant::now();
             let mut relay_guardrails = RelayAbuseGuardrails::new();
 
+            // Review F6: inbound `/sc/ledger-exchange/1.0.0` requests are
+            // unauthenticated topology disclosure, so they get their own
+            // per-peer token bucket. Same mechanism as the relay path (one
+            // rate-limiter implementation in this file, not two) but a SEPARATE
+            // instance, so a peer's ledger polling cannot drain the budget that
+            // gates its message relaying, or vice versa.
+            let mut ledger_exchange_guardrails = RelayAbuseGuardrails::new();
+
             // P0.12: Deduplicate bridge events to prevent UI freezing and bridge spam
             // We track the last reported 'PeerIdentified' and 'PeerDiscovered' state.
             let mut reported_peer_info: HashMap<PeerId, (String, Vec<Multiaddr>)> = HashMap::new();
@@ -3525,7 +3663,11 @@ pub async fn start_swarm_with_config(
                                         for entry in &request.peers {
                                             if let Some(ref pid_str) = entry.last_peer_id {
                                                 if let Ok(pid) = pid_str.parse::<PeerId>() {
-                                                    multi_path_delivery.record_recipient_seen_via_relay(
+                                                    // F12: `last_seen` here is attacker-chosen.
+                                                    // The wire-specific recorder clamps future
+                                                    // values and drops stale ones instead of
+                                                    // letting u64::MAX pin a route forever.
+                                                    multi_path_delivery.record_recipient_seen_via_relay_from_wire(
                                                         peer,
                                                         pid,
                                                         entry.last_seen,
@@ -3563,29 +3705,52 @@ pub async fn start_swarm_with_config(
                                         // here means every node reciprocates regardless of
                                         // platform, and no client author can forget to.
                                         //
-                                        // DISCLOSURE NOTE: this makes our known-peer list
-                                        // readable by any peer that opens
-                                        // /sc/ledger-exchange/1.0.0 with us, without any app
-                                        // layer opt-in. That is the intended semantics of a
-                                        // gossip ledger (the requester already discloses its
-                                        // own list in the request), but it is a widening of
-                                        // what a passive peer can learn and is called out for
-                                        // adversarial review.
+                                        // DISCLOSURE CONTROLS (review F6). This reply goes to
+                                        // ANY peer that completed a Noise handshake, with no
+                                        // app-layer opt-in, so it is rate-limited and filtered
+                                        // here rather than trusted to callers:
+                                        //  1. per-peer token bucket, same mechanism as the
+                                        //     relay path (`RelayAbuseGuardrails`), so a peer
+                                        //     cannot poll us for a live topology feed;
+                                        //  2. `exchange_response_entries` applies the 64 cap
+                                        //     BEFORE cloning, filters every address through
+                                        //     `addr_filter::is_dialable_multiaddr` (no
+                                        //     loopback/link-local/RFC1918-on-public leakage),
+                                        //     and drops `known_topics` entirely -- topic names
+                                        //     are third-party group membership, not routing
+                                        //     data.
                                         let requester = peer.to_string();
-                                        let response_peers: Vec<SharedPeerEntry> = core_handle
-                                            .as_ref()
-                                            .and_then(|w| w.upgrade())
-                                            .map(|core| {
-                                                core.ledger_manager
-                                                    .dialable_addresses()
-                                                    .into_iter()
-                                                    // Don't echo the requester back to itself.
-                                                    .filter(|e| e.peer_id.as_deref() != Some(requester.as_str()))
-                                                    .take(LEDGER_EXCHANGE_MAX_RESPONSE_PEERS)
-                                                    .map(|e| crate::store::ledger_entry::ledger_entry_to_shared(&e))
-                                                    .collect()
-                                            })
-                                            .unwrap_or_default();
+                                        let exchange_now_ms = SystemTime::now()
+                                            .duration_since(UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_millis() as u64;
+                                        let disclosure_allowed = ledger_exchange_guardrails
+                                            .consume_peer_token(
+                                                &requester,
+                                                exchange_now_ms,
+                                                LEDGER_EXCHANGE_BUCKET_MULTIPLIER,
+                                            );
+                                        if !disclosure_allowed {
+                                            tracing::warn!(
+                                                "Ledger exchange rate limit hit for {} — replying with an empty peer list",
+                                                peer
+                                            );
+                                        }
+                                        let response_peers: Vec<SharedPeerEntry> = if disclosure_allowed {
+                                            core_handle
+                                                .as_ref()
+                                                .and_then(|w| w.upgrade())
+                                                .map(|core| {
+                                                    core.ledger_manager.exchange_response_entries(
+                                                        LEDGER_EXCHANGE_MAX_RESPONSE_PEERS,
+                                                        crate::transport::addr_filter::NetworkMode::Local,
+                                                        &requester,
+                                                    )
+                                                })
+                                                .unwrap_or_default()
+                                        } else {
+                                            Vec::new()
+                                        };
 
                                         tracing::debug!(
                                             "Ledger exchange reply to {}: sending {} peer entries",
@@ -3624,7 +3789,8 @@ pub async fn start_swarm_with_config(
                                             for entry in &response.peers {
                                                 if let Some(ref pid_str) = entry.last_peer_id {
                                                     if let Ok(pid) = pid_str.parse::<PeerId>() {
-                                                        multi_path_delivery.record_recipient_seen_via_relay(
+                                                        // F12: wire-supplied timestamp, clamped.
+                                                        multi_path_delivery.record_recipient_seen_via_relay_from_wire(
                                                             peer,
                                                             pid,
                                                             entry.last_seen,
@@ -4240,6 +4406,37 @@ pub async fn start_swarm_with_config(
                                         if port > 0 {
                                             let _ = c_arc.transport_memory.read().record_success(&peer_id, &fp, transport, port, 0);
                                         }
+
+                                        // Review F11: `record_connection` had ZERO callers in
+                                        // core/src, so `success_count` never left 0, so
+                                        // `dialable_addresses()` (and therefore the whole
+                                        // proven tier and the ledger-exchange response) was
+                                        // permanently empty in production. `IronCore` owns the
+                                        // ledger, and this is the one place that learns "we
+                                        // reached this address and this is who answered".
+                                        //
+                                        // DIALER ONLY. An inbound connection's remote address
+                                        // is the peer's ephemeral source port, which nobody can
+                                        // dial; recording it would fabricate "proven" entries
+                                        // and then hand them to other peers as routing advice.
+                                        // We record whatever we actually reached, including
+                                        // loopback and LAN -- the routability filter belongs at
+                                        // the re-dial and disclosure boundaries, not here,
+                                        // because an address we just used demonstrably works
+                                        // for us.
+                                        if endpoint.is_dialer() {
+                                            let ledger_addr =
+                                                crate::transport::addr_filter::strip_peer_id_multiaddr(
+                                                    &remote_addr,
+                                                );
+                                            if !ledger_addr.is_empty() {
+                                                c_arc.ledger_manager.record_connection(
+                                                    ledger_addr.to_string(),
+                                                    peer_id.to_string(),
+                                                );
+                                            }
+                                        }
+
                                         c_arc.handle_peer_connection_event(&peer_id.to_string(), true);
                                     }
                                 }
@@ -5146,47 +5343,34 @@ pub async fn start_swarm_with_config(
                                 let _ = reply.send(Ok(())).await;
                             }
                             SwarmCommand::ConnectToSeedPeers { reply } => {
-                                // Candidate order: proven ledger peers first (discovery is
-                                // ledger sharing, not a shipped node list), then whatever
-                                // addresses this swarm was started with (invite-supplied or
-                                // env-supplied) as a fallback for a cold ledger.
-                                let mut candidates: Vec<Multiaddr> = Vec::new();
-                                let push_candidate = |addr: Multiaddr, out: &mut Vec<Multiaddr>| {
-                                    let stripped: Multiaddr = addr
-                                        .iter()
-                                        .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
-                                        .collect();
-                                    if !stripped.is_empty() && !out.contains(&stripped) {
-                                        out.push(stripped);
-                                    }
+                                // Our own listen/external addresses, so a seed entry naming
+                                // US cannot consume the single dial attempt this command
+                                // makes (review F14).
+                                let my_addrs: Vec<String> = swarm
+                                    .listeners()
+                                    .chain(swarm.external_addresses())
+                                    .map(|a| a.to_string())
+                                    .collect();
+
+                                let (proven, seeds) = match core_handle.as_ref().and_then(|w| w.upgrade()) {
+                                    Some(core) => (
+                                        core.ledger_manager
+                                            .get_preferred_relays(SEED_DIAL_LEDGER_CANDIDATES),
+                                        // Bounded inside `seed_addresses` so the clone itself
+                                        // never grows with the ledger (review F4).
+                                        core.ledger_manager
+                                            .seed_addresses(SEED_DIAL_LEDGER_CANDIDATES),
+                                    ),
+                                    None => (Vec::new(), Vec::new()),
                                 };
 
-                                if let Some(core) = core_handle.as_ref().and_then(|w| w.upgrade()) {
-                                    for entry in core
-                                        .ledger_manager
-                                        .get_preferred_relays(SEED_DIAL_LEDGER_CANDIDATES)
-                                    {
-                                        if let Ok(addr) = entry.multiaddr.parse::<Multiaddr>() {
-                                            push_candidate(addr, &mut candidates);
-                                        }
-                                    }
-
-                                    // Then unproven seed entries -- typically imported from an
-                                    // invite. `get_preferred_relays` deliberately filters these
-                                    // out (it requires success_count > 0), so without this loop
-                                    // a freshly invited node has NO candidate at all: its ledger
-                                    // contains only seeds it has never dialed. That is exactly
-                                    // the cold-start case invite seeding exists to serve.
-                                    // Ordered after proven peers because a seed is only a hint.
-                                    for entry in core.ledger_manager.seed_addresses() {
-                                        if let Ok(addr) = entry.multiaddr.parse::<Multiaddr>() {
-                                            push_candidate(addr, &mut candidates);
-                                        }
-                                    }
-                                }
-                                for addr in &bootstrap_addrs_clone {
-                                    push_candidate(addr.clone(), &mut candidates);
-                                }
+                                let candidates = build_seed_dial_candidates(
+                                    proven,
+                                    seeds,
+                                    &bootstrap_addrs_clone,
+                                    &my_addrs,
+                                    crate::transport::addr_filter::NetworkMode::Local,
+                                );
 
                                 // Dial the first candidate that the swarm accepts, then wait
                                 // for the real outcome. A queued dial is NOT a connection:
@@ -6852,4 +7036,235 @@ async fn resolve_dns_multiaddr(multiaddr: &libp2p::Multiaddr) -> Vec<libp2p::Mul
     }
 
     resolved
+}
+
+/// Regression tests for the 2026-07-25 ledger-seeding adversarial review
+/// (F3 address validation, F4 unbounded candidate build, F6 unauthenticated
+/// disclosure, F14 self-dial).
+///
+/// Native-only: `build_seed_dial_candidates` and the seed-dial constants do not
+/// exist on wasm32, where `ConnectToSeedPeers` returns an explicit error.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod ledger_seeding_hardening_tests {
+    use super::{
+        build_seed_dial_candidates, is_discoverable_multiaddr, RelayAbuseGuardrails,
+        LEDGER_EXCHANGE_BUCKET_MULTIPLIER, SEED_DIAL_LEDGER_CANDIDATES, SEED_DIAL_MAX_CANDIDATES,
+    };
+    use crate::store::ledger_entry::LedgerEntry;
+    use crate::transport::addr_filter::NetworkMode;
+    use libp2p::Multiaddr;
+
+    fn entry(multiaddr: &str, success_count: u32) -> LedgerEntry {
+        LedgerEntry {
+            multiaddr: multiaddr.to_string(),
+            peer_id: None,
+            public_key: None,
+            nickname: None,
+            success_count,
+            failure_count: 0,
+            last_seen: None,
+            topics: Vec::new(),
+        }
+    }
+
+    /// F3: an SSRF/internal-probe address in the ledger must never become a
+    /// dial candidate, no matter which tier it arrived in.
+    #[test]
+    fn ssrf_addresses_never_become_dial_candidates() {
+        let hostile = [
+            "/ip4/169.254.169.254/tcp/80",
+            "/ip4/127.0.0.1/tcp/8080",
+            "/ip6/::1/tcp/8080",
+            "/ip6/::ffff:127.0.0.1/tcp/8080",
+            "/ip4/0.0.0.0/tcp/9001",
+            "/ip4/224.0.0.1/tcp/9001",
+            "/ip4/255.255.255.255/tcp/9001",
+        ];
+        let proven: Vec<LedgerEntry> = hostile.iter().map(|a| entry(a, 3)).collect();
+        let seeds: Vec<LedgerEntry> = hostile.iter().map(|a| entry(a, 0)).collect();
+        let bootstrap: Vec<Multiaddr> = hostile
+            .iter()
+            .filter_map(|a| a.parse::<Multiaddr>().ok())
+            .collect();
+
+        let candidates =
+            build_seed_dial_candidates(proven, seeds, &bootstrap, &[], NetworkMode::Local);
+
+        assert!(
+            candidates.is_empty(),
+            "non-routable addresses reached the dial path: {:?}",
+            candidates
+        );
+    }
+
+    /// F3, mode semantics: RFC1918 stays dialable for a local-mesh node and is
+    /// dropped for a public-only one. Preserved from the CLI, not hardcoded.
+    #[test]
+    fn rfc1918_candidates_follow_network_mode() {
+        let proven = vec![entry("/ip4/192.168.1.50/tcp/9001", 3)];
+
+        let local =
+            build_seed_dial_candidates(proven.clone(), Vec::new(), &[], &[], NetworkMode::Local);
+        assert_eq!(local.len(), 1, "local mesh must keep LAN peers dialable");
+
+        let public = build_seed_dial_candidates(proven, Vec::new(), &[], &[], NetworkMode::Public);
+        assert!(
+            public.is_empty(),
+            "a public-only node must not probe private ranges"
+        );
+    }
+
+    /// F14: our own advertised address in seed data must not consume the single
+    /// dial attempt `ConnectToSeedPeers` makes.
+    #[test]
+    fn own_address_is_not_a_seed_dial_candidate() {
+        let my_addrs = vec!["/ip4/203.0.113.7/tcp/9001".to_string()];
+        let seeds = vec![
+            entry("/ip4/203.0.113.7/tcp/9001", 0),
+            entry(
+                "/ip4/203.0.113.7/tcp/9001/p2p/12D3KooWSHj3RRbBjD15g6wekV8y3mm57Pobmps2g2WJm6F67Lay",
+                0,
+            ),
+            entry("/ip4/198.51.100.9/tcp/9001", 0),
+        ];
+
+        let candidates =
+            build_seed_dial_candidates(Vec::new(), seeds, &[], &my_addrs, NetworkMode::Local);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].to_string(), "/ip4/198.51.100.9/tcp/9001");
+    }
+
+    /// F4: a large ledger must not produce an unbounded candidate list, and the
+    /// build must not degrade into an O(n^2) scan on the event-loop thread.
+    ///
+    /// The 50 000 figure comes from the review: `MAX_REQUEST_SIZE` is 4 MiB, so
+    /// one ledger-exchange request can carry ~80 000 entries.
+    #[test]
+    fn large_ledger_produces_a_bounded_candidate_list() {
+        let big: Vec<LedgerEntry> = (0..50_000u32)
+            .map(|i| {
+                entry(
+                    &format!(
+                        "/ip4/198.{}.{}.{}/tcp/9001",
+                        (i / 65536) % 200 + 18,
+                        (i / 256) % 256,
+                        i % 256
+                    ),
+                    0,
+                )
+            })
+            .collect();
+
+        let started = std::time::Instant::now();
+        let candidates = build_seed_dial_candidates(Vec::new(), big, &[], &[], NetworkMode::Local);
+        let elapsed = started.elapsed();
+
+        assert!(
+            candidates.len() <= SEED_DIAL_LEDGER_CANDIDATES as usize,
+            "seed tier is uncapped: produced {} candidates",
+            candidates.len()
+        );
+        assert!(
+            candidates.len() <= SEED_DIAL_MAX_CANDIDATES,
+            "global candidate cap not enforced"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "candidate build took {:?} for a 50k-entry ledger -- this runs on the swarm event-loop thread",
+            elapsed
+        );
+    }
+
+    /// F4: the global cap holds even when every tier is oversupplied at once.
+    #[test]
+    fn global_candidate_cap_holds_across_all_tiers() {
+        let make = |offset: u32, success: u32| -> Vec<LedgerEntry> {
+            (0..200u32)
+                .map(|i| {
+                    entry(
+                        &format!("/ip4/198.51.{}.{}/tcp/9001", offset, i % 256),
+                        success,
+                    )
+                })
+                .collect()
+        };
+        let bootstrap: Vec<Multiaddr> = (0..200u32)
+            .filter_map(|i| format!("/ip4/203.0.113.{}/tcp/9001", i % 256).parse().ok())
+            .collect();
+
+        let candidates =
+            build_seed_dial_candidates(make(1, 3), make(2, 0), &bootstrap, &[], NetworkMode::Local);
+
+        assert!(candidates.len() <= SEED_DIAL_MAX_CANDIDATES);
+    }
+
+    /// F6: repeated ledger-exchange requests from one peer must exhaust a
+    /// per-peer bucket, so the protocol cannot be used as a live topology feed.
+    /// Same `RelayAbuseGuardrails` mechanism as the relay path, separate
+    /// instance and a smaller multiplier.
+    #[test]
+    fn ledger_exchange_disclosure_is_rate_limited_per_peer() {
+        let mut guardrails = RelayAbuseGuardrails::new();
+        let now_ms = 7_000_000;
+
+        let mut accepted = 0usize;
+        for _ in 0..50 {
+            if guardrails.consume_peer_token(
+                "peer-harvester",
+                now_ms,
+                LEDGER_EXCHANGE_BUCKET_MULTIPLIER,
+            ) {
+                accepted += 1;
+            }
+        }
+
+        assert!(
+            accepted >= 1,
+            "an honest peer's first exchange must always be answered"
+        );
+        assert!(
+            accepted <= 3,
+            "a peer polled the ledger {} times in one instant",
+            accepted
+        );
+        // The limit is per-peer, not global: an unrelated peer is unaffected.
+        assert!(guardrails.consume_peer_token(
+            "peer-honest",
+            now_ms,
+            LEDGER_EXCHANGE_BUCKET_MULTIPLIER
+        ));
+    }
+
+    /// F3 follow-up: `is_discoverable_multiaddr` gates Kademlia insertion and is
+    /// deliberately weaker than the dial/disclosure filter, but it must still
+    /// reject the classes that are never a peer.
+    #[test]
+    fn kademlia_gate_rejects_multicast_broadcast_and_mapped_loopback() {
+        let reject = [
+            "/ip4/224.0.0.1/tcp/9001",
+            "/ip4/255.255.255.255/tcp/9001",
+            "/ip6/::ffff:127.0.0.1/tcp/9001",
+            "/ip6/ff02::1/tcp/9001",
+            "/ip4/127.0.0.1/tcp/9001",
+            "/ip4/169.254.1.2/tcp/9001",
+        ];
+        for addr in reject {
+            let parsed: Multiaddr = addr.parse().expect("test fixture parses");
+            assert!(
+                !is_discoverable_multiaddr(&parsed),
+                "{addr} was accepted into the DHT"
+            );
+        }
+
+        // Still permissive where the mesh needs it: LAN peers and circuits.
+        for addr in [
+            "/ip4/192.168.1.5/tcp/9001",
+            "/ip4/1.2.3.4/tcp/9001",
+            "/ip4/192.0.0.4/tcp/9001/p2p-circuit",
+        ] {
+            let parsed: Multiaddr = addr.parse().expect("test fixture parses");
+            assert!(is_discoverable_multiaddr(&parsed), "{addr} was rejected");
+        }
+    }
 }

@@ -69,6 +69,18 @@ fn unix_now_secs() -> u64 {
         .as_secs()
 }
 
+/// Tolerated clock skew when accepting a `last_seen`/`seen_at` recency signal
+/// (review F12). Anything beyond `now + this` is clamped down to it.
+pub const RECENCY_MAX_CLOCK_SKEW_SECS: u64 = 5 * 60;
+
+/// Oldest recency signal a wire peer may assert, matching the 7-day horizon the
+/// CLI ledger already prunes against (`cli/src/ledger.rs`).
+pub const RECENCY_MAX_AGE_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// Upper bound on tracked `(relay, recipient)` recency pairs. The key is built
+/// entirely from remote-supplied peer ids, so it needs a ceiling.
+pub const RECENCY_MAX_TRACKED_ROUTES: usize = 4096;
+
 // ============================================================================
 // PHASE 3: RELAY CAPABILITY
 // ============================================================================
@@ -401,16 +413,70 @@ impl MultiPathDelivery {
 
     /// Record a recipient-recency signal for a relay candidate.
     ///
-    /// `seen_at` must be a unix timestamp (seconds). Newer timestamps overwrite older values.
+    /// `seen_at` must be a unix timestamp (seconds). Newer timestamps overwrite
+    /// older values.
+    ///
+    /// FUTURE-CLAMP (review F12): `recipient_recency` is the PRIMARY descending
+    /// sort key in [`Self::ranked_routes`], and the merge here is a monotone
+    /// `max`, so a single `u64::MAX` would pin a route at the front of the
+    /// ranking permanently -- it can never be lowered by the passage of time,
+    /// by honest observation, or by a peer restart. Values beyond
+    /// `now + RECENCY_MAX_CLOCK_SKEW_SECS` are clamped rather than rejected so
+    /// an honest peer with a slightly fast clock still registers.
     pub fn record_recipient_seen_via_relay(
         &mut self,
         relay_peer: PeerId,
         recipient_peer: PeerId,
         seen_at: u64,
     ) {
+        let ceiling = unix_now_secs().saturating_add(RECENCY_MAX_CLOCK_SKEW_SECS);
+        let clamped = seen_at.min(ceiling);
         let key = (relay_peer, recipient_peer);
         let entry = self.recipient_recency_by_route.entry(key).or_insert(0);
-        *entry = (*entry).max(seen_at);
+        *entry = (*entry).max(clamped);
+        self.prune_recipient_recency();
+    }
+
+    /// [`Self::record_recipient_seen_via_relay`] for a timestamp that arrived
+    /// over the wire, i.e. one chosen by whoever sent it.
+    ///
+    /// Returns `true` if the signal was recorded. In addition to the
+    /// future-clamp, this drops values older than [`RECENCY_MAX_AGE_SECS`] --
+    /// the same 7-day horizon the CLI ledger uses -- and the `0` that an entry
+    /// with no `last_seen` serialises to. A week-old sighting is not evidence
+    /// about a route's current usefulness, and accepting it only lets a peer
+    /// inject ranking weight for routes it has no live knowledge of.
+    pub fn record_recipient_seen_via_relay_from_wire(
+        &mut self,
+        relay_peer: PeerId,
+        recipient_peer: PeerId,
+        seen_at: u64,
+    ) -> bool {
+        let now = unix_now_secs();
+        if seen_at == 0 || seen_at.saturating_add(RECENCY_MAX_AGE_SECS) < now {
+            return false;
+        }
+        self.record_recipient_seen_via_relay(relay_peer, recipient_peer, seen_at);
+        true
+    }
+
+    /// Bound `recipient_recency_by_route`, which is keyed by a pair of
+    /// remote-supplied peer ids and previously grew without limit. Evicts the
+    /// oldest sightings first, which is also the least useful ranking data.
+    fn prune_recipient_recency(&mut self) {
+        if self.recipient_recency_by_route.len() <= RECENCY_MAX_TRACKED_ROUTES {
+            return;
+        }
+        let mut by_age: Vec<((PeerId, PeerId), u64)> = self
+            .recipient_recency_by_route
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        by_age.sort_by_key(|(_, seen_at)| *seen_at);
+        let excess = by_age.len() - RECENCY_MAX_TRACKED_ROUTES;
+        for (key, _) in by_age.into_iter().take(excess) {
+            self.recipient_recency_by_route.remove(&key);
+        }
     }
 
     /// Record a "seen now" recipient-recency signal.
@@ -695,5 +761,97 @@ mod tests {
         assert!(cleared);
         assert!(delivery.delivery_attempt(&message_id).is_none());
         assert_eq!(delivery.pending_attempts().len(), 0);
+    }
+
+    // ------------------------------------------------------------------
+    // F12 -- wire `last_seen` is attacker-controlled ranking input
+    // ------------------------------------------------------------------
+
+    /// Without the clamp, `u64::MAX` merged with a monotone `max` pins the
+    /// attacker's route at the head of `ranked_routes` forever: it can never be
+    /// lowered by time, honest observation or a peer restart.
+    #[test]
+    fn future_recency_cannot_pin_a_route_forever() {
+        let mut delivery = MultiPathDelivery::new();
+        let target = PeerId::random();
+        let attacker_relay = PeerId::random();
+        let honest_relay = PeerId::random();
+
+        delivery.record_recipient_seen_via_relay_from_wire(attacker_relay, target, u64::MAX);
+        delivery.record_recipient_seen_now(honest_relay, target);
+
+        let attacker_recency = delivery
+            .recipient_recency_by_route
+            .get(&(attacker_relay, target))
+            .copied()
+            .unwrap_or(0);
+        let honest_recency = delivery
+            .recipient_recency_by_route
+            .get(&(honest_relay, target))
+            .copied()
+            .unwrap_or(0);
+
+        assert_ne!(
+            attacker_recency,
+            u64::MAX,
+            "u64::MAX was stored verbatim as a recency score"
+        );
+        assert!(
+            attacker_recency <= unix_now_secs() + RECENCY_MAX_CLOCK_SKEW_SECS,
+            "recency {} exceeds now + max skew",
+            attacker_recency
+        );
+        assert!(
+            honest_recency + RECENCY_MAX_CLOCK_SKEW_SECS >= attacker_recency,
+            "an honest live sighting is still hopelessly behind the clamped attacker value"
+        );
+    }
+
+    /// A modest clock skew from an honest peer is tolerated, not discarded.
+    #[test]
+    fn small_clock_skew_is_clamped_not_dropped() {
+        let mut delivery = MultiPathDelivery::new();
+        let target = PeerId::random();
+        let relay = PeerId::random();
+        let slightly_ahead = unix_now_secs() + 30;
+
+        assert!(delivery.record_recipient_seen_via_relay_from_wire(relay, target, slightly_ahead));
+        let stored = delivery
+            .recipient_recency_by_route
+            .get(&(relay, target))
+            .copied()
+            .unwrap_or(0);
+        assert_eq!(stored, slightly_ahead);
+    }
+
+    /// Anything older than the 7-day horizon (or the `0` an entry with no
+    /// `last_seen` serialises to) carries no information about a route's
+    /// current usefulness and must not enter the ranking at all.
+    #[test]
+    fn stale_wire_recency_is_rejected() {
+        let mut delivery = MultiPathDelivery::new();
+        let target = PeerId::random();
+        let relay = PeerId::random();
+        let ancient = unix_now_secs() - RECENCY_MAX_AGE_SECS - 60;
+
+        assert!(!delivery.record_recipient_seen_via_relay_from_wire(relay, target, ancient));
+        assert!(!delivery.record_recipient_seen_via_relay_from_wire(relay, target, 0));
+        assert!(delivery.recipient_recency_by_route.is_empty());
+    }
+
+    /// The map is keyed entirely by remote-supplied peer ids, so it needs a
+    /// ceiling.
+    #[test]
+    fn recipient_recency_map_is_bounded() {
+        let mut delivery = MultiPathDelivery::new();
+        let now = unix_now_secs();
+        for i in 0..(RECENCY_MAX_TRACKED_ROUTES + 500) {
+            delivery.record_recipient_seen_via_relay(
+                PeerId::random(),
+                PeerId::random(),
+                now - (i as u64 % 1000),
+            );
+        }
+        assert!(delivery.recipient_recency_by_route.len() <= RECENCY_MAX_TRACKED_ROUTES);
     }
 }
