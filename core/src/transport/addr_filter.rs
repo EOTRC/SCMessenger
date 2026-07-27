@@ -74,8 +74,22 @@ pub enum DnsPolicy {
     AllowLocallyConfigured,
 }
 
-/// Returns true iff `ip` is an IPv4 address a peer could legitimately be
-/// reachable at. Rejects, unconditionally:
+/// Which question a call site is asking of an address.
+///
+/// There are exactly two, they have different answers, and conflating them is
+/// what produced NEW-2. Keeping them as one enum means there is ONE traversal of
+/// the multiaddr and ONE place where each protocol component is interpreted --
+/// see [`check_multiaddr`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Audience {
+    /// "Can I reach it?" -- contextual, so it is parameterised by
+    /// [`NetworkMode`].
+    Dial(NetworkMode),
+    /// "May I hand it to a stranger?" -- absolute, so it takes no parameter.
+    Disclose,
+}
+
+/// Rejects the IPv4 addresses that are never a peer, in any context:
 ///
 /// - loopback (127/8) -- SSRF into our own host
 /// - unspecified (0.0.0.0) and the rest of 0/8 ("this network")
@@ -86,9 +100,7 @@ pub enum DnsPolicy {
 /// - 192.0.0.0/24 (IETF protocol assignments) -- mirrors the same carve-out
 ///   `swarm::is_discoverable_multiaddr` already makes for mobile/VPN internal
 ///   NAT addresses
-///
-/// RFC1918 private ranges are rejected only in [`NetworkMode::Public`].
-fn is_dialable_ipv4(ip: &Ipv4Addr, mode: NetworkMode) -> bool {
+fn is_unconditionally_routable_ipv4(ip: &Ipv4Addr) -> bool {
     let o = ip.octets();
     if ip.is_loopback()
         || ip.is_unspecified()
@@ -106,27 +118,160 @@ fn is_dialable_ipv4(ip: &Ipv4Addr, mode: NetworkMode) -> bool {
     if o[0] == 192 && o[1] == 0 && o[2] == 0 {
         return false;
     }
-    if mode == NetworkMode::Public && ip.is_private() {
+    true
+}
+
+/// Returns true iff `ip` is an IPv4 address that a peer somewhere else on the
+/// internet could actually route a packet to.
+///
+/// WHY THIS IS NOT `!is_private()` (re-review round 4). `Ipv4Addr::is_private()`
+/// covers RFC1918 and nothing else, so every one of these was disclosable:
+///
+/// - **`100.64.0.0/10` (RFC 6598 CGNAT / "shared address space")** -- the
+///   important one. On a carrier-grade-NAT mobile network this is a REAL,
+///   live internal host range; the phone's own neighbours sit in it. Telling a
+///   stranger `100.64.x.y:port` is the same class of disclosure as telling them
+///   `192.168.x.y:port`, and dialing one is the same internal probe.
+/// - **`198.18.0.0/15` (RFC 2544 benchmarking)** -- routed inside lab and
+///   appliance networks.
+/// - **`240.0.0.0/4` (RFC 1112 reserved)** -- never routable; also subsumes
+///   `255.255.255.255`.
+/// - **`192.0.2.0/24` (RFC 5737 TEST-NET-1)** -- documentation only.
+///
+/// KNOWN RESIDUAL, stated rather than hidden: the other two RFC 5737
+/// documentation prefixes, `198.51.100.0/24` (TEST-NET-2) and `203.0.113.0/24`
+/// (TEST-NET-3), are NOT rejected here. They are this workspace's canonical
+/// "globally routable peer" test fixtures (~50 occurrences across `core/src`,
+/// `core/tests` and `cli`), so rejecting them would make most of the disclosure
+/// suite vacuous rather than stricter. They are unassigned documentation space:
+/// disclosing one is useless to an attacker and reveals nothing about us, so the
+/// residual is cosmetic, not a leak. Closing it means migrating those fixtures
+/// to a genuinely routable prefix first.
+pub fn is_globally_routable_ipv4(ip: &Ipv4Addr) -> bool {
+    if !is_unconditionally_routable_ipv4(ip) {
+        return false;
+    }
+    let o = ip.octets();
+    if ip.is_private() {
+        return false;
+    }
+    // 100.64.0.0/10 -- RFC 6598 shared address space (CGNAT).
+    if o[0] == 100 && (64..=127).contains(&o[1]) {
+        return false;
+    }
+    // 192.0.2.0/24 -- RFC 5737 TEST-NET-1.
+    if o[0] == 192 && o[1] == 0 && o[2] == 2 {
+        return false;
+    }
+    // 198.18.0.0/15 -- RFC 2544 benchmarking.
+    if o[0] == 198 && (o[1] == 18 || o[1] == 19) {
+        return false;
+    }
+    // 240.0.0.0/4 -- RFC 1112 reserved (includes 255.255.255.255).
+    if o[0] >= 240 {
         return false;
     }
     true
 }
 
-/// Returns true iff `ip` is an IPv6 address a peer could legitimately be
-/// reachable at. Rejects loopback (`::1`), unspecified (`::`), multicast
-/// (`ff00::/8`), link-local (`fe80::/10`) and site-local (`fec0::/10`)
-/// unconditionally; unique-local (`fc00::/7`) is the IPv6 analogue of RFC1918
-/// and is therefore gated on [`NetworkMode::Public`] exactly like RFC1918.
+/// The IPv4 address embedded in an IPv6 address, for every encoding that makes
+/// an IPv4 destination reachable through an IPv6 literal.
 ///
-/// IPv4-mapped and IPv4-compatible forms (`::ffff:127.0.0.1`, `::127.0.0.1`)
-/// are unwrapped and re-checked as IPv4 -- otherwise they are a trivial bypass
-/// of every IPv4 rule above.
-fn is_dialable_ipv6(ip: &Ipv6Addr, mode: NetworkMode) -> bool {
+/// WHY THIS IS NOT `Ipv6Addr::to_ipv4()` (re-review round 4). `to_ipv4()`
+/// unwraps only `::/96` (IPv4-compatible) and `::ffff:0:0/96` (IPv4-mapped).
+/// It does NOT unwrap RFC 6052 NAT64, so
+/// `/ip6/64:ff9b::a9fe:a9fe/tcp/80` **is** `169.254.169.254` -- the cloud
+/// metadata endpoint -- and it passed every IPv4 rule in both the dial and the
+/// disclosure predicate as "some global IPv6 address". NAT64 is not exotic: it
+/// is mandatory-support territory for iOS apps and the default on several US
+/// carriers, so a phone genuinely resolves and connects to these.
+///
+/// Handled here:
+/// - `::/96` and `::ffff:0:0/96` (via `to_ipv4`)
+/// - `64:ff9b::/96` -- RFC 6052 well-known NAT64 prefix
+/// - `64:ff9b:1::/48` -- RFC 8215 local-use NAT64 prefix, using the RFC 6052
+///   /48 embedding (IPv4 octets at bits 48..64 and 72..88, with the `u` byte at
+///   bits 64..72 skipped)
+/// - `2002::/16` -- 6to4, IPv4 at bits 16..48
+///
+/// Teredo (`2001::/32`) is deliberately NOT handled here because it embeds TWO
+/// IPv4 addresses (server and obfuscated client) and both have to clear the
+/// rules; see [`teredo_ipv4s`].
+pub fn embedded_ipv4(ip: &Ipv6Addr) -> Option<Ipv4Addr> {
     if let Some(v4) = ip.to_ipv4() {
-        // `to_ipv4` covers both ::a.b.c.d and ::ffff:a.b.c.d. `::` and `::1`
-        // also map to 0.0.0.0 / 0.0.0.1, both of which is_dialable_ipv4
-        // rejects via the 0/8 rule -- which is the answer we want anyway.
-        return is_dialable_ipv4(&v4, mode);
+        return Some(v4);
+    }
+    let o = ip.octets();
+    let seg = ip.segments();
+
+    // 64:ff9b::/96 -- well-known NAT64 prefix (RFC 6052 s2.1).
+    if seg[0] == 0x0064
+        && seg[1] == 0xff9b
+        && seg[2] == 0
+        && seg[3] == 0
+        && seg[4] == 0
+        && seg[5] == 0
+    {
+        return Some(Ipv4Addr::new(o[12], o[13], o[14], o[15]));
+    }
+    // 64:ff9b:1::/48 -- local-use NAT64 prefix (RFC 8215), /48 embedding.
+    if seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2] == 0x0001 {
+        return Some(Ipv4Addr::new(o[6], o[7], o[9], o[10]));
+    }
+    // 2002::/16 -- 6to4 (RFC 3056).
+    if seg[0] == 0x2002 {
+        return Some(Ipv4Addr::new(o[2], o[3], o[4], o[5]));
+    }
+    None
+}
+
+/// The two IPv4 addresses a Teredo address (`2001::/32`, RFC 4380) embeds: the
+/// Teredo server, and the client's own public IPv4 stored obfuscated (bitwise
+/// complement).
+///
+/// Both are real destinations implied by the address, so both have to clear the
+/// rules. Note `2001:db8::/32` and the rest of `2001::/16` are ordinary global
+/// unicast -- only `2001:0000::/32` is Teredo.
+pub fn teredo_ipv4s(ip: &Ipv6Addr) -> Option<(Ipv4Addr, Ipv4Addr)> {
+    let seg = ip.segments();
+    if seg[0] != 0x2001 || seg[1] != 0x0000 {
+        return None;
+    }
+    let o = ip.octets();
+    let server = Ipv4Addr::new(o[4], o[5], o[6], o[7]);
+    let client = Ipv4Addr::new(!o[12], !o[13], !o[14], !o[15]);
+    Some((server, client))
+}
+
+/// IPv4 verdict for one [`Audience`].
+fn ipv4_permitted(ip: &Ipv4Addr, audience: Audience) -> bool {
+    match audience {
+        Audience::Dial(NetworkMode::Local) => is_unconditionally_routable_ipv4(ip),
+        Audience::Dial(NetworkMode::Public) => {
+            is_unconditionally_routable_ipv4(ip) && !ip.is_private()
+        }
+        Audience::Disclose => is_globally_routable_ipv4(ip),
+    }
+}
+
+/// IPv6 verdict for one [`Audience`].
+///
+/// Rejects loopback (`::1`), unspecified (`::`), multicast (`ff00::/8`),
+/// link-local (`fe80::/10`) and site-local (`fec0::/10`) unconditionally;
+/// unique-local (`fc00::/7`) is the IPv6 analogue of RFC1918 and is therefore
+/// dropped for `Dial(Public)` and for `Disclose`.
+///
+/// Every embedded-IPv4 encoding is unwrapped and re-checked as IPv4 FIRST --
+/// otherwise `::ffff:127.0.0.1`, `64:ff9b::a9fe:a9fe`, `2002:c0a8:0101::` and
+/// friends are each a one-line bypass of the entire IPv4 rule set.
+fn ipv6_permitted(ip: &Ipv6Addr, audience: Audience) -> bool {
+    if let Some(v4) = embedded_ipv4(ip) {
+        // `::` and `::1` unwrap to 0.0.0.0 / 0.0.0.1, both of which the 0/8
+        // rule rejects -- which is the answer we want anyway.
+        return ipv4_permitted(&v4, audience);
+    }
+    if let Some((server, client)) = teredo_ipv4s(ip) {
+        return ipv4_permitted(&server, audience) && ipv4_permitted(&client, audience);
     }
     if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
         return false;
@@ -137,10 +282,11 @@ fn is_dialable_ipv6(ip: &Ipv6Addr, mode: NetworkMode) -> bool {
     if seg0 & 0xffc0 == 0xfe80 || seg0 & 0xffc0 == 0xfec0 {
         return false;
     }
-    if mode == NetworkMode::Public && (seg0 & 0xfe00) == 0xfc00 {
-        return false;
+    let unique_local = (seg0 & 0xfe00) == 0xfc00;
+    match audience {
+        Audience::Dial(NetworkMode::Local) => true,
+        Audience::Dial(NetworkMode::Public) | Audience::Disclose => !unique_local,
     }
-    true
 }
 
 /// Returns true iff `addr` is worth dialing / safe to disclose.
@@ -164,6 +310,12 @@ fn is_dialable_ipv6(ip: &Ipv6Addr, mode: NetworkMode) -> bool {
 /// `/dns4/evil.example/tcp/80/p2p-circuit` -- whose relay hop we would really
 /// dial -- is rejected too.
 pub fn is_dialable_multiaddr_parsed(addr: &Multiaddr, mode: NetworkMode, dns: DnsPolicy) -> bool {
+    check_multiaddr(addr, Audience::Dial(mode), dns)
+}
+
+/// The ONE multiaddr traversal. Both public predicates delegate here so a
+/// protocol component can never be interpreted two different ways.
+fn check_multiaddr(addr: &Multiaddr, audience: Audience, dns: DnsPolicy) -> bool {
     let mut has_transport = false;
 
     for proto in addr.iter() {
@@ -172,13 +324,13 @@ pub fn is_dialable_multiaddr_parsed(addr: &Multiaddr, mode: NetworkMode, dns: Dn
             Protocol::P2pCircuit => return has_transport,
             Protocol::Ip4(ip) => {
                 has_transport = true;
-                if !is_dialable_ipv4(&ip, mode) {
+                if !ipv4_permitted(&ip, audience) {
                     return false;
                 }
             }
             Protocol::Ip6(ip) => {
                 has_transport = true;
-                if !is_dialable_ipv6(&ip, mode) {
+                if !ipv6_permitted(&ip, audience) {
                     return false;
                 }
             }
@@ -234,8 +386,15 @@ pub fn is_dialable_multiaddr(multiaddr: &str, mode: NetworkMode, dns: DnsPolicy)
 /// DNS is rejected for a second, independent reason: a name like
 /// `/dns4/nas.corp.internal/tcp/443` leaks internal naming even when it does
 /// not resolve for the recipient.
+///
+/// GLOBALLY ROUTABLE, NOT `!is_private()` (re-review round 4). This used to be
+/// literally `is_dialable_multiaddr_parsed(addr, Public, Reject)`, i.e. the dial
+/// predicate with `is_private()` switched on. `is_private()` is RFC1918 and
+/// nothing else, so CGNAT `100.64.0.0/10` -- a live internal host range on every
+/// carrier-grade-NAT mobile network -- plus `198.18.0.0/15` and `240.0.0.0/4`
+/// were all disclosable. See [`is_globally_routable_ipv4`].
 pub fn is_disclosable_multiaddr_parsed(addr: &Multiaddr) -> bool {
-    is_dialable_multiaddr_parsed(addr, NetworkMode::Public, DnsPolicy::Reject)
+    check_multiaddr(addr, Audience::Disclose, DnsPolicy::Reject)
 }
 
 /// String convenience wrapper over [`is_disclosable_multiaddr_parsed`].
@@ -244,6 +403,40 @@ pub fn is_disclosable_multiaddr(multiaddr: &str) -> bool {
         Ok(addr) => is_disclosable_multiaddr_parsed(&addr),
         Err(_) => false,
     }
+}
+
+/// Returns true iff `addr` may be WRITTEN INTO A LEDGER as an address this node
+/// actually reached.
+///
+/// This is deliberately the weakest of the three predicates, and the reason it
+/// exists as its own named function rather than as a `bool` argument to one of
+/// the others: "we connected here" is a different claim from "we could dial
+/// here" and from "a stranger could route here", and each deserves a predicate
+/// that cannot be reconfigured into another.
+///
+/// It requires an IP transport component and rejects DNS forms outright. It does
+/// NOT reject loopback or RFC1918: an address a socket just came off
+/// demonstrably works for us, and filtering it at ingestion would erase the
+/// evidence that the re-dial and disclosure gates are supposed to filter later.
+/// See [`crate::store::ledger_entry::LedgerManager::record_connection`].
+pub fn is_recordable_multiaddr(multiaddr: &str) -> bool {
+    let Ok(addr) = multiaddr.parse::<Multiaddr>() else {
+        return false;
+    };
+    let mut has_ip_transport = false;
+    for proto in addr.iter() {
+        match proto {
+            // Everything past the relay hop belongs to the relayed peer; the
+            // hop itself has already been seen by this point.
+            Protocol::P2pCircuit => return has_ip_transport,
+            Protocol::Ip4(_) | Protocol::Ip6(_) => has_ip_transport = true,
+            Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_) | Protocol::Dnsaddr(_) => {
+                return false
+            }
+            _ => {}
+        }
+    }
+    has_ip_transport
 }
 
 /// Remove the peer-id component(s) that identify the *endpoint* of a
@@ -731,6 +924,211 @@ mod tests {
         assert!(!is_self_address("/ip4/10.0.2.16/tcp/9001", &my_addrs));
         // An empty candidate must never "match" an empty own-address entry.
         assert!(!is_self_address("", &["".to_string()]));
+    }
+
+    // ------------------------------------------------------------------
+    // Round 4 -- embedded-IPv4 encodings other than ::ffff:
+    // ------------------------------------------------------------------
+
+    /// `Ipv6Addr::to_ipv4()` unwraps `::/96` and `::ffff:0:0/96` and NOTHING
+    /// else, so every one of these was "some global IPv6 address" and passed
+    /// both predicates. `/ip6/64:ff9b::a9fe:a9fe/tcp/80` IS
+    /// `169.254.169.254:80` -- the cloud metadata endpoint -- reached through a
+    /// NAT64 gateway that iOS and several US carriers run by default.
+    #[test]
+    fn nat64_wellknown_prefix_cannot_launder_an_internal_ipv4() {
+        // 0xa9fe_a9fe == 169.254.169.254
+        for addr in [
+            "/ip6/64:ff9b::a9fe:a9fe/tcp/80",
+            "/ip6/64:ff9b::7f00:1/tcp/8080",    // 127.0.0.1
+            "/ip6/64:ff9b::c0a8:101/tcp/443",   // 192.168.1.1 -- Public only
+            "/ip6/64:ff9b::/tcp/9001",          // 0.0.0.0
+            "/ip6/64:ff9b::ffff:ffff/tcp/9001", // 255.255.255.255
+        ] {
+            assert!(
+                !is_disclosable_multiaddr(addr),
+                "{addr} unwraps to a non-routable IPv4 and was disclosable"
+            );
+        }
+        for addr in [
+            "/ip6/64:ff9b::a9fe:a9fe/tcp/80",
+            "/ip6/64:ff9b::7f00:1/tcp/8080",
+            "/ip6/64:ff9b::/tcp/9001",
+            "/ip6/64:ff9b::ffff:ffff/tcp/9001",
+        ] {
+            assert!(
+                !is_dialable_multiaddr(addr, LOCAL, REMOTE),
+                "{addr} unwraps to a non-routable IPv4 and was dialable"
+            );
+        }
+        // RFC1918 through NAT64 follows the same mode rule as bare RFC1918.
+        assert!(is_dialable_multiaddr(
+            "/ip6/64:ff9b::c0a8:101/tcp/443",
+            LOCAL,
+            REMOTE
+        ));
+        assert!(!is_dialable_multiaddr(
+            "/ip6/64:ff9b::c0a8:101/tcp/443",
+            PUBLIC,
+            REMOTE
+        ));
+        // A genuinely routable IPv4 behind NAT64 must still work -- this is a
+        // real connectivity path on IPv6-only carriers, not a thing to ban.
+        // 0xcb00:7109 == 203.0.113.9
+        assert!(is_dialable_multiaddr(
+            "/ip6/64:ff9b::cb00:7109/tcp/443",
+            LOCAL,
+            REMOTE
+        ));
+        assert!(is_disclosable_multiaddr("/ip6/64:ff9b::cb00:7109/tcp/443"));
+    }
+
+    /// RFC 8215 local-use NAT64 prefix with the RFC 6052 /48 embedding: the
+    /// IPv4 octets straddle the `u` byte, so a naive "last 32 bits" unwrap gets
+    /// the wrong answer and lets the address through.
+    #[test]
+    fn nat64_local_use_prefix_uses_the_rfc6052_48_embedding() {
+        // 64:ff9b:1:a9fe:0:a9fe::  ->  169.254 . 169.254
+        //   octets[6..8] = a9 fe, octets[8] = u = 00, octets[9..11] = a9 fe
+        assert!(!is_dialable_multiaddr(
+            "/ip6/64:ff9b:1:a9fe:0:a9fe::/tcp/80",
+            LOCAL,
+            REMOTE
+        ));
+        assert!(!is_disclosable_multiaddr(
+            "/ip6/64:ff9b:1:a9fe:0:a9fe::/tcp/80"
+        ));
+        // 64:ff9b:1:7f00:0:0100::  ->  127.0.0.1
+        assert!(!is_dialable_multiaddr(
+            "/ip6/64:ff9b:1:7f00:0:100::/tcp/8080",
+            LOCAL,
+            REMOTE
+        ));
+        // 64:ff9b:1:cb00:0:7109::  ->  203.0.113.9, a real destination.
+        assert!(is_dialable_multiaddr(
+            "/ip6/64:ff9b:1:cb00:0:7109::/tcp/443",
+            LOCAL,
+            REMOTE
+        ));
+    }
+
+    /// 6to4 embeds the IPv4 in bits 16..48. `2002:a9fe:a9fe::` is the metadata
+    /// endpoint again.
+    #[test]
+    fn sixtofour_prefix_cannot_launder_an_internal_ipv4() {
+        assert!(!is_dialable_multiaddr(
+            "/ip6/2002:a9fe:a9fe::/tcp/80",
+            LOCAL,
+            REMOTE
+        ));
+        assert!(!is_disclosable_multiaddr("/ip6/2002:a9fe:a9fe::/tcp/80"));
+        assert!(!is_dialable_multiaddr(
+            "/ip6/2002:7f00:1::/tcp/8080",
+            LOCAL,
+            REMOTE
+        ));
+        // 2002:c000:0201:: -> 192.0.2.1 (TEST-NET-1): not disclosable, and the
+        // 6to4 wrapper must not change that.
+        assert!(!is_disclosable_multiaddr("/ip6/2002:c000:201::/tcp/443"));
+        // 2002:cb00:7109:: -> 203.0.113.9, routable.
+        assert!(is_dialable_multiaddr(
+            "/ip6/2002:cb00:7109::/tcp/443",
+            LOCAL,
+            REMOTE
+        ));
+    }
+
+    /// Teredo carries the server IPv4 in bits 32..64 and the client's own IPv4
+    /// in bits 96..128, bitwise-complemented. Both are real destinations, so
+    /// both are checked.
+    #[test]
+    fn teredo_checks_both_the_server_and_the_obfuscated_client_ipv4() {
+        // server 203.0.113.9, client ~(127.0.0.1) = 0x80ff:fffe
+        assert!(!is_dialable_multiaddr(
+            "/ip6/2001:0:cb00:7109:0:0:80ff:fffe/tcp/443",
+            LOCAL,
+            REMOTE
+        ));
+        // server 169.254.169.254 (metadata), client 203.0.113.9 -> ~ = 34ff:8ef6
+        assert!(!is_dialable_multiaddr(
+            "/ip6/2001:0:a9fe:a9fe:0:0:34ff:8ef6/tcp/80",
+            LOCAL,
+            REMOTE
+        ));
+        assert!(!is_disclosable_multiaddr(
+            "/ip6/2001:0:a9fe:a9fe:0:0:34ff:8ef6/tcp/80"
+        ));
+        // Both halves routable -> allowed.
+        assert!(is_dialable_multiaddr(
+            "/ip6/2001:0:cb00:7109:0:0:34ff:8ef6/tcp/443",
+            LOCAL,
+            REMOTE
+        ));
+        // `2001::/16` outside `2001:0000::/32` is ordinary global unicast and
+        // must NOT be reinterpreted as Teredo.
+        assert!(is_dialable_multiaddr(
+            "/ip6/2001:4860:4860::8888/tcp/443",
+            LOCAL,
+            REMOTE
+        ));
+        assert!(is_disclosable_multiaddr(
+            "/ip6/2001:4860:4860::8888/tcp/443"
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // Round 4 -- disclosure needs "globally routable", not "!is_private()"
+    // ------------------------------------------------------------------
+
+    /// `Ipv4Addr::is_private()` is RFC1918 and nothing else. CGNAT is the one
+    /// that matters: on a carrier-grade-NAT mobile network `100.64.x.y` is a
+    /// live internal host, so disclosing it is the same class of leak as
+    /// disclosing `192.168.x.y`, and dialing it is the same internal probe.
+    #[test]
+    fn disclosure_drops_cgnat_benchmark_reserved_and_test_net_1() {
+        for addr in [
+            "/ip4/100.64.0.1/tcp/9001",
+            "/ip4/100.100.50.7/tcp/9001",
+            "/ip4/100.127.255.254/tcp/9001",
+            "/ip4/192.0.2.5/tcp/9001",
+            "/ip4/198.18.0.1/tcp/9001",
+            "/ip4/198.19.255.254/tcp/9001",
+            "/ip4/240.0.0.1/tcp/9001",
+            "/ip4/250.1.2.3/tcp/9001",
+        ] {
+            assert!(
+                !is_disclosable_multiaddr(addr),
+                "{addr} is not globally routable but was disclosable"
+            );
+        }
+        // The addresses immediately outside each range must still be accepted,
+        // so the masks are not accidentally too wide.
+        for addr in [
+            "/ip4/100.63.255.255/tcp/9001",
+            "/ip4/100.128.0.1/tcp/9001",
+            "/ip4/192.0.1.1/tcp/9001",
+            "/ip4/192.0.3.1/tcp/9001",
+            "/ip4/198.17.255.255/tcp/9001",
+            "/ip4/198.20.0.1/tcp/9001",
+            "/ip4/223.255.255.254/tcp/9001",
+        ] {
+            assert!(
+                is_disclosable_multiaddr(addr),
+                "{addr} is globally routable but was rejected -- the mask is too wide"
+            );
+        }
+    }
+
+    /// CGNAT stays DIALABLE -- a phone really can reach its CGNAT neighbours.
+    /// The two predicates must diverge here, exactly as they do for RFC1918.
+    #[test]
+    fn cgnat_is_dialable_locally_but_never_disclosable() {
+        assert!(is_dialable_multiaddr(
+            "/ip4/100.64.0.1/tcp/9001",
+            LOCAL,
+            REMOTE
+        ));
+        assert!(!is_disclosable_multiaddr("/ip4/100.64.0.1/tcp/9001"));
     }
 
     #[test]

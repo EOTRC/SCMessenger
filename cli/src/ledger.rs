@@ -346,21 +346,25 @@ impl ConnectionLedger {
         }
     }
 
-    /// Add or update a peer after successful connection
-    pub fn record_connection(&mut self, multiaddr: &str, peer_id: &str) {
+    /// Add or update a peer after successful connection.
+    ///
+    /// INGESTION CHOKE POINT (re-review round 4, F3/NEW-1). `dns` is a REQUIRED
+    /// parameter, and that is the entire point of this signature: the gate used
+    /// to live in the callers with `AllowLocallyConfigured` hardcoded here, so
+    /// `cmd_relay`'s `PeerIdentified` handler in `main.rs` grew a
+    /// `DnsPolicy::Reject` check citing re-review NEW-1 while `cmd_start`'s
+    /// byte-identical handler forty lines away did not. Both now have to name
+    /// their provenance to call this at all, and both of them go through
+    /// [`record_identified_peer`] anyway, which is the only place either handler
+    /// still exists.
+    ///
+    /// [`DnsPolicy::Reject`] is the [`Default`], so a future caller who does not
+    /// think about provenance fails closed.
+    /// Returns true iff the address passed the gate and was recorded.
+    pub fn record_connection(&mut self, multiaddr: &str, peer_id: &str, dns: DnsPolicy) -> bool {
         let stripped = strip_peer_id(multiaddr);
-        // `AllowLocallyConfigured`: this records an address we CONNECTED to (or
-        // a configured bootstrap name), not one a peer merely claimed. The
-        // remote-supplied feed into this function -- the `PeerIdentified`
-        // handler in `main.rs`, which passes the peer's advertised
-        // `listen_addrs` -- applies `DnsPolicy::Reject` at its own call site,
-        // because those ARE attacker-chosen.
-        if !is_dialable_multiaddr(
-            &stripped,
-            NetworkMode::Local,
-            DnsPolicy::AllowLocallyConfigured,
-        ) {
-            return;
+        if !is_dialable_multiaddr(&stripped, NetworkMode::Local, dns) {
+            return false;
         }
 
         let parsed_pid = PeerId::from_str(peer_id).ok();
@@ -379,6 +383,33 @@ impl ConnectionLedger {
                 entry.locally_verified = true;
                 entry
             });
+        true
+    }
+
+    /// Apply an Identify `PeerIdentified` event to the ledger.
+    ///
+    /// THE ONE HANDLER (choke-point refactor 2026-07-26). `cmd_start` and
+    /// `cmd_relay` each carried their own inline copy of this loop. They were
+    /// byte-identical until re-review NEW-1, at which point the DNS gate was
+    /// added to `cmd_relay`'s copy -- with a comment citing the review -- and
+    /// not to `cmd_start`'s. Both call sites now call this, so there is nothing
+    /// left to keep in sync, and the behaviour is unit-testable without a
+    /// running swarm (there was no CLI test covering either handler, which is
+    /// why the miss survived a full review round).
+    ///
+    /// `listen_addrs` is whatever the REMOTE peer chose to advertise. It is not
+    /// evidence of anything, so it enters the ledger under
+    /// [`DnsPolicy::Reject`]: a `/dns4/evil.example/tcp/80` entry would
+    /// otherwise be stored as locally verified and later dialed, with the zone
+    /// owner picking the destination IP -- and re-picking it between probes.
+    ///
+    /// Returns the number of addresses actually recorded, so a test can assert
+    /// the rejection rather than inferring it.
+    pub fn record_identified_peer(&mut self, peer_id: &str, listen_addrs: &[String]) -> usize {
+        listen_addrs
+            .iter()
+            .filter(|addr| self.record_connection(addr, peer_id, DnsPolicy::Reject))
+            .count()
     }
 
     /// Record a topic observed from a peer
@@ -411,19 +442,32 @@ impl ConnectionLedger {
         }
     }
 
-    /// Get all addresses that should be dialed now, excluding the local node
+    /// Get all addresses that should be dialed now, excluding the local node.
+    ///
+    /// DOES NOT DEPEND ON THE INGESTION INVARIANT (re-review round 4). This used
+    /// to pass `AllowLocallyConfigured` for EVERY entry, justified by a comment
+    /// asserting that "a DNS-form address may enter the CLI ledger only through
+    /// `add_bootstrap`". That assertion was false -- `record_connection` accepted
+    /// names from `cmd_start`'s `PeerIdentified` handler -- and a filter whose
+    /// soundness rests on a documented invariant somewhere else is the exact
+    /// failure mode this refactor exists to remove.
+    ///
+    /// So the permission is now derived from the entry itself: only an entry
+    /// flagged `is_bootstrap` (which only [`Self::add_bootstrap`] sets, from
+    /// operator configuration) may be a name. Every other entry is judged with
+    /// [`DnsPolicy::Reject`]. Even if some future path did smuggle a name into
+    /// the store, it would not be dialed.
     pub fn dialable_addresses(&self, local_peer_id: Option<&str>) -> Vec<(String, Option<String>)> {
         self.entries
             .values()
             .filter(|e| e.should_attempt())
-            // `AllowLocallyConfigured`: see the module note by the re-exports.
-            // A name can only be in this store if `add_bootstrap` put it there.
             .filter(|e| {
-                is_dialable_multiaddr(
-                    &e.multiaddr,
-                    NetworkMode::Local,
-                    DnsPolicy::AllowLocallyConfigured,
-                )
+                let dns = if e.is_bootstrap {
+                    DnsPolicy::AllowLocallyConfigured
+                } else {
+                    DnsPolicy::Reject
+                };
+                is_dialable_multiaddr(&e.multiaddr, NetworkMode::Local, dns)
             })
             .filter(|e| {
                 if let (Some(local), Some(last)) = (local_peer_id, &e.last_peer_id) {
@@ -456,28 +500,20 @@ impl ConnectionLedger {
         })
     }
 
-    /// Convert ledger entries to wire-format for sharing with peers.
-    ///
-    /// Only shares peers seen in the last 7 days — no point advertising
-    /// stale addresses. Private backoff data is stripped.
-    pub fn to_shared_entries(&self) -> Vec<scmessenger_core::transport::SharedPeerEntry> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let seven_days_ago = now.saturating_sub(7 * 24 * 3600);
-
-        self.entries
-            .values()
-            .filter(|e| e.last_seen >= seven_days_ago || e.is_bootstrap)
-            .map(|e| scmessenger_core::transport::SharedPeerEntry {
-                multiaddr: e.multiaddr.clone(),
-                last_peer_id: e.last_peer_id.clone(),
-                last_seen: e.last_seen,
-                known_topics: e.known_topics.clone(),
-            })
-            .collect()
-    }
+    // `to_shared_entries()` USED TO LIVE HERE AND IS GONE ON PURPOSE
+    // (re-review NEW-2, choke-point refactor 2026-07-26). It was the SECOND
+    // disclosure door: the ledger-exchange RESPONSE went through
+    // `LedgerManager::exchange_response_entries`, which caps at 64, requires
+    // `success_count > 0`, filters every address through
+    // `is_disclosable_multiaddr` and blanks `known_topics` -- while the REQUEST
+    // went through this function, which had no cap, no proven-peer filter, no
+    // address filter, and copied `known_topics` verbatim. It fired on every peer
+    // connection from three sites in `main.rs`.
+    //
+    // Both directions of the protocol now build their payload from
+    // `exchange_response_entries` inside the swarm, so there is one door. The
+    // CLI no longer produces wire records at all; see
+    // `SwarmCommand::ShareLedger`.
 
     /// Merge peer entries received from a remote peer.
     ///
@@ -704,13 +740,24 @@ impl ConnectionLedger {
 // all -- including `""`, which `Multiaddr` happily parses -- is no longer
 // reported as dialable.
 //
-// Re-review NEW-1: `is_dialable_multiaddr` now also takes a [`DnsPolicy`],
-// because a `/dns4/...` address resolves to whatever its zone owner chooses at
-// dial time, so none of the IP rules can be applied to it. The invariant this
-// file maintains is: **a DNS-form address may enter the CLI ledger only through
-// `add_bootstrap`, i.e. from local configuration.** `merge_shared_entries` (the
-// wire path) rejects names; `dialable_addresses` therefore allows them, because
-// by then they can only have come from the operator.
+// Re-review NEW-1: `is_dialable_multiaddr` also takes a [`DnsPolicy`], because a
+// `/dns4/...` address resolves to whatever its zone owner chooses at dial time,
+// so none of the IP rules can be applied to it.
+//
+// CHOKE-POINT REFACTOR (2026-07-26). This file used to maintain the invariant
+// "a DNS-form address may enter the CLI ledger only through `add_bootstrap`",
+// and `dialable_addresses` DEPENDED on it -- it passed `AllowLocallyConfigured`
+// for every entry. The invariant was false: `record_connection` hardcoded
+// `AllowLocallyConfigured` and `cmd_start`'s `PeerIdentified` handler fed it the
+// remote's advertised `listen_addrs` unfiltered. Two changes remove the
+// dependency instead of restating the invariant:
+//
+//   1. `record_connection` takes `DnsPolicy` as a REQUIRED parameter, and the
+//      only production callers reach it through `record_identified_peer`, which
+//      passes `Reject`.
+//   2. `dialable_addresses` derives the policy per entry from `is_bootstrap`
+//      (set only by `add_bootstrap`), so it is sound even if some future path
+//      does store a name.
 pub use scmessenger_core::transport::addr_filter::{
     is_dialable_multiaddr, is_self_address, strip_peer_id, DnsPolicy, NetworkMode,
 };
@@ -930,7 +977,7 @@ mod tests {
         let entry = ledger.entries.get("/ip4/1.2.3.4/tcp/9001").unwrap();
         assert!(entry.is_bootstrap);
 
-        ledger.record_connection("/ip4/1.2.3.4/tcp/9001", "NewPeerId");
+        ledger.record_connection("/ip4/1.2.3.4/tcp/9001", "NewPeerId", DnsPolicy::Reject);
         let entry = ledger.entries.get("/ip4/1.2.3.4/tcp/9001").unwrap();
         assert_eq!(entry.last_peer_id, Some("NewPeerId".to_string()));
     }
@@ -1255,7 +1302,11 @@ mod tests {
     #[test]
     fn test_try_begin_dial_allows_known_good_when_relay_healthy() {
         let mut ledger = ConnectionLedger::default();
-        ledger.record_connection("/ip4/1.2.3.4/tcp/9001", "12D3KooWTestPeerId");
+        ledger.record_connection(
+            "/ip4/1.2.3.4/tcp/9001",
+            "12D3KooWTestPeerId",
+            DnsPolicy::Reject,
+        );
         let key = DialKey::Addr("/ip4/1.2.3.4/tcp/9001".to_string());
 
         assert!(ledger.try_begin_dial(key, 0, true));
@@ -1331,7 +1382,11 @@ mod tests {
         let key = DialKey::Addr("/ip4/1.2.3.4/tcp/9001".to_string());
         assert!(!ledger.try_begin_dial(key.clone(), 0, true));
 
-        ledger.record_connection(&format!("/ip4/1.2.3.4/tcp/9001/p2p/{spoof}"), &spoof);
+        ledger.record_connection(
+            &format!("/ip4/1.2.3.4/tcp/9001/p2p/{spoof}"),
+            &spoof,
+            DnsPolicy::Reject,
+        );
         assert!(
             ledger
                 .entries
@@ -1376,6 +1431,125 @@ mod tests {
         }"#;
         let entry: LedgerEntry = serde_json::from_str(json).unwrap();
         assert!(!entry.locally_verified);
+    }
+
+    // ------------------------------------------------------------------
+    // Round 4 -- the ingestion choke point, CLI half (F3 / NEW-1)
+    // ------------------------------------------------------------------
+
+    /// THE ROUND-2 MISS, as a test. `cmd_start`'s `PeerIdentified` handler fed
+    /// the remote's advertised `listen_addrs` straight into `record_connection`,
+    /// which hardcoded `AllowLocallyConfigured`, so `/dns4/evil.example/tcp/80`
+    /// was stored as locally verified and `dialable_addresses` -- which
+    /// deliberately allowed names -- handed it to the dial scheduler. The
+    /// desktop swarm wires a real resolver, so `A evil.example -> 169.254.169.254`
+    /// becomes a dial, and the zone can be re-pointed between probes.
+    ///
+    /// There was NO CLI test over either handler, which is why the miss survived
+    /// a full review round. `record_identified_peer` is now the only copy of the
+    /// handler and this is a direct test of it.
+    #[test]
+    fn peer_identified_dns_listen_addr_never_reaches_dialable_addresses() {
+        let mut ledger = ConnectionLedger::default();
+        let pid = test_peer_id();
+        let advertised: Vec<String> = [
+            "/dns4/evil.example/tcp/80",
+            "/dns6/evil.example/tcp/80",
+            "/dns/evil.example/tcp/80",
+            "/dnsaddr/evil.example",
+            "/dns4/evil.example/tcp/443/p2p-circuit",
+            "/dns4/metadata.google.internal/tcp/80",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        assert_eq!(ledger.record_identified_peer(&pid, &advertised), 0);
+        assert!(
+            ledger.entries.is_empty(),
+            "a remote-advertised DNS name entered the ledger: {:?}",
+            ledger.entries.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            ledger.dialable_addresses(None).is_empty(),
+            "a remote-advertised DNS name became a dial target: {:?}",
+            ledger.dialable_addresses(None)
+        );
+
+        // The same handler must still accept a normal advertised IP address, so
+        // this is a filter and not an outage.
+        let good = vec!["/ip4/198.51.100.4/tcp/9001".to_string()];
+        assert_eq!(ledger.record_identified_peer(&pid, &good), 1);
+        assert_eq!(ledger.dialable_addresses(None).len(), 1);
+    }
+
+    /// The same assertion one layer down, so a future refactor that bypasses
+    /// `record_identified_peer` still cannot get a name in: the policy is a
+    /// REQUIRED argument of `record_connection` itself.
+    #[test]
+    fn record_connection_honours_the_required_dns_policy() {
+        let dns = "/dns4/relay.example/tcp/443";
+        let pid = test_peer_id();
+
+        let mut wire = ConnectionLedger::default();
+        assert!(!wire.record_connection(dns, &pid, DnsPolicy::Reject));
+        assert!(wire.entries.is_empty());
+
+        let mut configured = ConnectionLedger::default();
+        assert!(configured.record_connection(dns, &pid, DnsPolicy::AllowLocallyConfigured));
+        assert_eq!(configured.entries.len(), 1);
+
+        // Fail-closed: a caller that does not think about provenance gets the
+        // strict answer.
+        let mut defaulted = ConnectionLedger::default();
+        assert!(!defaulted.record_connection(dns, &pid, DnsPolicy::default()));
+    }
+
+    /// `dialable_addresses` must not depend on the "names can only come from
+    /// `add_bootstrap`" invariant being true elsewhere in the file -- that
+    /// invariant was false for two review rounds. It derives the policy from the
+    /// entry's own `is_bootstrap` flag instead.
+    #[test]
+    fn dialable_addresses_allows_dns_only_for_bootstrap_entries() {
+        let mut ledger = ConnectionLedger::default();
+        ledger.add_bootstrap("/dns4/relay.example/tcp/443", None);
+        assert_eq!(ledger.dialable_addresses(None).len(), 1);
+
+        // Simulate a name reaching the store through some path that is not
+        // add_bootstrap (this is what the choke point now prevents, but the
+        // dial filter must be sound even if it did happen).
+        let smuggled = LedgerEntry::new("/dns4/evil.example/tcp/80".to_string(), false);
+        ledger
+            .entries
+            .insert("/dns4/evil.example/tcp/80".to_string(), smuggled);
+
+        let dialable = ledger.dialable_addresses(None);
+        assert_eq!(
+            dialable.len(),
+            1,
+            "a non-bootstrap DNS entry was dialable: {dialable:?}"
+        );
+        assert!(dialable[0].0.contains("relay.example"));
+    }
+
+    /// Round 4, NAT64: `/ip6/64:ff9b::a9fe:a9fe/tcp/80` IS 169.254.169.254, and
+    /// the CLI re-exports the same predicate core uses, so the CLI must reject
+    /// it too. Guards against the CLI ever growing its own copy again.
+    #[test]
+    fn peer_identified_nat64_wrapped_metadata_address_is_rejected() {
+        let mut ledger = ConnectionLedger::default();
+        let pid = test_peer_id();
+        let advertised: Vec<String> = [
+            "/ip6/64:ff9b::a9fe:a9fe/tcp/80",
+            "/ip6/64:ff9b::7f00:1/tcp/8080",
+            "/ip6/2002:a9fe:a9fe::/tcp/80",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        assert_eq!(ledger.record_identified_peer(&pid, &advertised), 0);
+        assert!(ledger.dialable_addresses(None).is_empty());
     }
 
     #[test]

@@ -89,6 +89,12 @@ fn pruning_uses_a_hysteresis_band() {
 ///
 /// A relay peer id is not free -- it costs a Noise handshake -- so the per-relay
 /// quota converts "unlimited messages" into "at most 64 slots per identity".
+///
+/// SIZED TO CROSS THE CEILING (round 4). This ran 8 attacker identities against
+/// a 4096 ceiling, i.e. 512 slots, so the global pruner never fired and the test
+/// could not fail. The real bound on concurrent attacker identities is
+/// `max_established_incoming`, which is 64 in `behaviour.rs`, and 64 x 64 is the
+/// ceiling exactly. Identity churn lifts it further, so this uses 96.
 #[test]
 fn future_dated_flood_cannot_take_over_the_ranking_key() {
     let mut delivery = MultiPathDelivery::new();
@@ -103,7 +109,14 @@ fn future_dated_flood_cannot_take_over_the_ranking_key() {
         delivery.record_recipient_seen_now(*relay, *target);
     }
 
-    let attackers: Vec<PeerId> = (0..8).map(|_| PeerId::random()).collect();
+    // 96 * 64 = 6144 slots demanded against a 4096 ceiling, so the global
+    // pruner runs and has to choose between 96 relays holding 64 routes each and
+    // 32 honest relays holding one.
+    let attackers: Vec<PeerId> = (0..96).map(|_| PeerId::random()).collect();
+    assert!(
+        attackers.len() * RECENCY_MAX_ROUTES_PER_RELAY > RECENCY_MAX_TRACKED_ROUTES,
+        "the flood must be able to exceed the ceiling or this test cannot fail"
+    );
     let future = now + RECENCY_MAX_CLOCK_SKEW_SECS;
     for i in 0..(RECENCY_MAX_TRACKED_ROUTES * 8) {
         delivery.record_recipient_seen_via_relay_from_wire(
@@ -128,6 +141,50 @@ fn future_dated_flood_cannot_take_over_the_ranking_key() {
             delivery.tracked_recency_routes_for_relay(attacker)
         );
     }
+    assert!(delivery.tracked_recency_routes() <= RECENCY_MAX_TRACKED_ROUTES);
+}
+
+/// The eviction policy itself, stated as an invariant rather than as one
+/// scenario: after any prune, no relay holding routes may hold FEWER than a
+/// relay that lost one. Max-min fairness is what makes "hold one honest route"
+/// safe against "hold 64 attacker routes"; a global FIFO has the opposite
+/// property, because the honest route is the oldest key in the map.
+#[test]
+fn eviction_takes_from_the_largest_holders_first() {
+    let mut delivery = MultiPathDelivery::new();
+    let now = now_secs();
+
+    // Two classes: 64 relays that will be trimmed hard, and 64 that hold one
+    // route each and must survive intact.
+    let small: Vec<(PeerId, PeerId)> = (0..64)
+        .map(|_| (PeerId::random(), PeerId::random()))
+        .collect();
+    for (relay, target) in &small {
+        delivery.record_recipient_seen_via_relay(*relay, *target, now);
+    }
+    let large: Vec<PeerId> = (0..64).map(|_| PeerId::random()).collect();
+    for relay in &large {
+        for _ in 0..RECENCY_MAX_ROUTES_PER_RELAY {
+            delivery.record_recipient_seen_via_relay(*relay, PeerId::random(), now);
+        }
+    }
+
+    assert!(delivery.tracked_recency_routes() <= RECENCY_MAX_TRACKED_ROUTES);
+    for (relay, target) in &small {
+        assert!(
+            delivery.recipient_recency(relay, target).is_some(),
+            "a single-route relay was evicted while 64-route relays kept theirs"
+        );
+    }
+    let smallest_large = large
+        .iter()
+        .map(|r| delivery.tracked_recency_routes_for_relay(r))
+        .min()
+        .unwrap_or_default();
+    assert!(
+        smallest_large >= 1,
+        "eviction emptied a relay entirely instead of levelling"
+    );
 }
 
 proptest! {
@@ -196,6 +253,60 @@ proptest! {
                         <= RECENCY_MAX_ROUTES_PER_RELAY
                 );
             }
+        }
+    }
+
+    /// PROPERTY (round 4, NEW-4): with the GLOBAL ceiling actually crossed, a
+    /// relay that contributed ONE route and then went quiet keeps it, whatever
+    /// the flood does afterwards.
+    ///
+    /// This is the property a global-FIFO pruner does not have. Under FIFO a
+    /// route's survival is decided by WHEN IT FIRST APPEARED -- and appearing
+    /// early is exactly what an honest, long-lived neighbour does, while
+    /// appearing late is free for an attacker. `recipient_recency_by_route` is
+    /// the primary descending sort key in `ranked_routes`, so flushing the quiet
+    /// routes hands the ranking to the flood.
+    ///
+    /// The previous property test used 24 relays x 64 quota = 1536 slots against
+    /// a 4096 ceiling, so the global pruner never ran at all and it constrained
+    /// only the per-relay quota.
+    #[test]
+    fn a_quiet_relays_single_route_survives_a_flood_that_crosses_the_ceiling(
+        relay_slots in prop::collection::vec(0usize..96, 9000..10000),
+    ) {
+        let now = now_secs();
+        let mut delivery = MultiPathDelivery::new();
+
+        // Honest, quiet neighbours: one route each, recorded FIRST.
+        let quiet: Vec<(PeerId, PeerId)> = (0..16)
+            .map(|_| (PeerId::random(), PeerId::random()))
+            .collect();
+        for (relay, target) in &quiet {
+            delivery.record_recipient_seen_now(*relay, *target);
+        }
+
+        // 96 flooding identities, more than enough to cross the ceiling.
+        let flooders: Vec<PeerId> = (0..96).map(|_| PeerId::random()).collect();
+        for slot in &relay_slots {
+            delivery.record_recipient_seen_via_relay(
+                flooders[*slot],
+                PeerId::random(),
+                now + RECENCY_MAX_CLOCK_SKEW_SECS,
+            );
+        }
+
+        prop_assert!(delivery.tracked_recency_routes() <= RECENCY_MAX_TRACKED_ROUTES);
+        for relay in &flooders {
+            prop_assert!(
+                delivery.tracked_recency_routes_for_relay(relay)
+                    <= RECENCY_MAX_ROUTES_PER_RELAY
+            );
+        }
+        for (relay, target) in &quiet {
+            prop_assert!(
+                delivery.recipient_recency(relay, target).is_some(),
+                "a quiet honest route was evicted by a flood that crossed the ceiling"
+            );
         }
     }
 }

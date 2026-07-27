@@ -1592,6 +1592,14 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>) -> Result<()> {
         ..Default::default()
     };
 
+    // CORE HANDLE IS LOAD-BEARING NOW (choke-point refactor 2026-07-26). This
+    // used to be `None`, which was survivable while the CLI built its own
+    // ledger-exchange payload with `to_shared_entries()`. That door is gone:
+    // `SwarmCommand::ShareLedger` builds the payload from
+    // `IronCore::ledger_manager` through `exchange_response_entries`, so without
+    // a core handle this node would offer an empty ledger to every peer. Wiring
+    // it also activates `record_connection` on outbound `ConnectionEstablished`
+    // (review F11), which is what populates that ledger in the first place.
     let swarm_handle = transport::start_swarm_with_config(
         network_keypair,
         Some(listen_addr),
@@ -1599,7 +1607,7 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>) -> Result<()> {
         Some(multiport_config),
         relay_bootstrap,
         None,
-        None,
+        Some(Arc::downgrade(&core)),
         false,
         Some(discovery_config),
         transport::default_routing_engine_handle(),
@@ -1860,12 +1868,12 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>) -> Result<()> {
                                      let can_reach = bridge.can_reach_destination(&peer_id);
                                      tracing::info!("Registered transport capabilities for {}: {:?}, reachable={}", peer_id, capabilities_clone, can_reach);
 
-                                     // AUTO LEDGER EXCHANGE: Share our known peers with the new connection
-                                     let entries = {
-                                         let l = ledger_rx.lock().await;
-                                         l.to_shared_entries()
-                                     };
-                                     if let Err(e) = swarm_handle.share_ledger(peer_id, entries).await {
+                                     // AUTO LEDGER EXCHANGE: Share our known peers with the new
+                                     // connection. The payload is built inside the swarm from
+                                     // `LedgerManager::exchange_response_entries` -- the same
+                                     // function the response path uses -- so there is exactly
+                                     // one disclosure door (re-review NEW-2).
+                                     if let Err(e) = swarm_handle.share_ledger(peer_id).await {
                                          tracing::warn!("Failed to share ledger with {}: {}", peer_id, e);
                                      }
 
@@ -2030,16 +2038,20 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>) -> Result<()> {
                                 }
                             }
 
-                            // IDENTIFY: Peer identity confirmed — update ledger
+                            // IDENTIFY: Peer identity confirmed — update ledger.
+                            // Both this handler and `cmd_relay`'s go through
+                            // `ConnectionLedger::record_identified_peer`, which applies
+                            // `DnsPolicy::Reject` to the remote's advertised addresses.
+                            // They used to be two inline copies of the same loop, and the
+                            // NEW-1 gate landed in only one of them.
                             SwarmEvent::PeerIdentified { peer_id, listen_addrs, .. } => {
-                                let entries = {
+                                {
                                     let mut l = ledger_rx.lock().await;
-                                    for addr in &listen_addrs {
-                                        l.record_connection(&addr.to_string(), &peer_id.to_string());
-                                    }
-                                    l.to_shared_entries()
-                                };
-                                if let Err(e) = swarm_handle.share_ledger(peer_id, entries).await {
+                                    let advertised: Vec<String> =
+                                        listen_addrs.iter().map(|a| a.to_string()).collect();
+                                    l.record_identified_peer(&peer_id.to_string(), &advertised);
+                                }
+                                if let Err(e) = swarm_handle.share_ledger(peer_id).await {
                                     tracing::warn!("Failed to share ledger with identified peer {}: {}", peer_id, e);
                                 }
                             }
@@ -2668,6 +2680,8 @@ async fn cmd_relay(
         ..Default::default()
     };
 
+    // Core handle: see the note on the same call in `cmd_start`. The relay's
+    // ledger-exchange payload now comes from `IronCore::ledger_manager`.
     let swarm_handle = transport::start_swarm_with_config(
         network_keypair,
         Some(listen_multiaddr.clone()),
@@ -2675,7 +2689,7 @@ async fn cmd_relay(
         Some(multiport_config),
         bootstrap_multiaddrs,
         None,
-        None,
+        Some(Arc::downgrade(&core)),
         true,
         Some(discovery_config),
         transport::default_routing_engine_handle(),
@@ -2888,12 +2902,9 @@ async fn cmd_relay(
                             let can_reach = bridge.can_reach_destination(&peer_id);
                             tracing::info!("Registered transport capabilities for {}: {:?}, reachable={}", peer_id, capabilities_clone, can_reach);
 
-                            // Share ledger with new peer
-                            let entries = {
-                                let l = ledger_rx.lock().await;
-                                l.to_shared_entries()
-                            };
-                            if let Err(e) = swarm_handle.share_ledger(peer_id, entries).await {
+                            // Share ledger with new peer. Payload built inside the swarm
+                            // from `exchange_response_entries` (re-review NEW-2).
+                            if let Err(e) = swarm_handle.share_ledger(peer_id).await {
                                 tracing::warn!("Failed to share ledger with {}: {}", peer_id, e);
                             }
 
@@ -2985,23 +2996,14 @@ async fn cmd_relay(
                         }
                     }
                     SwarmEvent::PeerIdentified { peer_id, listen_addrs, .. } => {
+                        // Identical to `cmd_start`'s handler because it IS the same
+                        // function now. The gate lives inside
+                        // `record_identified_peer` / `record_connection`, not here,
+                        // so there is no per-call-site copy left to forget.
                         let mut l = ledger_rx.lock().await;
-                        for addr in &listen_addrs {
-                            let addr_str = addr.to_string();
-                            // `listen_addrs` is whatever the REMOTE chose to
-                            // advertise, but `record_connection` treats what it
-                            // stores as locally verified -- including DNS names,
-                            // which `dialable_addresses` then allows. Gate the
-                            // remote-supplied side here (re-review NEW-1).
-                            if !ledger::is_dialable_multiaddr(
-                                &addr_str,
-                                ledger::NetworkMode::Local,
-                                ledger::DnsPolicy::Reject,
-                            ) {
-                                continue;
-                            }
-                            l.record_connection(&addr_str, &peer_id.to_string());
-                        }
+                        let advertised: Vec<String> =
+                            listen_addrs.iter().map(|a| a.to_string()).collect();
+                        l.record_identified_peer(&peer_id.to_string(), &advertised);
                     }
                     SwarmEvent::TopicDiscovered { peer_id, topic } => {
                         tracing::info!("Topic discovered from {}: {}", peer_id, topic);

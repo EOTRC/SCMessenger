@@ -122,13 +122,29 @@ fn is_discoverable_multiaddr(addr: &Multiaddr) -> bool {
                 has_ip = true;
                 // `::ffff:127.0.0.1` and friends are loopback/link-local wearing
                 // an IPv6 costume; unwrap before judging.
-                if let Some(v4) = ip.to_ipv4() {
-                    if v4.is_loopback()
+                //
+                // SIBLING OF THE addr_filter FIX (re-review round 4): this used
+                // to call `Ipv6Addr::to_ipv4()`, which unwraps `::/96` and
+                // `::ffff:0:0/96` and nothing else, so `64:ff9b::a9fe:a9fe`
+                // (NAT64 for 169.254.169.254), `2002:a9fe:a9fe::` (6to4) and
+                // Teredo all landed in Kademlia as "some global IPv6 address".
+                // `addr_filter::embedded_ipv4` / `teredo_ipv4s` are the single
+                // definition of "what IPv4 does this IPv6 literal really mean".
+                let restricted_v4 = |v4: &std::net::Ipv4Addr| {
+                    v4.is_loopback()
                         || v4.is_unspecified()
                         || v4.is_link_local()
                         || v4.is_multicast()
                         || v4.is_broadcast()
-                    {
+                };
+                if let Some(v4) = crate::transport::addr_filter::embedded_ipv4(&ip) {
+                    if restricted_v4(&v4) {
+                        ip_is_restricted = true;
+                    }
+                } else if let Some((server, client)) =
+                    crate::transport::addr_filter::teredo_ipv4s(&ip)
+                {
+                    if restricted_v4(&server) || restricted_v4(&client) {
                         ip_is_restricted = true;
                     }
                 } else if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
@@ -1610,11 +1626,20 @@ pub enum SwarmCommand {
     },
     /// Get currently subscribed topics
     GetTopics { reply: mpsc::Sender<Vec<String>> },
-    /// Share our ledger with a specific peer
-    ShareLedger {
-        peer_id: PeerId,
-        entries: Vec<SharedPeerEntry>,
-    },
+    /// Open a `/sc/ledger-exchange/1.0.0` exchange with a specific peer.
+    ///
+    /// NO `entries` FIELD, deliberately (choke-point refactor 2026-07-26,
+    /// re-review NEW-2). The caller used to supply the payload, and the CLI
+    /// built it with `ConnectionLedger::to_shared_entries()` -- no cap, no
+    /// `success_count > 0` filter, no address filter, and `known_topics` copied
+    /// verbatim, i.e. the exact opposite of every rule the RESPONSE path
+    /// enforces. Two doors onto the same protocol, one of them unguarded.
+    ///
+    /// The payload is now built inside the handler from
+    /// `LedgerManager::exchange_response_entries`, the same function the
+    /// response arm uses, so both directions of the protocol share one
+    /// predicate and no caller can supply an unfiltered list.
+    ShareLedger { peer_id: PeerId },
     /// Get listening addresses
     GetListeners { reply: mpsc::Sender<Vec<Multiaddr>> },
     /// Update the relay message budget (messages relayed per hour)
@@ -2124,10 +2149,14 @@ impl SwarmHandle {
             .ok_or_else(|| anyhow::anyhow!("No reply from swarm"))
     }
 
-    /// Share our ledger with a specific peer
-    pub async fn share_ledger(&self, peer_id: PeerId, entries: Vec<SharedPeerEntry>) -> Result<()> {
+    /// Open a ledger exchange with a specific peer.
+    ///
+    /// The payload is built by the swarm from `IronCore`'s ledger through
+    /// `exchange_response_entries` -- the caller does not, and cannot, supply
+    /// one. See [`SwarmCommand::ShareLedger`].
+    pub async fn share_ledger(&self, peer_id: PeerId) -> Result<()> {
         self.command_tx
-            .send(SwarmCommand::ShareLedger { peer_id, entries })
+            .send(SwarmCommand::ShareLedger { peer_id })
             .await
             .map_err(|_| anyhow::anyhow!("Swarm task not running"))
     }
@@ -5421,9 +5450,30 @@ pub async fn start_swarm_with_config(
                                 let _ = reply.send(topics).await;
                             }
 
-                            SwarmCommand::ShareLedger { peer_id, entries } => {
-                                // Send our known peer list to the specified peer
+                            SwarmCommand::ShareLedger { peer_id } => {
+                                // Send our known peer list to the specified peer.
+                                //
+                                // ONE DISCLOSURE DOOR (re-review NEW-2). The payload is
+                                // built here, from the SAME function the response arm
+                                // uses, rather than being handed in by the application
+                                // layer. The CLI used to supply it via
+                                // `ConnectionLedger::to_shared_entries()`, which had no
+                                // cap, no proven-peer filter, no address filter and
+                                // copied `known_topics` verbatim -- the field the
+                                // response path deliberately blanks. A request is just
+                                // as much a disclosure as a response.
                                 if !ledger_exchanged_peers.contains(&peer_id) {
+                                    let entries: Vec<SharedPeerEntry> = core_handle
+                                        .as_ref()
+                                        .and_then(|w| w.upgrade())
+                                        .map(|core| {
+                                            core.ledger_manager.exchange_response_entries(
+                                                LEDGER_EXCHANGE_MAX_RESPONSE_PEERS,
+                                                &peer_id.to_string(),
+                                            )
+                                        })
+                                        .unwrap_or_default();
+
                                     tracing::info!(
                                         "Sharing ledger with {} ({} entries)",
                                         peer_id,
@@ -5914,8 +5964,20 @@ pub async fn start_swarm_with_config(
                                 let topics: Vec<String> = subscribed_topics.iter().cloned().collect();
                                 let _ = reply.send(topics).await;
                             }
-                            SwarmCommand::ShareLedger { peer_id, entries } => {
+                            SwarmCommand::ShareLedger { peer_id } => {
+                                // Same single disclosure door as the native arm
+                                // (re-review NEW-2): the payload is built here, never
+                                // supplied by the caller.
+                                //
+                                // On wasm32 that payload is unconditionally EMPTY, and
+                                // that is the correct answer rather than a gap:
+                                // `IronCore::ledger_manager` is `cfg(not(wasm32))`, so a
+                                // browser node has no ledger to disclose, and the wasm
+                                // RESPONSE arm below already replies empty for the same
+                                // reason. A browser node still LEARNS from the peers it
+                                // asks, which is what the request is for.
                                 if !ledger_exchanged_peers.contains(&peer_id) {
+                                    let entries: Vec<SharedPeerEntry> = Vec::new();
                                     let request = LedgerExchangeRequest {
                                         version_tag: 1,
                                         peers: entries,

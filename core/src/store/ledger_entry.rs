@@ -1,5 +1,6 @@
 use crate::transport::addr_filter::{
-    is_dialable_multiaddr, is_disclosable_multiaddr, DnsPolicy, NetworkMode,
+    is_dialable_multiaddr, is_disclosable_multiaddr, is_recordable_multiaddr, DnsPolicy,
+    NetworkMode,
 };
 use libp2p::Multiaddr;
 use parking_lot::Mutex;
@@ -174,7 +175,50 @@ impl LedgerManager {
         self.save_with_entries(&entries)
     }
 
+    /// Record that we reached `peer_id` at `multiaddr`.
+    ///
+    /// INGESTION CHOKE POINT (re-review round 4, F3/NEW-1). The address gate
+    /// used to live in the CALLERS, which is how `cli/src/main.rs` ended up with
+    /// the DNS gate in `cmd_relay`'s `PeerIdentified` handler and not in
+    /// `cmd_start`'s byte-identical one. The gate now lives here, so no caller
+    /// can record an unvalidated address at all.
+    ///
+    /// TWO RULES, both unconditional, with NO parameter a call site can turn the
+    /// wrong way -- deliberately stronger than "make the policy a required
+    /// argument", because a required argument is still something a future call
+    /// site can get wrong:
+    ///
+    /// 1. **No DNS forms.** A `/dns4/...` entry resolves to whatever its zone
+    ///    owner says at dial time and is re-pointable between probes, so a
+    ///    stored name is an SSRF primitive with an indefinite lifetime. Every
+    ///    caller of this method is recording an address that came off a live
+    ///    socket (`swarm.rs` passes the resolved `remote_addr` of an established
+    ///    OUTBOUND connection; the UniFFI surface is called from a platform
+    ///    client after its own connection succeeded), and a connected socket's
+    ///    address is an IP literal by construction. There is therefore no
+    ///    legitimate DNS provenance for this entry point and no reason to offer
+    ///    one. Operator-configured names reach the swarm through
+    ///    `bootstrap_addrs`, not through the ledger.
+    /// 2. **A transport component is required.** `"".parse::<Multiaddr>()`
+    ///    returns `Ok(<empty>)` (review F9), so "it parsed" proves nothing; an
+    ///    empty or peer-id-only record would be stored and later gossiped.
+    ///
+    /// NOT REJECTED HERE, deliberately: loopback and RFC1918. This method's
+    /// meaning is "we actually reached this address", and an address we just
+    /// used demonstrably works for us. The routability filter belongs at the
+    /// RE-DIAL and DISCLOSURE boundaries -- `build_seed_dial_candidates`,
+    /// [`Self::exchange_response_entries`] and [`Self::export_seed_entries`] --
+    /// which is where a LAN neighbour stops being useful and starts being
+    /// reconnaissance. Rejecting them here would also make
+    /// `lan_only_node_discloses_nothing_to_a_stranger` vacuous.
     pub fn record_connection(&self, multiaddr: String, peer_id: String) {
+        if !is_recordable_multiaddr(&multiaddr) {
+            tracing::debug!(
+                "Refusing to record a connection against a DNS-form or transport-less                  multiaddr: {}",
+                multiaddr
+            );
+            return;
+        }
         let mut entries = self.entries.lock();
         let target_port = get_multiaddr_port(&multiaddr);
         let mut found_dns_idx = None;
@@ -219,6 +263,19 @@ impl LedgerManager {
         let _ = self.save_with_entries(&entries);
     }
 
+    /// Attach the identity learned from Identify to a ledger entry.
+    ///
+    /// SIBLING OF [`Self::record_connection`] (re-review round 4). This is the
+    /// OTHER function that can create a `LedgerEntry` from an address, and it is
+    /// the wire-driven one (`mobile_bridge.rs` calls it with raw
+    /// `/sc/ledger-exchange/1.0.0` data). Gating `record_connection` and leaving
+    /// this open would be exactly the partial application the choke-point
+    /// refactor exists to stop, so it runs the same ingestion predicate.
+    ///
+    /// Entries created here keep `success_count = 0`, so they remain in the
+    /// unproven seed tier and are never disclosed by
+    /// [`Self::exchange_response_entries`]; the ingestion gate is defence in
+    /// depth on top of that, not a replacement for it.
     pub fn annotate_identity(
         &self,
         multiaddr: String,
@@ -226,6 +283,13 @@ impl LedgerManager {
         public_key: Option<String>,
         nickname: Option<String>,
     ) {
+        if !is_recordable_multiaddr(&multiaddr) {
+            tracing::debug!(
+                "Refusing to annotate a DNS-form or transport-less multiaddr: {}",
+                multiaddr
+            );
+            return;
+        }
         let normalized_public_key = public_key.and_then(|value| {
             let trimmed = value.trim().to_string();
             if trimmed.is_empty() {
@@ -1172,6 +1236,99 @@ mod tests {
             "a DNS seed was imported; its owner can re-point it at 169.254.169.254"
         );
         assert!(mgr.seed_addresses(64).is_empty());
+    }
+
+    // ------------------------------------------------------------------
+    // Round 4 -- the INGESTION choke point
+    // ------------------------------------------------------------------
+
+    /// F3/NEW-1, core half. The gate used to live in the callers, so a caller
+    /// that forgot -- and `cli/src/main.rs:2034` did forget -- put a name into
+    /// the ledger that later became a dial target chosen by its zone owner.
+    ///
+    /// `record_connection` is the only writer that produces `success_count > 0`,
+    /// i.e. the only writer whose entries `exchange_response_entries`,
+    /// `get_preferred_relays` and the seed-dial proven tier will use, so this is
+    /// the door that has to be shut.
+    #[test]
+    fn record_connection_refuses_dns_forms_from_any_caller() {
+        let (_dir, mgr) = manager();
+        for addr in [
+            "/dns4/evil.example/tcp/80",
+            "/dns6/evil.example/tcp/80",
+            "/dns/evil.example/tcp/80",
+            "/dnsaddr/evil.example",
+            "/dns4/evil.example/tcp/443/p2p-circuit",
+            "/dns4/nas.corp.internal/tcp/443",
+        ] {
+            mgr.record_connection(addr.to_string(), peer());
+        }
+        assert!(
+            mgr.dialable_addresses().is_empty(),
+            "a DNS name was recorded as a PROVEN address: {:?}",
+            mgr.dialable_addresses()
+                .iter()
+                .map(|e| e.multiaddr.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(mgr.get_preferred_relays(64).is_empty());
+        assert!(mgr.export_seed_entries(64).is_empty());
+        assert!(mgr.exchange_response_entries(64, "someone").is_empty());
+    }
+
+    /// F9 at the ingestion boundary: `"".parse::<Multiaddr>()` is `Ok(<empty>)`,
+    /// so "it parsed" is not evidence of anything.
+    #[test]
+    fn record_connection_refuses_addresses_with_no_transport_component() {
+        let (_dir, mgr) = manager();
+        for addr in ["", "/p2p-circuit", "not-a-multiaddr"] {
+            mgr.record_connection(addr.to_string(), peer());
+        }
+        mgr.record_connection(format!("/p2p/{}", peer()), peer());
+        assert!(mgr.dialable_addresses().is_empty());
+    }
+
+    /// The gate must not become a routability filter: this method's meaning is
+    /// "we actually reached this address", and the loopback/LAN evidence is what
+    /// the DISCLOSURE gates are then tested against. If this ever starts
+    /// rejecting RFC1918, `lan_only_node_discloses_nothing_to_a_stranger`
+    /// becomes vacuous.
+    #[test]
+    fn record_connection_still_records_loopback_and_lan() {
+        let (_dir, mgr) = manager();
+        for addr in [
+            "/ip4/127.0.0.1/tcp/8080",
+            "/ip4/192.168.7.7/tcp/9001",
+            "/ip4/10.1.2.3/tcp/9001",
+            "/ip6/::1/tcp/8080",
+        ] {
+            mgr.record_connection(addr.to_string(), peer());
+        }
+        assert_eq!(mgr.dialable_addresses().len(), 4);
+        // ...and none of them is disclosable.
+        assert!(mgr.exchange_response_entries(64, "someone").is_empty());
+    }
+
+    /// `annotate_identity` is the SIBLING writer -- the wire-driven one. Gating
+    /// `record_connection` and leaving this open is exactly the partial
+    /// application the choke-point refactor exists to stop.
+    #[test]
+    fn annotate_identity_refuses_dns_forms_too() {
+        let (_dir, mgr) = manager();
+        let pid = peer();
+        mgr.annotate_identity(
+            "/dns4/evil.example/tcp/80".to_string(),
+            pid.clone(),
+            None,
+            None,
+        );
+        assert!(
+            mgr.seed_addresses(64).is_empty(),
+            "a DNS name entered the ledger through annotate_identity"
+        );
+        // The IP form still works, so this is a filter and not an outage.
+        mgr.annotate_identity("/ip4/198.51.100.8/tcp/9001".to_string(), pid, None, None);
+        assert_eq!(mgr.seed_addresses(64).len(), 1);
     }
 
     // ------------------------------------------------------------------

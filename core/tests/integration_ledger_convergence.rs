@@ -10,13 +10,20 @@
 
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
-use scmessenger_core::store::ledger_entry::{LedgerManager, SharedPeerEntry};
 use scmessenger_core::transport::swarm::{start_swarm, SwarmEvent2, SwarmHandle};
+use scmessenger_core::IronCore;
 use std::sync::Arc;
 use std::time::Duration;
-use tempfile::NamedTempFile;
+use tempfile::TempDir;
 use tokio::sync::mpsc;
 
+/// CHOKE-POINT REFACTOR (2026-07-26): this test used to hand `share_ledger` a
+/// payload it built itself, and started both swarms with `core_handle: None`.
+/// `SwarmCommand::ShareLedger` no longer accepts a payload -- both directions of
+/// `/sc/ledger-exchange/1.0.0` now build from
+/// `LedgerManager::exchange_response_entries`, so the ledger has to be reachable
+/// through `IronCore` for the node to have anything to say. That is the
+/// production wiring, so the test now matches it.
 #[tokio::test]
 #[ignore = "requires real networking; run with --include-ignored"]
 async fn test_ledger_convergence_between_nodes() {
@@ -24,6 +31,15 @@ async fn test_ledger_convergence_between_nodes() {
         .with_env_filter("debug")
         .try_init()
         .ok();
+
+    let dir1 = TempDir::new().expect("tempdir 1");
+    let dir2 = TempDir::new().expect("tempdir 2");
+    let core1 = Arc::new(IronCore::with_storage(
+        dir1.path().to_string_lossy().to_string(),
+    ));
+    let core2 = Arc::new(IronCore::with_storage(
+        dir2.path().to_string_lossy().to_string(),
+    ));
 
     let keypair1 = Keypair::generate_ed25519();
     let peer_id1 = libp2p::PeerId::from(keypair1.public());
@@ -37,7 +53,7 @@ async fn test_ledger_convergence_between_nodes() {
         keypair1,
         None,
         event_tx1,
-        None,
+        Some(Arc::downgrade(&core1)),
         false,
         None,
         scmessenger_core::transport::default_routing_engine_handle(),
@@ -85,7 +101,7 @@ async fn test_ledger_convergence_between_nodes() {
         keypair2,
         None,
         event_tx2,
-        None,
+        Some(Arc::downgrade(&core2)),
         false,
         None,
         scmessenger_core::transport::default_routing_engine_handle(),
@@ -95,31 +111,24 @@ async fn test_ledger_convergence_between_nodes() {
 
     tokio::time::sleep(Duration::from_millis(1500)).await;
 
-    // LedgerManager derives uniffi::Object, not Clone - Arc-wrap so both the
-    // spawned event-loop task and this function's final assertion can share it.
-    let ledger_file1 = NamedTempFile::new().expect("Failed to create temp file for ledger1");
-    let ledger_file2 = NamedTempFile::new().expect("Failed to create temp file for ledger2");
-    let ledger1 = Arc::new(LedgerManager::new(
-        ledger_file1.path().to_str().unwrap().to_string(),
-    ));
-    let ledger2 = Arc::new(LedgerManager::new(
-        ledger_file2.path().to_str().unwrap().to_string(),
-    ));
-
     // Seed node 1's ledger with an entry node 2 never learns any other way.
-    ledger1.record_connection(
+    // It has to be globally routable: the exchange payload is now built by
+    // `exchange_response_entries`, which will not disclose anything else.
+    core1.ledger_manager.record_connection(
         "/ip4/1.2.3.4/tcp/9000".to_string(),
         "QmFakePeerXYZ".to_string(),
     );
 
     // Node 2's event loop: record whatever ledger entries it receives.
-    let ledger2_for_task = ledger2.clone();
+    let core2_for_task = core2.clone();
     tokio::spawn(async move {
         while let Some(event) = event_rx2.recv().await {
             if let SwarmEvent2::LedgerReceived { entries, .. } = event {
                 for entry in entries {
                     if let Some(peer_id) = entry.last_peer_id {
-                        ledger2_for_task.record_connection(entry.multiaddr, peer_id);
+                        core2_for_task
+                            .ledger_manager
+                            .record_connection(entry.multiaddr, peer_id);
                     }
                 }
             }
@@ -136,26 +145,17 @@ async fn test_ledger_convergence_between_nodes() {
     // Wait for connection handshake and protocols to negotiate
     tokio::time::sleep(Duration::from_millis(1000)).await;
 
-    // Trigger the ledger share directly from Node 1 to Node 2 now that they are connected
-    let entries = ledger1.dialable_addresses();
-    let shared_entries: Vec<SharedPeerEntry> = entries
-        .into_iter()
-        .map(|entry| SharedPeerEntry {
-            multiaddr: entry.multiaddr,
-            last_peer_id: entry.peer_id,
-            last_seen: entry.last_seen.unwrap_or(0),
-            known_topics: entry.topics,
-        })
-        .collect();
+    // Trigger the ledger share directly from Node 1 to Node 2 now that they are
+    // connected. The payload comes from core1's ledger, inside the swarm.
     swarm1
-        .share_ledger(peer_id2, shared_entries)
+        .share_ledger(peer_id2)
         .await
         .expect("Failed to share ledger");
 
     // Let the test wait for 3 seconds so the ledger is received on Node 2
     tokio::time::sleep(Duration::from_secs(3)).await;
 
-    let dialable_addresses = ledger2.dialable_addresses();
+    let dialable_addresses = core2.ledger_manager.dialable_addresses();
     let has_converged_entry = dialable_addresses
         .iter()
         .any(|entry| entry.multiaddr == "/ip4/1.2.3.4/tcp/9000");
@@ -304,23 +304,23 @@ async fn test_ledger_exchange_response_is_reciprocated_from_core() {
 
     // ONLY node 2 initiates. Node 1's application layer never calls
     // share_ledger -- the swarm must answer out of core1's ledger by itself.
-    let outbound: Vec<SharedPeerEntry> = core2
+    //
+    // Node 2's REQUEST payload is likewise built inside the swarm from
+    // `exchange_response_entries`, so this also asserts that the request door
+    // and the response door are the same door (re-review NEW-2).
+    let outbound = core2
         .ledger_manager
-        .dialable_addresses()
-        .into_iter()
-        .map(|entry| SharedPeerEntry {
-            multiaddr: entry.multiaddr,
-            last_peer_id: entry.peer_id,
-            last_seen: entry.last_seen.unwrap_or(0) / 1000,
-            known_topics: entry.topics,
-        })
-        .collect();
+        .exchange_response_entries(64, &peer_id1.to_string());
     assert!(
         outbound.iter().any(|e| e.multiaddr == NODE2_ONLY_ADDR),
-        "node 2 should be offering its own seeded entry"
+        "node 2 should be offering its own seeded entry; got {:?}",
+        outbound
+            .iter()
+            .map(|e| e.multiaddr.as_str())
+            .collect::<Vec<_>>()
     );
     swarm2
-        .share_ledger(peer_id1, outbound)
+        .share_ledger(peer_id1)
         .await
         .expect("Failed to share ledger");
 

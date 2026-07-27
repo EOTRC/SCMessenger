@@ -309,7 +309,7 @@ async fn ledger_exchange_response_is_capped_topic_free_and_address_filtered() {
 
     // Node 2 initiates; node 1's application layer never calls share_ledger.
     swarm2
-        .share_ledger(peer_id1, Vec::new())
+        .share_ledger(peer_id1)
         .await
         .expect("Failed to share ledger");
 
@@ -400,6 +400,121 @@ fn dns_addresses_from_remote_peers_are_refused_everywhere() {
     );
 }
 
+/// F3/NEW-1 at the INGESTION choke point, through `IronCore`.
+///
+/// `dns_addresses_from_remote_peers_are_refused_everywhere` above covers the
+/// invite path. This covers the other writer, and the one that produces PROVEN
+/// entries: `record_connection`. The gate used to live in the callers, which is
+/// how `cli/src/main.rs:2034` ended up without it while `:2996` had it.
+#[test]
+fn dns_addresses_cannot_be_recorded_as_proven_connections() {
+    let dir = TempDir::new().expect("tempdir");
+    let core = IronCore::with_storage(dir.path().to_string_lossy().to_string());
+
+    for addr in [
+        "/dns4/evil.example/tcp/80",
+        "/dns6/evil.example/tcp/80",
+        "/dns/evil.example/tcp/80",
+        "/dnsaddr/evil.example",
+        "/dns4/evil.example/tcp/443/p2p-circuit",
+    ] {
+        core.ledger_manager
+            .record_connection(addr.to_string(), libp2p::PeerId::random().to_string());
+        core.ledger_manager.annotate_identity(
+            addr.to_string(),
+            libp2p::PeerId::random().to_string(),
+            None,
+            None,
+        );
+    }
+
+    assert!(
+        core.ledger_manager.dialable_addresses().is_empty(),
+        "a DNS name became a PROVEN ledger entry: {:?}",
+        core.ledger_manager
+            .dialable_addresses()
+            .iter()
+            .map(|e| e.multiaddr.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(core.ledger_manager.seed_addresses(64).is_empty());
+    assert!(core.ledger_manager.get_preferred_relays(64).is_empty());
+    assert!(core.ledger_manager.export_seed_entries(64).is_empty());
+    assert!(core
+        .ledger_manager
+        .exchange_response_entries(64, "stranger")
+        .is_empty());
+
+    // A real address still works, so this is a gate and not an outage.
+    core.ledger_manager.record_connection(
+        "/ip4/198.51.100.4/tcp/9001".to_string(),
+        libp2p::PeerId::random().to_string(),
+    );
+    assert_eq!(core.ledger_manager.dialable_addresses().len(), 1);
+}
+
+/// NEW-2, the REQUEST half. `SwarmCommand::ShareLedger` no longer carries a
+/// payload; both directions of `/sc/ledger-exchange/1.0.0` build from
+/// `exchange_response_entries`. This asserts the property that makes the two
+/// doors equivalent: whatever the node would SEND is exactly what it would
+/// REPLY, filtered identically, for the same requester.
+///
+/// The CLI's deleted `to_shared_entries()` had none of these filters -- no cap,
+/// no `success_count > 0`, no address filter, and it copied `known_topics`
+/// verbatim -- and it fired on every peer connection from three sites.
+#[test]
+fn the_exchange_request_and_response_payloads_are_the_same_function() {
+    let dir = TempDir::new().expect("tempdir");
+    let core = IronCore::with_storage(dir.path().to_string_lossy().to_string());
+
+    // A ledger with everything the old request path would have disclosed.
+    for addr in [
+        "/ip4/192.168.1.20/tcp/9001",
+        "/ip4/10.0.2.16/tcp/9001",
+        "/ip4/100.64.7.7/tcp/9001",
+        "/ip4/127.0.0.1/tcp/8080",
+        "/ip4/169.254.169.254/tcp/80",
+    ] {
+        core.ledger_manager
+            .record_connection(addr.to_string(), libp2p::PeerId::random().to_string());
+    }
+    // Unproven, wire-learned entries: never disclosable in either direction.
+    core.ledger_manager.import_seed_entries(vec![
+        scmessenger_core::store::ledger_entry::SeedLedgerEntry {
+            multiaddr: "/ip4/203.0.113.44/tcp/9001".to_string(),
+        },
+    ]);
+    // 100 proven, routable peers, more than the 64 cap.
+    for i in 0..100u32 {
+        core.ledger_manager.record_connection(
+            format!("/ip4/198.51.{}.{}/tcp/9001", i / 256, i % 256),
+            libp2p::PeerId::random().to_string(),
+        );
+    }
+
+    let requester = "12D3KooWSHj3RRbBjD15g6wekV8y3mm57Pobmps2g2WJm6F67Lay";
+    let payload = core.ledger_manager.exchange_response_entries(64, requester);
+
+    assert_eq!(payload.len(), 64, "the shared cap was not applied");
+    assert!(
+        payload.iter().all(|e| e.known_topics.is_empty()),
+        "known_topics leaked into the exchange payload"
+    );
+    for needle in [
+        "192.168.",
+        "/ip4/10.",
+        "100.64.",
+        "127.0.0.1",
+        "169.254.",
+        "203.0.113.44",
+    ] {
+        assert!(
+            !payload.iter().any(|e| e.multiaddr.contains(needle)),
+            "{needle} would be sent to a peer we merely handshaked with"
+        );
+    }
+}
+
 /// NEW-2, end to end without networking: a node whose entire proven ledger is
 /// LAN neighbours must answer a ledger exchange with nothing, and must not bake
 /// those neighbours into an invite either (NEW-7).
@@ -448,6 +563,13 @@ fn lan_only_node_discloses_nothing_to_a_stranger() {
 ///
 /// Observed at the receiver's application boundary, which is the only externally
 /// visible edge of that loop.
+///
+/// SPOKEN BY THE HOSTILE PEER, NOT BY A `SwarmHandle` (choke-point refactor
+/// 2026-07-26). This used to call `swarm2.share_ledger(peer_id1, flood)` with a
+/// 4000-entry payload of its own construction. `SwarmCommand::ShareLedger` no
+/// longer accepts a payload -- that was the second, unfiltered disclosure door
+/// (re-review NEW-2) -- so an oversized request can only come from something
+/// that speaks the protocol directly, which is what an attacker is anyway.
 #[tokio::test]
 #[ignore = "requires real networking; run with --include-ignored"]
 async fn oversized_ledger_exchange_request_is_capped_before_processing() {
@@ -455,20 +577,14 @@ async fn oversized_ledger_exchange_request_is_capped_before_processing() {
     const CAP: usize = 64;
 
     let dir1 = TempDir::new().expect("tempdir 1");
-    let dir2 = TempDir::new().expect("tempdir 2");
     let core1 = Arc::new(IronCore::with_storage(
         dir1.path().to_string_lossy().to_string(),
-    ));
-    let core2 = Arc::new(IronCore::with_storage(
-        dir2.path().to_string_lossy().to_string(),
     ));
 
     let keypair1 = Keypair::generate_ed25519();
     let peer_id1 = libp2p::PeerId::from(keypair1.public());
-    let keypair2 = Keypair::generate_ed25519();
 
     let (event_tx1, mut event_rx1) = mpsc::channel(256);
-    let (event_tx2, mut event_rx2) = mpsc::channel(256);
 
     let swarm1: SwarmHandle = start_swarm(
         keypair1,
@@ -484,18 +600,6 @@ async fn oversized_ledger_exchange_request_is_capped_before_processing() {
 
     let node1_addr = first_loopback_tcp(&mut event_rx1).await;
 
-    let swarm2: SwarmHandle = start_swarm(
-        keypair2,
-        None,
-        event_tx2,
-        Some(Arc::downgrade(&core2)),
-        false,
-        None,
-        scmessenger_core::transport::default_routing_engine_handle(),
-    )
-    .await
-    .expect("Failed to start swarm2");
-
     // Node 1 is the receiver under test: record the size of every batch its
     // application layer is handed.
     let batches: Arc<parking_lot::Mutex<Vec<usize>>> =
@@ -508,36 +612,12 @@ async fn oversized_ledger_exchange_request_is_capped_before_processing() {
             }
         }
     });
-    tokio::spawn(async move { while event_rx2.recv().await.is_some() {} });
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
     let mut dial_addr = node1_addr.clone();
     dial_addr.push(libp2p::multiaddr::Protocol::P2p(peer_id1));
-    dial_or_already_connected(&swarm2, dial_addr).await;
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    hostile::flood_ledger_exchange(dial_addr, peer_id1, 1, OFFERED).await;
 
-    let flood: Vec<SharedPeerEntry> = (0..OFFERED)
-        .map(|i| SharedPeerEntry {
-            multiaddr: format!("/ip4/198.51.{}.{}/tcp/9001", (i / 256) % 256, i % 256),
-            last_peer_id: Some(libp2p::PeerId::random().to_string()),
-            last_seen: 1_700_000_000,
-            known_topics: vec!["sc-attacker-topic".to_string()],
-        })
-        .collect();
-    swarm2
-        .share_ledger(peer_id1, flood)
-        .await
-        .expect("Failed to share ledger");
-
-    let mut seen: Vec<usize> = Vec::new();
-    for _ in 0..40 {
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        seen = batches.lock().clone();
-        if !seen.is_empty() {
-            break;
-        }
-    }
-
+    let seen = batches.lock().clone();
     assert!(
         !seen.is_empty(),
         "node 1 never received the ledger-exchange request at all"
@@ -548,7 +628,6 @@ async fn oversized_ledger_exchange_request_is_capped_before_processing() {
     );
 
     let _ = swarm1.shutdown().await;
-    let _ = swarm2.shutdown().await;
 }
 
 /// NEW-5, ordering half: the token bucket must gate the WORK, not just the
