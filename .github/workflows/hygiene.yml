@@ -218,6 +218,27 @@ jobs:
           fi
           echo "[OK] Root directory layout rules satisfied"
 
+      - name: Check tracked file sizes (2 MB limit)
+        run: |
+          echo "Checking for oversized tracked files (2 MB limit)..."
+
+          # Find all tracked files exceeding 2 MB (2097152 bytes)
+          # Exclude: .lock files (Cargo.lock, etc), generated bindings, and xcframework headers
+          oversized=$(git ls-files -z | xargs -0 du -b 2>/dev/null | \
+            awk -v limit=2097152 '$1 > limit {print $0}' | \
+            grep -v -E '(Cargo.lock|\.lock$|Generated/|xcframework)' || true)
+
+          if [ -n "$oversized" ]; then
+            echo "[WARNING] WARNING: Tracked files exceed 2 MB threshold:"
+            echo "$oversized"
+            echo ""
+            echo "If these are essential (documentation, source, or generated bindings),"
+            echo "add a documented exclusion above. Otherwise, regenerate or remove."
+            # Don't fail; warn only for now
+          else
+            echo "[OK] No oversized tracked files detected"
+          fi
+
       - name: Summary
         if: always()
         run: |

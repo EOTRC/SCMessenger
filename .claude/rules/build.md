@@ -14,6 +14,25 @@ Scoped to what changed, before finalizing any run (prefer the `build-verify` ski
 Compile gate: `cargo test --workspace --no-run` must pass before any task is
 considered complete.
 
+## Disk Space Preflight (Windows & macOS)
+
+Before running a full gate sweep, verify free disk space via `scripts/preflight_disk.sh`
+(or `.ps1` on Windows). This check is not CI-enforced but is mandatory for local and
+agent-driven builds to prevent OOM/disk-full crashes.
+
+**Constraint:** A full five-gate sweep (fmt, clippy default, clippy --all-features,
+`cargo test --workspace --no-run`, wasm release) regrows `target/` to ~40-47 GB.
+Measured evidence: three consecutive runs today reclaimed 42.7 GB, 35.7 GB, and 47.2 GB.
+Threshold: 25 GB minimum free space.
+
+**Critical traps:**
+1. `cargo clean --target <triple>` does NOT scope to a single target — it wipes ALL
+   of `target/`. Verified today: intended to reclaim ~4 GB, deleted 44.7 GB.
+2. `cargo clean` also destroys `core/target/generated-sources/`, which
+   `scripts/ffi_surface.sh` silently depends on. After any `cargo clean`, regenerate
+   bindings (`gen_swift`, `gen_kotlin`) and verify the files exist before running
+   `ffi_surface.sh --update`.
+
 ## Docs Sync
 
 Run `./scripts/docs_sync_check.sh` (or the `.ps1`) after any documentation
