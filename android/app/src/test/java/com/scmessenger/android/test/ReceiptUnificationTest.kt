@@ -318,6 +318,55 @@ class ReceiptUnificationTest {
         cancelRepoScope(repo)
     }
 
+    @Test
+    fun `receipt arrival overrides high attempt count and clears corruption`() = runTest {
+        val filesDir = freshFilesDir()
+        val repo = MeshRepository(fakeContext(filesDir))
+
+        val ironCore = mockk<IronCore>(relaxed = true)
+        val meshService = mockk<MeshService>(relaxed = true) {
+            every { getState() } returns ServiceState.STOPPED
+            every { getCore() } returns ironCore
+        }
+        setField(repo, "meshService", meshService)
+        repo.startMeshService(MeshServiceConfig(discoveryIntervalMs = 30000u, batteryFloorPct = 20u))
+
+        val coreDelegate = getField<CoreDelegate>(repo, "coreDelegate")
+        assertNotNull(coreDelegate)
+
+        val sentRecord = MessageRecord(
+            id = "msg-corrupt-test",
+            direction = MessageDirection.SENT,
+            peerId = "peer-1",
+            content = "hello",
+            timestamp = 1uL,
+            senderTimestamp = 1uL,
+            delivered = false,
+            status = MessageStatus.SENT,
+            hidden = false
+        )
+
+        val historyManager = mockk<HistoryManager>(relaxed = true)
+        every { historyManager.get("msg-corrupt-test") } returns sentRecord
+        setField(repo, "historyManager", historyManager)
+
+        // Simulate 12 retries marking message corrupted
+        repo.incrementAttemptCount("msg-corrupt-test")
+        repo.markMessageCorrupted("msg-corrupt-test")
+
+        // Inbound receipt arrives late
+        coreDelegate!!.onReceiptReceived("msg-corrupt-test", "Delivered")
+
+        // Verify history marked delivered
+        coVerify(exactly = 1) { historyManager.markDelivered("msg-corrupt-test") }
+
+        // Attempting to corrupt again must be blocked by the no-downgrade rule
+        repo.markMessageCorrupted("msg-corrupt-test")
+
+        cancelRepoScope(repo)
+    }
+
+
     // =========================================================================
     // TEST D: Send Path - encodeReceipt and transport integration
     // =========================================================================

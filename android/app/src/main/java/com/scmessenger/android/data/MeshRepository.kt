@@ -692,10 +692,10 @@ open class MeshRepository(
      */
     fun markMessageCorrupted(messageId: String) {
         val tracking = messageTrackingCache[messageId] ?: return
-        // P3: No-downgrade rule - log if attempting to corrupt an acked message
-        if (tracking.ackedCount > 0) {
-            Timber.e("NO-DOWNGRADE VIOLATION: Attempted to mark transport-acked message $messageId as corrupted (ackedCount=${tracking.ackedCount}). Skipping corruption flag.")
-            Timber.d("Message $messageId state: acked=${ tracking.ackedCount}, attempts=${tracking.attemptCount}")
+        // P3: No-downgrade rule - log if attempting to corrupt an acked or delivered message
+        if (tracking.ackedCount > 0 || tracking.deliveryStatus == DeliveryStatus.DELIVERED || isMessageDeliveredLocally(messageId)) {
+            Timber.e("NO-DOWNGRADE VIOLATION: Attempted to mark transport-acked or delivered message $messageId as corrupted (ackedCount=${tracking.ackedCount}, status=${tracking.deliveryStatus}). Skipping corruption flag.")
+            Timber.d("Message $messageId state: acked=${tracking.ackedCount}, attempts=${tracking.attemptCount}")
             return  // Prevent downgrade
         }
         tracking.markCorrupted()
@@ -2169,6 +2169,9 @@ open class MeshRepository(
                         )
                         return
                     }
+
+                    // Receipt arrival is authoritative over tracking state / retry counter
+                    getMessageIdTracking(messageId).recordSuccess()
                     // [VERBOSE] Step 1: Look up message in history
                     val existingRecord = try {
                         val rec = historyManager?.get(messageId)
