@@ -63,17 +63,19 @@ RUN sdkmanager --update && \
 
 ENV ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125
 
-# Pre-fetch Robolectric android-all dependency jars into Docker image layer
-ENV ROBOLECTRIC_DEPENDENCY_DIR=/opt/robolectric-jars
-ENV ROBOLECTRIC_OFFLINE=true
-
-RUN mkdir -p $ROBOLECTRIC_DEPENDENCY_DIR && \
-    wget -q -P $ROBOLECTRIC_DEPENDENCY_DIR https://repo1.maven.org/maven2/org/robolectric/android-all-instrumented/14-robolectric-10818580-i4/android-all-instrumented-14-robolectric-10818580-i4.jar && \
-    wget -q -P $ROBOLECTRIC_DEPENDENCY_DIR https://repo1.maven.org/maven2/org/robolectric/android-all/14-robolectric-10818580/android-all-14-robolectric-10818580.jar && \
-    wget -q -P $ROBOLECTRIC_DEPENDENCY_DIR https://repo1.maven.org/maven2/org/robolectric/android-all-instrumented/13-robolectric-9080064-i4/android-all-instrumented-13-robolectric-9080064-i4.jar && \
-    wget -q -P $ROBOLECTRIC_DEPENDENCY_DIR https://repo1.maven.org/maven2/org/robolectric/android-all/13-robolectric-9080064/android-all-13-robolectric-9080064.jar && \
-    wget -q -P $ROBOLECTRIC_DEPENDENCY_DIR https://repo1.maven.org/maven2/org/robolectric/android-all-instrumented/12.1-robolectric-8228860-i4/android-all-instrumented-12.1-robolectric-8228860-i4.jar && \
-    wget -q -P $ROBOLECTRIC_DEPENDENCY_DIR https://repo1.maven.org/maven2/org/robolectric/android-all/12.1-robolectric-8228860/android-all-12.1-robolectric-8228860.jar
+# NOTE: an earlier revision pre-fetched Robolectric android-all jars here. That
+# was removed because it was wrong twice over:
+#   1. All six pinned jar URLs 404'd, so the image build itself failed (wget
+#      exit 8). The version strings were fabricated, not looked up.
+#   2. Nothing in the project uses Robolectric. All 23 files under
+#      android/app/src/test are plain JUnit -- zero @RunWith, zero @Config, zero
+#      references to Robolectric. Robolectric never downloads android-all jars
+#      unless RobolectricTestRunner actually runs, so it cannot have been the
+#      cause of the :app:testDebugUnitTest hang.
+# The unused org.robolectric dependency has been dropped from
+# android/app/build.gradle. The real cause of the hang is still UNKNOWN; see the
+# testLogging block there, which prints each test as it starts so the last line
+# before the timeout identifies the culprit.
 
 # Set working directory
 WORKDIR /workspace
@@ -85,4 +87,4 @@ COPY . .
 ENV RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384"
 
 # Default command runs Android unit tests
-CMD ["bash", "-c", "cd android && ./gradlew test -Drobolectric.dependency.dir=/opt/robolectric-jars -Drobolectric.offline=true --info"]
+CMD ["bash", "-c", "cd android && ./gradlew test --no-daemon --info"]

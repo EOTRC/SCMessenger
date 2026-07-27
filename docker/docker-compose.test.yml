@@ -140,8 +140,6 @@ services:
       - ANDROID_HOME=/opt/android-sdk
       - ANDROID_NDK_HOME=/opt/android-sdk/ndk/26.1.10909125
       - RUSTFLAGS=-C link-arg=-Wl,-z,max-page-size=16384
-      - ROBOLECTRIC_DEPENDENCY_DIR=/opt/robolectric-jars
-      - ROBOLECTRIC_OFFLINE=true
     command: |
       bash -c "
         echo '=== Building Native Library for Host (Linux) ===' &&
@@ -151,7 +149,7 @@ services:
         mkdir -p core/target/android-libs/host &&
         cp target/release/libscmessenger_core.so core/target/android-libs/host/libuniffi_api.so &&
         echo '=== Running Android Unit Tests ===' &&
-        cd android && ./gradlew test -Drobolectric.dependency.dir=/opt/robolectric-jars -Drobolectric.offline=true -Pkotlin.compiler.execution.strategy=\"daemon\" --stacktrace &&
+        cd android && ./gradlew test --no-daemon -Pkotlin.compiler.execution.strategy=\"in-process\" --stacktrace &&
         cd .. &&
         mkdir -p /workspace/test-results/android &&
         find android -name '*.xml' -path '*/test-results/*' -exec cp {} /workspace/test-results/android/ \\; &&

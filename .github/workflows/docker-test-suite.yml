@@ -153,10 +153,12 @@ jobs:
   android-tests:
     name: Android Unit Tests
     runs-on: ubuntu-latest
-    # Robolectric dependencies are pre-fetched into the Docker image layer and
-    # configured for offline execution, with a 10min Gradle test task timeout.
-    # Steady-state runs take 15-25 minutes. Timeout set to 40 minutes to prevent
-    # excessive runner consumption while allowing cold cargo builds.
+    # A 10-minute Gradle test-task timeout plus per-test "started" logging bounds
+    # any hang and names the test that caused it. The earlier Robolectric
+    # pre-fetch was removed: the pinned jar URLs 404'd and nothing in the project
+    # uses Robolectric. Root cause of the original hang is still unconfirmed;
+    # the Kotlin compiler daemon (now in-process) is the leading suspect.
+    # Steady-state runs take 15-25 minutes.
     timeout-minutes: 90
 
     steps:

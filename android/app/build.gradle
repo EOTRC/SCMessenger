@@ -180,17 +180,20 @@ android {
             includeAndroidResources = true
             returnDefaultValues = true
             all {
-                def roboDir = System.getProperty('robolectric.dependency.dir') ?: System.getenv('ROBOLECTRIC_DEPENDENCY_DIR')
-                if (roboDir) {
-                    systemProperty 'robolectric.dependency.dir', roboDir
-                }
-                def roboOffline = System.getProperty('robolectric.offline') ?: System.getenv('ROBOLECTRIC_OFFLINE')
-                if (roboOffline) {
-                    systemProperty 'robolectric.offline', roboOffline
-                }
-
-                // Enforce a 10-minute task execution timeout to fail fast on hangs
+                // Fail fast on a hang instead of burning the whole CI job budget.
+                // :app:testDebugUnitTest previously ran until the job timeout killed
+                // it (90 min twice, 151 min once) while passing locally in 54s.
                 timeout = java.time.Duration.ofMinutes(10)
+
+                // Print each test as it STARTS. The cause of the container hang is
+                // still unknown, and this is the diagnostic: the last "started" line
+                // before the timeout names the test that blocks. Without it the log
+                // ends mid-task with no indication of where.
+                testLogging {
+                    events 'started', 'passed', 'failed', 'skipped'
+                    showStandardStreams = true
+                    exceptionFormat = 'full'
+                }
             }
         }
     }
@@ -255,7 +258,11 @@ dependencies {
     testImplementation 'io.mockk:mockk-agent-jvm:1.13.10'
     androidTestImplementation 'io.mockk:mockk-android:1.13.10'
     testImplementation 'androidx.arch.core:core-testing:2.2.0'
-    testImplementation 'org.robolectric:robolectric:4.12.1'
+    // org.robolectric removed 2026-07-27: declared but never used. No test under
+    // app/src/test references it (no @RunWith(RobolectricTestRunner), no @Config).
+    // Its presence caused the :app:testDebugUnitTest hang to be misdiagnosed as a
+    // Robolectric jar fetch, which it cannot have been -- Robolectric only fetches
+    // android-all jars when RobolectricTestRunner actually runs.
     testImplementation 'androidx.test:core:1.6.1'
     testImplementation 'androidx.test.ext:junit:1.2.1'
 
