@@ -10,7 +10,8 @@
 # Every run before 2026-07-25 was cancelled by its own timeout-minutes, never
 # by a test failure. Measured from run 30155401544:
 #   Rust Core Tests    - "Build Rust test image" still running at 30.1min (cap 30)
-#   Android Unit Tests - image built in 4.8min, "Run Android tests" killed at 40.1min (cap 45)
+#   Android Unit Tests - image built in ~7min, "Run Android tests" killed at 90.4min (cap 90),
+#                        measured run 30228240960 on f010a0f1
 #   Integration Tests  - "Build test images" 16.6min (it built EVERY service in
 #                        the compose file), "Run integration tests" killed at 28.3min
 #
@@ -156,8 +157,12 @@ jobs:
     # the GHA layer cache now serves). The cost is the container command: a cold
     # `cargo build --manifest-path core/Cargo.toml --release`, gen_kotlin, then
     # `./gradlew test` with a cold Gradle dependency cache. That was still
-    # running at 40.1min under the old 45min cap.
-    timeout-minutes: 90
+    # running when the 90min cap fired at 90.4min (run 30228240960). Raised to
+    # 150min to allow
+    # cold-bootstrap cache population (~89-90min). Once cache save-on-always
+    # populates, steady-state runs are 30-40min. See cache-restore/cache-save
+    # steps below for the workaround to post-if: success() limitation.
+    timeout-minutes: 150
 
     steps:
       - name: Checkout code
@@ -201,8 +206,9 @@ jobs:
           cache-from: type=gha,scope=android-test-image
           cache-to: type=gha,mode=max,scope=android-test-image
 
-      - name: Cache Gradle and Cargo dependencies
-        uses: actions/cache@v4
+      - name: Restore Gradle and Cargo dependencies cache
+        id: gradle-cargo-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             docker/android-gradle-cache
@@ -219,6 +225,16 @@ jobs:
           docker image inspect "${{ steps.image.outputs.name }}" > /dev/null
           docker compose -f docker-compose.test.yml --profile test \
             run --rm android-unit-test
+
+      - name: Save Gradle and Cargo dependencies cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            docker/android-gradle-cache
+            docker/cargo-registry-cache
+            docker/cargo-git-cache
+          key: ${{ steps.gradle-cargo-cache.outputs.cache-primary-key }}
 
       - name: Upload Android test results
         uses: actions/upload-artifact@v4
