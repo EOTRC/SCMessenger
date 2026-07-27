@@ -153,16 +153,11 @@ jobs:
   android-tests:
     name: Android Unit Tests
     runs-on: ubuntu-latest
-    # The image itself is cheap (4.8min uncached, mostly SDK/NDK downloads that
-    # the GHA layer cache now serves). The cost is the container command: a cold
-    # `cargo build --manifest-path core/Cargo.toml --release`, gen_kotlin, then
-    # `./gradlew test` with a cold Gradle dependency cache. That was still
-    # running when the 90min cap fired at 90.4min (run 30228240960). Raised to
-    # 150min to allow
-    # cold-bootstrap cache population (~89-90min). Once cache save-on-always
-    # populates, steady-state runs are 30-40min. See cache-restore/cache-save
-    # steps below for the workaround to post-if: success() limitation.
-    timeout-minutes: 150
+    # Robolectric dependencies are pre-fetched into the Docker image layer and
+    # configured for offline execution, with a 10min Gradle test task timeout.
+    # Steady-state runs take 15-25 minutes. Timeout set to 40 minutes to prevent
+    # excessive runner consumption while allowing cold cargo builds.
+    timeout-minutes: 90
 
     steps:
       - name: Checkout code

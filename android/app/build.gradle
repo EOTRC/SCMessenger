@@ -179,6 +179,19 @@ android {
         unitTests {
             includeAndroidResources = true
             returnDefaultValues = true
+            all {
+                def roboDir = System.getProperty('robolectric.dependency.dir') ?: System.getenv('ROBOLECTRIC_DEPENDENCY_DIR')
+                if (roboDir) {
+                    systemProperty 'robolectric.dependency.dir', roboDir
+                }
+                def roboOffline = System.getProperty('robolectric.offline') ?: System.getenv('ROBOLECTRIC_OFFLINE')
+                if (roboOffline) {
+                    systemProperty 'robolectric.offline', roboOffline
+                }
+
+                // Enforce a 10-minute task execution timeout to fail fast on hangs
+                timeout = java.time.Duration.ofMinutes(10)
+            }
         }
     }
 }
