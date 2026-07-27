@@ -292,7 +292,13 @@ struct TestReceiptDelegate {
 impl scmessenger_core::CoreDelegate for TestReceiptDelegate {
     fn on_peer_discovered(&self, _peer_id: String) {}
     fn on_peer_disconnected(&self, _peer_id: String) {}
-    fn on_peer_identified(&self, _peer_id: String, _agent_version: String, _listen_addrs: Vec<String>) {}
+    fn on_peer_identified(
+        &self,
+        _peer_id: String,
+        _agent_version: String,
+        _listen_addrs: Vec<String>,
+    ) {
+    }
     fn on_message_received(
         &self,
         _sender_id: String,
@@ -300,7 +306,8 @@ impl scmessenger_core::CoreDelegate for TestReceiptDelegate {
         _message_id: String,
         _sender_timestamp: u64,
         _data: Vec<u8>,
-    ) {}
+    ) {
+    }
     fn on_receipt_received(&self, message_id: String, status: String) {
         self.receipts.lock().unwrap().push((message_id, status));
     }
@@ -322,7 +329,12 @@ fn test_receipt_roundtrip_flips_state() {
 
     // 1. Alice sends text message to Bob
     let prepared = alice
-        .prepare_message(pubkey(&bob), "Hello Bob".to_string(), MessageType::Text, None)
+        .prepare_message(
+            pubkey(&bob),
+            "Hello Bob".to_string(),
+            MessageType::Text,
+            None,
+        )
         .expect("prepare_message must succeed");
 
     // 2. Bob receives Alice's message
@@ -335,7 +347,8 @@ fn test_receipt_roundtrip_flips_state() {
         .prepare_receipt(pubkey(&alice), received_msg.id.clone())
         .expect("prepare_receipt must succeed");
 
-    let receipt_str = String::from_utf8(receipt_bytes).expect("receipt bytes must be valid UTF-8 JSON");
+    let receipt_str =
+        String::from_utf8(receipt_bytes).expect("receipt bytes must be valid UTF-8 JSON");
 
     let receipt_envelope = bob
         .prepare_message_with_id(pubkey(&alice), receipt_str, MessageType::Receipt, None)
@@ -348,7 +361,17 @@ fn test_receipt_roundtrip_flips_state() {
 
     // 5. Assert Alice's CoreDelegate received the receipt callback with Delivered status
     let recorded = receipts.lock().unwrap();
-    assert_eq!(recorded.len(), 1, "Alice should receive exactly 1 receipt callback");
-    assert_eq!(recorded[0].0, received_msg.id, "Receipt message_id must match original message ID");
-    assert_eq!(recorded[0].1, "Delivered", "Receipt status must be Delivered");
+    assert_eq!(
+        recorded.len(),
+        1,
+        "Alice should receive exactly 1 receipt callback"
+    );
+    assert_eq!(
+        recorded[0].0, received_msg.id,
+        "Receipt message_id must match original message ID"
+    );
+    assert_eq!(
+        recorded[0].1, "Delivered",
+        "Receipt status must be Delivered"
+    );
 }
