@@ -72,41 +72,20 @@ open class MeshRepository(
         private const val IDENTITY_CACHE_NICKNAME = "nickname"
         private const val IDENTITY_CACHE_PEER_ID = "libp2p_peer_id"
         private const val IDENTITY_CACHE_INITIALIZED = "initialized"
-        /** Static fallback bootstrap nodes for NAT traversal and internet roaming.
-         *  These are used if env override and remote fetch both fail/are absent.
-         *  Priority order: QUIC/UDP (cellular-friendly) → TCP (WiFi/enterprise).
-         *
-         *  QUIC is prioritized for cellular NAT traversal because many carriers
-         *  block TCP on non-standard ports but allow UDP. The swarm automatically
-         *  binds both TCP and QUIC listeners, so we advertise both endpoints.
-         */
-        /**
-         * ANR FIX: Get bootstrap nodes synchronously without network I/O.
-         * Used by Settings screen to avoid UI thread blocking.
-         */
-        fun getBootstrapNodesForSettings(): List<String> = listOf("/ip4/100.56.248.69/tcp/9001")
+        // v0.4.0: there are no dedicated relays and no hardcoded node addresses --
+        // every node is a full relay, and discovery is ledger sharing (invite/QR
+        // seeds a new node's ledger; mDNS/BLE learns LAN peers). The static
+        // "/ip4/100.56.248.69/tcp/9001" fallback and the dead BootstrapSource /
+        // EnvironmentBootstrapSource plumbing that used to live here are removed;
+        // see getBootstrapNodesForSettings(), ensureBootstrapRelayConnected(),
+        // and racingBootstrapWithFallback() below, which now source addresses
+        // from ledgerManager?.getPreferredRelays()/dialableAddresses().
 
-        /**
-         * NAT hole-punch Priority 1 (Android parity with core connect_to_bootstrap_relay):
-         * proactive outbound dial to the bootstrap relay on startup, establishing a NAT
-         * mapping before any inbound circuit-relay traffic is expected. Hardcoded for now
-         * per HANDOFF NAT hole-punch task; should move to bootstrap.rs-sourced config once
-         * that's exposed over the UniFFI boundary.
-         */
-        private const val DEFAULT_BOOTSTRAP_RELAY = "/ip4/100.56.248.69/tcp/9001"
+        /** Cap on how many ledger-sourced relays are surfaced in the Settings UI. */
+        private const val MAX_SETTINGS_RELAYS = 10u
 
-        interface BootstrapSource {
-            val name: String
-            fun getBootstrapNodes(): List<String>
-        }
-
-        class EnvironmentBootstrapSource : BootstrapSource {
-            override val name = "Environment"
-            override fun getBootstrapNodes(): List<String> {
-                val env = System.getenv("SC_BOOTSTRAP_NODES") ?: return emptyList()
-                return env.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-            }
-        }
+        /** Cap on how many ledger addresses the bounded startup dial sweep attempts. */
+        private const val STARTUP_DIAL_SWEEP_MAX_ADDRESSES = 10
 
         internal fun isMeshParticipationEnabled(settings: uniffi.api.MeshSettings?): Boolean {
             // Default to ENABLED when settings unavailable (matches Rust default: relay_enabled=true)
@@ -3358,6 +3337,13 @@ open class MeshRepository(
             updateBleIdentityBeacon()
             ensureBootstrapRelayConnected()
 
+            // v0.4.0 item 4: bounded startup dial sweep over the rest of the
+            // ledger's proven-good addresses, fire-and-forget so it never
+            // blocks swarm startup (mirrors the CLI's tokio::spawn sweep).
+            repoScope.launch {
+                performStartupDialSweep()
+            }
+
             Timber.i("[OK] Internet transport (Swarm) listening on tcp/9001 and bridge wired")
         } catch (e: Exception) {
             swarmBridge = null
@@ -4937,21 +4923,33 @@ open class MeshRepository(
     open suspend fun dialPeer(multiaddr: String) = dial(multiaddr)
 
     /**
-     * NAT hole-punch Priority 1 (Android): proactively dial the bootstrap relay right
-     * after the swarm/bridge is wired up, so an outbound NAT mapping exists before any
-     * inbound circuit-relay traffic is expected. Non-fatal on failure -- mesh startup
-     * must not be blocked by an unreachable relay.
+     * NAT hole-punch Priority 1 (Android): proactively dial the best known seed
+     * relay right after the swarm/bridge is wired up, so an outbound NAT mapping
+     * exists before any inbound circuit-relay traffic is expected. Non-fatal on
+     * failure -- mesh startup must not be blocked by an unreachable relay.
+     *
+     * v0.4.0: there are no dedicated relays -- every node is a full relay -- and
+     * no hardcoded node address. The candidate comes from the ledger, matching
+     * the pattern in getPreferredRelay()/testLedgerRelayConnectivity(). A fresh
+     * install has an empty ledger and legitimately has no candidate here until
+     * it learns a peer via invite/QR or LAN discovery (mDNS/BLE); that is the
+     * intended cold-start behavior, not a bug, so we just log and return.
      */
     private suspend fun ensureBootstrapRelayConnected() {
         if (swarmBridge == null) {
             Timber.w("Skipping bootstrap relay connect: SwarmBridge not wired yet")
             return
         }
+        val relay = ledgerManager?.getPreferredRelays(1u)?.firstOrNull()
+        if (relay == null) {
+            Timber.i("No known relay in ledger yet -- skipping proactive NAT dial (fresh install; ledger fills in via invite/QR or LAN discovery)")
+            return
+        }
         try {
-            dial(DEFAULT_BOOTSTRAP_RELAY)
-            Timber.i("Connected to bootstrap relay")
+            dial(relay.multiaddr)
+            Timber.i("Dialed seed relay from ledger: ${relay.multiaddr}")
         } catch (e: Exception) {
-            Timber.w(e, "Bootstrap relay unavailable at startup (non-fatal): $DEFAULT_BOOTSTRAP_RELAY")
+            Timber.w(e, "Seed relay unavailable at startup (non-fatal): ${relay.multiaddr}")
         }
     }
 
@@ -5480,6 +5478,65 @@ open class MeshRepository(
 
     fun getDialableAddresses(): List<uniffi.api.LedgerEntry> {
         return ledgerManager?.dialableAddresses() ?: emptyList()
+    }
+
+    /**
+     * Bootstrap nodes for the Settings screen, sourced from the local ledger.
+     *
+     * v0.4.0: there are no dedicated relays and no hardcoded node addresses --
+     * discovery is ledger sharing. A freshly installed node has an empty
+     * ledger and legitimately returns emptyList() here until it learns a peer
+     * via invite/QR or LAN discovery (mDNS/BLE); that is the intended
+     * cold-start architecture, not a bug.
+     */
+    fun getBootstrapNodesForSettings(): List<String> {
+        val relays = ledgerManager?.getPreferredRelays(MAX_SETTINGS_RELAYS) ?: emptyList()
+        if (relays.isEmpty()) {
+            Timber.i("getBootstrapNodesForSettings: ledger has no known relays yet (fresh install or no successful connections)")
+        }
+        return relays.map { it.multiaddr }
+    }
+
+    /**
+     * v0.4.0 item 4: bounded startup dial sweep, Android parity with the CLI's
+     * startup DialScheduler sweep over dialable_addresses() (cli/src/main.rs).
+     * Fires dial() for each proven-good ledger address (capped) right after the
+     * swarm starts listening.
+     *
+     * Concurrency limiting and per-peer backoff are already enforced by the
+     * Rust core's DialPolicyManager on every SwarmCommand::Dial (max 3
+     * concurrent outbound dials, 3-strike backoff -- core/src/transport/
+     * dial_policy.rs), the same policy the CLI's sweep relies on. This loop
+     * therefore only needs to bound HOW MANY addresses it offers, not
+     * reimplement concurrency/backoff on the Kotlin side.
+     *
+     * A fresh install has an empty ledger, so this legitimately does nothing
+     * until a peer is learned via invite/QR or LAN discovery (mDNS/BLE) --
+     * intended cold-start behavior, not a bug.
+     */
+    private suspend fun performStartupDialSweep() {
+        val addresses = (ledgerManager?.dialableAddresses() ?: emptyList())
+            .map { it.multiaddr }
+            .take(STARTUP_DIAL_SWEEP_MAX_ADDRESSES)
+
+        if (addresses.isEmpty()) {
+            Timber.i("Startup dial sweep: no dialable addresses in ledger yet (fresh install or no successful connections)")
+            return
+        }
+
+        Timber.i("Startup dial sweep: attempting ${addresses.size} known peer(s) from ledger")
+        for (addr in addresses) {
+            try {
+                dial(addr)
+            } catch (e: Exception) {
+                // Non-fatal: may be a genuine failure, or the core's own
+                // per-peer backoff / concurrent-dial-limit rejection.
+                Timber.d(e, "Startup dial sweep: $addr not reachable (non-fatal)")
+            }
+            // Brief pause between dials to avoid overwhelming the core's dial
+            // policy queue, matching the CLI sweep's stagger.
+            kotlinx.coroutines.delay(200L)
+        }
     }
 
     /**
@@ -8816,8 +8873,16 @@ open class MeshRepository(
             relayCircuitBreaker.resetAll()
         }
 
-        // Build prioritized address list based on network type
-        val prioritizedAddresses = listOf("/ip4/100.56.248.69/tcp/9001")
+        // Build prioritized address list from the ledger (v0.4.0: no dedicated
+        // relays, no hardcoded node addresses -- discovery is ledger sharing).
+        // A fresh install has an empty ledger and legitimately has no
+        // candidates here; that falls straight through to the mDNS fallback
+        // below, which is the intended cold-start path, not a bug.
+        val prioritizedAddresses = (ledgerManager?.getPreferredRelays(5u) ?: emptyList())
+            .map { it.multiaddr }
+        if (prioritizedAddresses.isEmpty()) {
+            Timber.i("Racing bootstrap: no known relays in ledger yet, going straight to mDNS fallback")
+        }
 
         // Proactively probe known relay ports to deprioritize blocked addresses
         val probeTargets = emptyList<Pair<String, Int>>()

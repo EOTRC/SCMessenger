@@ -832,7 +832,7 @@ class SettingsViewModel @Inject constructor(
      * Get bootstrap nodes for settings display.
      */
     fun getBootstrapNodesForSettings(): List<String> {
-        return MeshRepository.getBootstrapNodesForSettings()
+        return meshRepository.getBootstrapNodesForSettings()
     }
 
     /**
