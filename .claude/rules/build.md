@@ -28,10 +28,20 @@ Threshold: 25 GB minimum free space.
 **Critical traps:**
 1. `cargo clean --target <triple>` does NOT scope to a single target — it wipes ALL
    of `target/`. Verified today: intended to reclaim ~4 GB, deleted 44.7 GB.
-2. `cargo clean` also destroys `core/target/generated-sources/`, which
-   `scripts/ffi_surface.sh` silently depends on. After any `cargo clean`, regenerate
-   bindings (`gen_swift`, `gen_kotlin`) and verify the files exist before running
-   `ffi_surface.sh --update`.
+2. `scripts/ffi_surface.sh` silently depends on `core/target/generated-sources/`.
+   Note the path: that directory lives under `core/target/`, which is SEPARATE from
+   the workspace `target/`. Measured 2026-07-27: a plain `cargo clean` from the
+   workspace root removed 22,557 files / 47.1 GiB from `target/` and left
+   `core/target/generated-sources/` intact, so a root clean does NOT require
+   regenerating bindings.
+   What DOES destroy it: `cargo clean` run from inside `core/`, `cargo clean
+   --target <triple>` (see trap 1 -- it wipes everything), or deleting `core/target`
+   directly. After any of those, regenerate bindings (`gen_swift`, `gen_kotlin`) and
+   verify the files exist before running `ffi_surface.sh --update` -- skipping that
+   check produced a vacuous "Updated Swift snapshot" with exit 0 and no bindings,
+   twice.
+   Cheap insurance before any clean: `cp -r core/target/generated-sources <tmp>`
+   (1.2 MB).
 
 ## Docs Sync
 
