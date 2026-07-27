@@ -348,3 +348,9 @@ __pycache__/
 
 # Machine-local Android SDK path (root copy)
 local.properties
+
+# Docker test-suite bind-mount caches (created at runtime, never commit)
+docker/android-gradle-cache/
+docker/cargo-registry-cache/
+docker/cargo-git-cache/
+docker/test-results/

@@ -201,6 +201,17 @@ jobs:
           cache-from: type=gha,scope=android-test-image
           cache-to: type=gha,mode=max,scope=android-test-image
 
+      - name: Cache Gradle and Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            docker/android-gradle-cache
+            docker/cargo-registry-cache
+            docker/cargo-git-cache
+          key: android-gradle-cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'android/build.gradle', 'android/app/build.gradle') }}
+          restore-keys: |
+            android-gradle-cargo-${{ runner.os }}-
+
       - name: Run Android tests
         working-directory: docker
         run: |

@@ -132,8 +132,9 @@ services:
     container_name: scm-android-test
     working_dir: /workspace
     volumes:
-      - android-test-cache:/workspace/android/.gradle
-      - rust-build-cache:/workspace/core/target
+      - ./android-gradle-cache:/root/.gradle:rw
+      - ./cargo-registry-cache:/root/.cargo/registry:rw
+      - ./cargo-git-cache:/root/.cargo/git:rw
       - ./test-results:/workspace/test-results:rw
     environment:
       - ANDROID_HOME=/opt/android-sdk
@@ -148,7 +149,7 @@ services:
         mkdir -p core/target/android-libs/host &&
         cp target/release/libscmessenger_core.so core/target/android-libs/host/libuniffi_api.so &&
         echo '=== Running Android Unit Tests ===' &&
-        cd android && ./gradlew test -Pkotlin.compiler.execution.strategy=\"out-of-process\" --info --stacktrace &&
+        cd android && ./gradlew test -Pkotlin.compiler.execution.strategy=\"daemon\" --stacktrace &&
         cd .. &&
         mkdir -p /workspace/test-results/android &&
         find android -name '*.xml' -path '*/test-results/*' -exec cp {} /workspace/test-results/android/ \\; &&
@@ -330,5 +331,3 @@ networks:
 
 volumes:
   rust-test-cache:
-  android-test-cache:
-  rust-build-cache:
