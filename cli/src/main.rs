@@ -24,7 +24,7 @@ use libp2p::{Multiaddr, PeerId};
 use scmessenger_core::message::{decode_envelope, MessageType};
 use scmessenger_core::store::{Contact, ContactManager, MessageDirection, Outbox, QueuedMessage};
 use scmessenger_core::transport::abstraction::TransportType;
-use scmessenger_core::transport::{self, SwarmEvent};
+use scmessenger_core::transport::{self, SwarmEvent, SwarmHandle};
 use scmessenger_core::wasm_support::rpc::{
     notif_delivery_status, notif_message_received, notif_peer_discovered, rpc_error, rpc_result,
     ClientIntent, DeliveryStatusParams, MeshTopologyUpdateParams, MessageReceivedParams,
@@ -1870,76 +1870,18 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>) -> Result<()> {
 
                                      // AUTO LEDGER EXCHANGE: Share our known peers with the new
                                      // connection. The payload is built inside the swarm from
-                                     // `LedgerManager::exchange_response_entries` -- the same
-                                     // function the response path uses -- so there is exactly
-                                     // one disclosure door (re-review NEW-2).
+                                     // `LedgerManager::exchange_response_entries`
                                      if let Err(e) = swarm_handle.share_ledger(peer_id).await {
                                          tracing::warn!("Failed to share ledger with {}: {}", peer_id, e);
                                      }
 
                                      // OUTBOX FLUSH: Deliver any queued messages for this peer now
-                                     // that they are online. We drain (remove-and-return) the queue
-                                     // atomically; failed sends are re-enqueued so they retry on the
-                                     // next connection.
-                                     //
+                                     // that they are online.
                                      if !can_reach {
                                          tracing::warn!("No compatible transport path to {}; deferring outbox flush", peer_id);
                                      } else {
-                                     // KEY MATCHING: `peer_id.to_string()` here is the libp2p PeerId
-                                     // (a base58-encoded multihash derived from the peer's Ed25519 key,
-                                     // e.g. "12D3Koo..."). The outbox stores messages keyed by
-                                     // `QueuedMessage::recipient_id`, which is set to `contact.peer_id`
-                                     // in `cmd_send_offline`. `Contact::peer_id` is documented and
-                                     // populated as the libp2p PeerId string — users supply it via
-                                     // `scm contact add <peer-id> <public-key>`. The `scm identity`
-                                     // display shows both "ID" (Blake3 identity_id) and "Peer ID
-                                     // (Network)" (the libp2p PeerId); contacts must use the *Peer ID
-                                     // (Network)* value for this flush to match. The two identifiers
-                                     // are distinct strings; using the Blake3 identity_id as the
-                                     // contact peer_id would silently break outbox delivery.
-                                     let queued = {
-                                         let mut ob = outbox_rx.lock().await;
-                                         ob.drain_for_peer(&peer_id.to_string())
-                                     };
-
-                                     if !queued.is_empty() {
-                                         tracing::info!(
-                                             "Flushing {} queued message(s) to newly-connected peer {}",
-                                             queued.len(),
-                                             peer_id
-                                         );
+                                         flush_outbox_for_peer(&outbox_rx, &swarm_handle, peer_id).await;
                                      }
-
-                                     for msg in queued {
-                                         let msg_id = msg.message_id.clone();
-                                         match swarm_handle.send_message(peer_id, msg.envelope_data.clone(), None, None).await {
-                                             Ok(()) => {
-                                                 tracing::info!(
-                                                     "Flushed queued message {} to {}",
-                                                     msg_id,
-                                                     peer_id
-                                                 );
-                                             }
-                                             Err(e) => {
-                                                 // Re-enqueue on failure so it is retried next connect.
-                                                 tracing::warn!(
-                                                     "Failed to flush queued message {} to {}: {} — re-enqueuing",
-                                                     msg_id,
-                                                     peer_id,
-                                                     e
-                                                 );
-                                                 let mut ob = outbox_rx.lock().await;
-                                                 if let Err(eq_err) = ob.enqueue(msg) {
-                                                     tracing::error!(
-                                                         "Failed to re-enqueue message {}: {}",
-                                                         msg_id,
-                                                         eq_err
-                                                     );
-                                                 }
-                                             }
-                                         }
-                                     }
-                                     } // can_reach guard
                                  }
                             }
                             SwarmEvent::PeerDisconnected(peer_id) => {
@@ -1992,10 +1934,7 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>) -> Result<()> {
 
                                     // Graceful-AF dial policy: know our own addresses
                                     // before promiscuously dialing whatever the ledger
-                                    // handed us, so we never self-dial or reach for a
-                                    // private-range address we have no route to (e.g.
-                                    // an emulator's internal 10.0.2.x when we're on a
-                                    // 192.168.x.x home LAN).
+                                    // handed us
                                     let my_addrs: Vec<String> = swarm_handle
                                         .get_bound_addresses()
                                         .await
@@ -2009,10 +1948,6 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>) -> Result<()> {
                                         // link-local, site-local) a peer may
                                         // advertise -- dialing them fails forever
                                         // and storms the request_response handler.
-                                        // `DnsPolicy::Reject`: these entries were
-                                        // learned from a peer's ledger, and a
-                                        // name resolves to whatever its owner
-                                        // says at dial time (re-review NEW-1).
                                         if !ledger::is_dialable_multiaddr(
                                             &addr_str,
                                             ledger::NetworkMode::Local,
@@ -2039,11 +1974,6 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>) -> Result<()> {
                             }
 
                             // IDENTIFY: Peer identity confirmed — update ledger.
-                            // Both this handler and `cmd_relay`'s go through
-                            // `ConnectionLedger::record_identified_peer`, which applies
-                            // `DnsPolicy::Reject` to the remote's advertised addresses.
-                            // They used to be two inline copies of the same loop, and the
-                            // NEW-1 gate landed in only one of them.
                             SwarmEvent::PeerIdentified { peer_id, listen_addrs, .. } => {
                                 {
                                     let mut l = ledger_rx.lock().await;
@@ -2054,6 +1984,7 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>) -> Result<()> {
                                 if let Err(e) = swarm_handle.share_ledger(peer_id).await {
                                     tracing::warn!("Failed to share ledger with identified peer {}: {}", peer_id, e);
                                 }
+                                flush_outbox_for_peer(&outbox_rx, &swarm_handle, peer_id).await;
                             }
 
                             // GOSSIPSUB: New topic discovered
@@ -2495,8 +2426,8 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>) -> Result<()> {
                             println!("Shutting down...");
                             let _ = swarm_handle.shutdown().await;
                             {
-                                let mut l = ledger_rx.lock().await;
-                                if let Err(e) = l.save(&data_dir) {
+                                let mut l = ctrl_c_ledger.lock().await;
+                                if let Err(e) = l.save(&ctrl_c_data_dir) {
                                     tracing::warn!("Failed to save ledger on quit: {}", e);
                                 } else {
                                     tracing::info!("Ledger saved on quit");
@@ -2526,6 +2457,51 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Shared outbox flush logic used across CLI event loops (`cmd_relay` and `cmd_start`).
+/// Drains queued messages for a given peer and attempts immediate delivery over the swarm.
+async fn flush_outbox_for_peer(
+    outbox: &Arc<tokio::sync::Mutex<Outbox>>,
+    swarm_handle: &SwarmHandle,
+    peer_id: PeerId,
+) {
+    let queued = {
+        let mut ob = outbox.lock().await;
+        ob.drain_for_peer(&peer_id.to_string())
+    };
+
+    if !queued.is_empty() {
+        tracing::info!(
+            "Flushing {} queued message(s) to peer {}",
+            queued.len(),
+            peer_id
+        );
+    }
+
+    for msg in queued {
+        let msg_id = msg.message_id.clone();
+        match swarm_handle
+            .send_message(peer_id, msg.envelope_data.clone(), None, None)
+            .await
+        {
+            Ok(()) => {
+                tracing::info!("Flushed queued message {} to {}", msg_id, peer_id);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to flush queued message {} to {}: {} — re-enqueuing",
+                    msg_id,
+                    peer_id,
+                    e
+                );
+                let mut ob = outbox.lock().await;
+                if let Err(eq_err) = ob.enqueue(msg) {
+                    tracing::error!("Failed to re-enqueue message {}: {}", msg_id, eq_err);
+                }
+            }
+        }
+    }
 }
 
 /// Headless relay/bootstrap node — runs the full mesh functionality without
@@ -2896,14 +2872,12 @@ async fn cmd_relay(
 
                             // Register peer with transport bridge using default capabilities
                             let capabilities = vec![TransportType::Internet, TransportType::Local];
-                            let capabilities_clone = capabilities.clone();
                             let mut bridge = transport_bridge.lock().await;
                             bridge.register_peer(peer_id, capabilities);
                             let can_reach = bridge.can_reach_destination(&peer_id);
-                            tracing::info!("Registered transport capabilities for {}: {:?}, reachable={}", peer_id, capabilities_clone, can_reach);
 
                             // Share ledger with new peer. Payload built inside the swarm
-                            // from `exchange_response_entries` (re-review NEW-2).
+                            // from `exchange_response_entries`.
                             if let Err(e) = swarm_handle.share_ledger(peer_id).await {
                                 tracing::warn!("Failed to share ledger with {}: {}", peer_id, e);
                             }
@@ -2912,22 +2886,8 @@ async fn cmd_relay(
                             if !can_reach {
                                 tracing::warn!("No compatible transport path to {}; deferring outbox flush", peer_id);
                             } else {
-                            let queued = {
-                                let mut ob = outbox_rx.lock().await;
-                                ob.drain_for_peer(&peer_id.to_string())
-                            };
-                            if !queued.is_empty() {
-                                tracing::info!("Flushing {} queued message(s) to {}", queued.len(), peer_id);
+                                flush_outbox_for_peer(&outbox_rx, &swarm_handle, peer_id).await;
                             }
-                            for msg in queued {
-                                let msg_id = msg.message_id.clone();
-                                if let Err(e) = swarm_handle.send_message(peer_id, msg.envelope_data.clone(), None, None).await {
-                                    tracing::warn!("Failed to flush queued message {} to {}: {}", msg_id, peer_id, e);
-                                    let mut ob = outbox_rx.lock().await;
-                                    let _ = ob.enqueue(msg);
-                                }
-                            }
-                            } // can_reach guard
                         }
                     }
                     SwarmEvent::PeerDisconnected(peer_id) => {
@@ -2962,9 +2922,7 @@ async fn cmd_relay(
                             drop(l);
 
                             // Graceful-AF dial policy: know our own addresses before
-                            // promiscuously dialing whatever the ledger handed us, so
-                            // we never self-dial or reach for a private-range address
-                            // we have no route to.
+                            // promiscuously dialing whatever the ledger handed us
                             let my_addrs: Vec<String> = swarm_handle
                                 .get_bound_addresses()
                                 .await
@@ -2975,10 +2933,7 @@ async fn cmd_relay(
 
                             for (addr_str, peer_id_opt) in new_entries {
                                 // Skip non-routable addresses (loopback, link-local,
-                                // site-local) a peer may advertise -- dialing them
-                                // fails forever and storms the request_response handler.
-                                // `DnsPolicy::Reject`: wire-learned candidate, see
-                                // re-review NEW-1.
+                                // site-local) a peer may advertise
                                 if !ledger::is_dialable_multiaddr(&addr_str, ledger::NetworkMode::Local, ledger::DnsPolicy::Reject) {
                                     continue;
                                 }
@@ -2996,14 +2951,14 @@ async fn cmd_relay(
                         }
                     }
                     SwarmEvent::PeerIdentified { peer_id, listen_addrs, .. } => {
-                        // Identical to `cmd_start`'s handler because it IS the same
-                        // function now. The gate lives inside
-                        // `record_identified_peer` / `record_connection`, not here,
-                        // so there is no per-call-site copy left to forget.
                         let mut l = ledger_rx.lock().await;
                         let advertised: Vec<String> =
                             listen_addrs.iter().map(|a| a.to_string()).collect();
                         l.record_identified_peer(&peer_id.to_string(), &advertised);
+                        if let Err(e) = swarm_handle.share_ledger(peer_id).await {
+                            tracing::warn!("Failed to share ledger with identified peer {}: {}", peer_id, e);
+                        }
+                        flush_outbox_for_peer(&outbox_rx, &swarm_handle, peer_id).await;
                     }
                     SwarmEvent::TopicDiscovered { peer_id, topic } => {
                         tracing::info!("Topic discovered from {}: {}", peer_id, topic);
