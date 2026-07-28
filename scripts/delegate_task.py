@@ -8,7 +8,13 @@ import sys
 import subprocess
 import time
 
-QWEN_URL = "https://ws-2vzz894jwsk3t27r.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions"
+# QWEN_BASE_URL override (2026-07-28): the paid Alibaba "Standard Plan" serves
+# qwen3.8-max-preview at https://token-plan.ap-southeast-1.maas.aliyuncs.com/
+# compatible-mode/v1/chat/completions with the plan token as Bearer key
+# (probe-verified). The ws-* workspace endpoint below denies that model
+# (access_denied). Export QWEN_BASE_URL + QWEN_API_KEY to route dispatches
+# at the paid-plan endpoint; unset, behaviour is unchanged.
+QWEN_URL = os.environ.get("QWEN_BASE_URL") or "https://ws-2vzz894jwsk3t27r.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OLLAMA_URL = "http://localhost:11434/api/chat"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -34,6 +40,7 @@ MODEL_TOKEN_LIMITS = {
     "qwen-turbo": 8192,
     "qwen-long": 8192,
     "qwen3-235b-a22b": 8192,
+    "qwen3.8-max-preview": 32768,
     "qwen3-32b": 8192,
     "qwen3-30b-a3b": 8192,
     "qwen3-14b": 8192,
@@ -255,8 +262,13 @@ def send_request(args, prompt, resolved_model, display_model, round_num=None):
     if args.provider == "qwen":
         # DashScope: hybrid NON-thinking models (qwen3-14b etc.) require
         # enable_thinking=false for non-streaming calls, while thinking models
-        # (qwen3-235b-a22b-thinking-*) REQUIRE true. Set from the model name.
-        payload["enable_thinking"] = "thinking" in (args.model or "").lower()
+        # (qwen3-235b-a22b-thinking-*) REQUIRE true. qwen3.8-*-preview are
+        # thinking hybrids: they 400 with "restricted to True" when sent
+        # false (probe-verified 2026-07-28 on the token-plan endpoint;
+        # ORCHESTRATION.md Lesson 12 masked-downgrade pattern). Set from the
+        # model name.
+        _mname = (args.model or "").lower()
+        payload["enable_thinking"] = ("thinking" in _mname) or _mname.startswith("qwen3.8")
 
     system_message = ""
     if args.mode == "full":

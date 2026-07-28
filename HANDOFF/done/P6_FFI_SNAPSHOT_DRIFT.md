@@ -58,3 +58,6 @@ Mark task as completed with note: "P5 had no UDL changes; snapshot regeneration 
 **Model:** qwen3-coder-flash (if dispatched)  
 **Blocked by:** P5  
 **Move to done/ when:** Snapshots regenerated and verified (or "no drift" reason recorded)  
+
+## 2026-07-28 closure (orchestrator takeover audit)
+CLOSED no-drift: scripts/ffi_surface.sh --check PASS (Kotlin FFI surface: OK; Swift FFI surface: OK) at HEAD 821a0646. UDL unchanged since last snapshot; generated-sources intact (core/target/generated-sources, 1.2 MB). D-05 precondition done.

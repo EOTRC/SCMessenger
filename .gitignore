@@ -354,3 +354,4 @@ docker/android-gradle-cache/
 docker/cargo-registry-cache/
 docker/cargo-git-cache/
 docker/test-results/
+.claude/alibaba_cloud_config.env
