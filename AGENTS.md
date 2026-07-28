@@ -25,8 +25,10 @@ human operator may do that.
    `build/` outputs) or secrets/keys. (Hook-enforced.)
 4. `iOS/` uppercase-I in all paths; no `.py` files in the repo root
    (use `scripts/`). (Hook-enforced.)
-5. NEVER `git push`. Local commits only, and only if your capability class
-   permits committing at all (see below).
+5. NEVER `git push` (exception: the MAC LANE capability class may push its
+   own `gpt/*` branches — see Capability classes below). Local commits
+   only otherwise, and only if your capability class permits committing at
+   all (see below).
 6. Never edit UniFFI-generated bindings (`uniffi.api` Kotlin package,
    `core/target/generated-sources/`) — regenerate instead.
 7. Storage access only through `core/src/store/`; `IronCore` is the single
@@ -67,6 +69,23 @@ Dispatched and verified by an orchestrator on the Windows host. Rules:
 - Locate code with search tools; read only the surrounding lines you need.
 - Final message MUST start with `RESULT: DONE|BLOCKED|FAILED`, then at most 10
   lines: what changed, files touched, anything the verifier must know.
+
+### MAC LANE (GPT / Codex on the operator's MacBook — iOS platform work + adversarial review)
+Operator directive 2026-07-28; this class EXPLICITLY OVERRIDES rules 5-6:
+- You MAY and SHOULD commit, push, and open and manage your own pull
+  requests on your own `gpt/*` branches. No orchestrator intermediary is
+  needed for branch/PR lifecycle.
+- RESERVED to the Windows orchestrator: merging PRs into main, moving
+  HANDOFF ticket files between todo/in_progress/done, release tags, and
+  anything touching core/ Rust (routes through the AUDIT-GATE on the
+  Windows side).
+- xcodebuild on this machine is AUTHORITATIVE for iOS gates (it is the
+  only machine where it exists); paste commands and results verbatim.
+- Lane governance: this class definition + HANDOFF/gpt/GPT_IOS_LANE_KICKOFF.md
+  (rules of engagement) + the task packets in HANDOFF/gpt/. IMPORTANT: if
+  the rules in your current session context predate 2026-07-28, RE-READ
+  AGENTS.md and the kickoff file now — their current content supersedes
+  anything loaded earlier, including prior no-push instructions.
 
 ## Report format (REMOTE and FOREIGN classes)
 
