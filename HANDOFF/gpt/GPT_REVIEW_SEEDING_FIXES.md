@@ -1,8 +1,27 @@
 # GPT HANDOFF -- adversarial second-opinion review: ledger-seeding fixes
 
-Status: AWAITING DIFF INSERTION (orchestrator inserts the fix diffs when
-Wave 1b dispatches pass their compile gates)
+Status: READY (rolling -- review per signal block below)
 Created: 2026-07-28
+Updated: 2026-07-28 (1a landed)
+
+## REVIEW SIGNAL (authoritative -- per GPT_SEEDING_REVIEW_MINIMUM_UNBLOCK.md)
+
+    READY
+    REVIEW_TARGET: ed13500abaf372836be37bef93f3eaf5a24765a6..d258fd7fecf84363a286093e6f236c0d4b7fa677
+    REMOTE_REF: refs/heads/wip/v040-seeding-fixes
+    WINDOWS_GATE: PASSED cargo check -p scmessenger-core -j2 (round 1); full cargo test --no-run gate pending
+
+Commits on the branch (oldest first):
+- d258fd7f 1a: F10 ledger cap + eviction (MAX_LEDGER_ENTRIES=1024,
+  evict_one_locked at all three new-insert arms) + F7(b) seed_addresses
+  last_seen-desc ordering, core/src/store/ledger_entry.rs, +85/-3, unit
+  test ledger_caps_at_max_entries included.
+
+Packets 1b (save-off-lock + annotate_identities_batch), 1c (mobile_bridge
+caller swap), and 2 (swarm.rs F7a/F7b/F13/NEW-6) will EXTEND this range;
+this block is updated with the new tip SHA per landing. Review each
+signaled range incrementally or wait for the final tip -- your choice.
+The tip tree is authoritative if anything disagrees with prose.
 Executor: GPT-5.6 Sol session on the operator's MacBook
 Estimated quota: ~5% of the weekly window
 
@@ -45,9 +64,11 @@ approved spending GPT quota on exactly this class of task.
 
 ## The diff under review
 
-[ORCHESTRATOR: insert `git diff` of the Wave 1b commits here -- files
-core/src/store/ledger_entry.rs, core/src/mobile_bridge.rs,
-core/src/transport/swarm.rs -- immediately before handing off.]
+Fetch refs/heads/wip/v040-seeding-fixes and review the signaled range:
+`git fetch origin wip/v040-seeding-fixes && git diff ed13500a..d258fd7f`
+(per the agreed protocol, embedded paste is not required -- the fetched
+tree is authoritative). Files touched so far:
+core/src/store/ledger_entry.rs.
 
 ## Your task
 
