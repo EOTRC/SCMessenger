@@ -1,6 +1,13 @@
 # v0.4.0 free-lane dispatch package -- READY TO FIRE
 
-Status: READY (prompt files written, two tooling traps found and documented)
+Status: RETIRED 2026-07-28 -- all three dispatches (A outbox Site-1, B receipt
+round-trip, C ledger choke-point) landed via operator commits f521f142,
+8f866bfc, 22b921ca. Kept as the canonical tooling-trap reference
+(--files space-separation; repo-root-relative diff paths; exit-3 semantics).
+Smoke-tested 2026-07-28 against qwen3.8-max-preview: plumbing verified;
+first call rate-limited and auto-rotated (masked downgrade, ledger 429);
+rotated worker emitted a no-op diff (vacuous; reverted; retire mark applied
+orchestrator-side).
 Created: 2026-07-26
 Cost note: these dispatch to FREE Qwen/Groq lanes -- zero Anthropic window cost.
 

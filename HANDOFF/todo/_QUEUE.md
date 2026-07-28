@@ -1,7 +1,38 @@
 # _QUEUE -- Dispatch Order for the Full v1.0.0 Backlog
 
 Status: Active
-Last updated: 2026-07-25 (planning unity pass; reconciled with code + HANDOFF/done/)
+Last updated: 2026-07-28 (orchestrator takeover; v0.4.0 completion wave)
+
+## 2026-07-28 ORCHESTRATOR TAKEOVER -- v0.4.0 COMPLETION WAVE (authoritative)
+
+- Full wave plan: `tmp/v040-completion-wave.md`. State reconciliation
+  committed: 5b93541a (stale tickets retired, jsonl drift fixed).
+- OPERATOR DIRECTIVE 2026-07-28 (routing): ALL dispatches prefer
+  `--provider qwen --model qwen3.8-max-preview` for the duration of its
+  limited-time boost, unless an alternative lane is >=10x cheaper.
+  Supersedes the ORCHESTRATION.md 2.1 ladder ordering in the meantime.
+  Adversarial reviews ride the same model (MAX-tier class satisfies
+  Section 4's THINK-or-MAX requirement).
+- OPERATOR DECISION 2026-07-28 (security): fix ALL open ledger-seeding
+  review findings (F2, F3, F6, F7, F10, F12) BEFORE tagging v0.4.0-alpha.1
+  (verdict file: HANDOFF/review/LEDGER_SEEDING_ADVERSARIAL_REVIEW_2026-07-25.md).
+- Verified DONE at HEAD (grep-confirmed, not doc-claimed): outbox Site-1
+  (f521f142, 4 call sites), receipt round-trip (8f866bfc + core classify
+  path iron_core.rs:3064), ledger choke-point (22b921ca), Android relay
+  de-hardcode (f010a0f1). V040_FREE_LANE_DISPATCH_READY packet RETIRED --
+  all 3 of its dispatches landed via operator commits; kept as tooling-trap
+  reference.
+- Remaining critical path: 1a queued-vs-connected false-success fix
+  (AUDIT-GATE); 1b seeding findings fix-all + THINK re-review (AUDIT-GATE);
+  1c P6 FFI snapshot check; 1d version bump 0.3.5 -> 0.4.0; wave 2 = fresh
+  CLI<->emulator E2E delivery proof at current HEAD (ConnectionEstablished
+  evidence, not dial-queue logs); wave 3 = gates/docs/operator tag.
+- EXCLUDED from 0.4.0 (operator-confirmed 2026-07-28): iOS (A-05/U6/D-03/
+  Swift fixes), P1-14/P1-18 hostile-network (infra PAUSED), PQC-09, B1 DNS
+  hardening (explicitly not beta-blocking), farm-sim chain, KMP desktop.
+- Untracked hygiene flags for operator: `.claude/alibaba_cloud_config.env`
+  (likely secrets; NOT gitignored -- add to .gitignore) and
+  `launch_claude.ps1` at repo root (root-layout rule prefers scripts/).
 
 ## 2026-07-25 PLANNING UNITY (read before the 2026-07-21 header)
 
