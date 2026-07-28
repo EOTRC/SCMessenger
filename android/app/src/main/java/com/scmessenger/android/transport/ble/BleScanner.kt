@@ -46,8 +46,8 @@ class BleScanner(
         val peerCacheSize: Int
     )
 
-    private val bluetoothManager by lazy { context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager }
-    private val bluetoothAdapter by lazy { bluetoothManager.adapter }
+    private val bluetoothManager by lazy { context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager }
+    private val bluetoothAdapter by lazy { bluetoothManager?.adapter }
     private val scanner by lazy { bluetoothAdapter?.bluetoothLeScanner }
 
     // Scan session management
