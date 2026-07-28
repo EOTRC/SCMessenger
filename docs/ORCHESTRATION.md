@@ -62,6 +62,7 @@ registry, the ranked free-tier and tokens/$ comparison, and the rotation strateg
 
 | Lake        | Provider          | Best For                                              | Tiers              |
 |-------------|-------------------|-------------------------------------------------------|--------------------|
+| qwenpaid    | Alibaba paid plan | PRIMARY for all dispatches (operator 2026-07-28)      | MAX (qwen3.8-max-preview) |
 | qwen        | DashScope/Alibaba | Rust/Kotlin implementation, deep CODER/THINK capacity | FLASH/CODER/THINK/MAX |
 | groq        | Groq Cloud        | Fast FLASH micro-tasks; small TPM, micro-chunk        | FLASH/CODER        |
 | openrouter  | OpenRouter        | Free-model spillover; 1,000 req/day (via $10 topup)   | FLASH/CODER        |

@@ -34,6 +34,15 @@ Quota numbers are **runtime-learned state, not hardcoded truth** — free tiers 
       },
       "notes": "Deepest free roster. One depleted model never blocks a tier — rotate."
     },
+    "qwenpaid": {
+      "endpoint": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "key_env": ["QWEN_PAID_API_KEY"],
+      "key_file": "~/.config/scmorc/qwenpaid.env",
+      "quota_type": "paid_plan_windows",
+      "quota_seed": "Alibaba Standard Plan: 5-hour window + 7-day window (operator 2026-07-28; plan ends 2026-08-28, auto-renew NOT enabled)",
+      "tiers": { "MAX": ["qwen3.8-max-preview"] },
+      "notes": "Operator PRIMARY lane for ALL dispatches (directive 2026-07-28). Thinking hybrid: enable_thinking=true enforced, 1800s non-streaming timeout, no pool rotation (same-model escalating backoff). The free/trial workspace 'qwen' lane is untouched."
+    },
     "groq": {
       "endpoint": "https://api.groq.com/openai/v1/chat/completions",
       "key_env": ["GROQ_API_KEY"],

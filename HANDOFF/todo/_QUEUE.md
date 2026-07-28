@@ -7,12 +7,17 @@ Last updated: 2026-07-28 (orchestrator takeover; v0.4.0 completion wave)
 
 - Full wave plan: `tmp/v040-completion-wave.md`. State reconciliation
   committed: 5b93541a (stale tickets retired, jsonl drift fixed).
-- OPERATOR DIRECTIVE 2026-07-28 (routing): ALL dispatches prefer
-  `--provider qwen --model qwen3.8-max-preview` for the duration of its
-  limited-time boost, unless an alternative lane is >=10x cheaper.
-  Supersedes the ORCHESTRATION.md 2.1 ladder ordering in the meantime.
-  Adversarial reviews ride the same model (MAX-tier class satisfies
-  Section 4's THINK-or-MAX requirement).
+- OPERATOR DIRECTIVE 2026-07-28 (routing, FINAL): ALL dispatches go
+  through the paid Qwen subscription as a first-class lane:
+  `python scripts/delegate_task.py --provider qwenpaid --model
+  qwen3.8-max-preview ...` (key: ~/.config/scmorc/qwenpaid.env). The
+  free-qwen provider/infra is untouched. No model rotation on this lane
+  (same-model backoff on throttle; quotas are 5h/7d plan windows). GPT
+  (Mac) is BACKUP ONLY: iOS platform work (xcodebuild exists nowhere
+  else) and escalation on super-hard tasks or repeated failures.
+  Adversarial reviews default to qwen3.8 MAX-tier; GPT as independent
+  second opinion only when requested. Supersedes the ORCHESTRATION.md
+  2.1 ladder.
 - OPERATOR DECISION 2026-07-28 (security): fix ALL open ledger-seeding
   review findings (F2, F3, F6, F7, F10, F12) BEFORE tagging v0.4.0-alpha.1
   (verdict file: HANDOFF/review/LEDGER_SEEDING_ADVERSARIAL_REVIEW_2026-07-25.md).

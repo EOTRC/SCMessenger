@@ -8,13 +8,12 @@ import sys
 import subprocess
 import time
 
-# QWEN_BASE_URL override (2026-07-28): the paid Alibaba "Standard Plan" serves
-# qwen3.8-max-preview at https://token-plan.ap-southeast-1.maas.aliyuncs.com/
-# compatible-mode/v1/chat/completions with the plan token as Bearer key
-# (probe-verified). The ws-* workspace endpoint below denies that model
-# (access_denied). Export QWEN_BASE_URL + QWEN_API_KEY to route dispatches
-# at the paid-plan endpoint; unset, behaviour is unchanged.
-QWEN_URL = os.environ.get("QWEN_BASE_URL") or "https://ws-2vzz894jwsk3t27r.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions"
+QWEN_URL = "https://ws-2vzz894jwsk3t27r.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions"
+# Paid Alibaba "Standard Plan" lane (operator directive 2026-07-28): serves
+# qwen3.8-max-preview (thinking hybrid) OpenAI-compatible. Separate provider
+# ("qwenpaid") with its own key file (~/.config/scmorc/qwenpaid.env); the
+# free/trial workspace lane above is untouched.
+QWENPAID_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OLLAMA_URL = "http://localhost:11434/api/chat"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -148,6 +147,10 @@ def get_api_key(provider):
                 or os.environ.get("DASHSCOPE_API_KEY")
                 or _key_from_env_file("~/.config/scmorc/dashscope.env",
                                       ("QWEN_API_KEY", "DASHSCOPE_API_KEY")))
+    elif provider == "qwenpaid":
+        return (os.environ.get("QWEN_PAID_API_KEY")
+                or _key_from_env_file("~/.config/scmorc/qwenpaid.env",
+                                      ("QWEN_PAID_API_KEY",)))
     elif provider == "openrouter":
         return (os.environ.get("OPENROUTER_API_KEY")
                 or _key_from_env_file("~/.config/scmorc/openrouter.env",
@@ -262,11 +265,12 @@ def send_request(args, prompt, resolved_model, display_model, round_num=None):
     if args.provider == "qwen":
         # DashScope: hybrid NON-thinking models (qwen3-14b etc.) require
         # enable_thinking=false for non-streaming calls, while thinking models
-        # (qwen3-235b-a22b-thinking-*) REQUIRE true. qwen3.8-*-preview are
-        # thinking hybrids: they 400 with "restricted to True" when sent
-        # false (probe-verified 2026-07-28 on the token-plan endpoint;
-        # ORCHESTRATION.md Lesson 12 masked-downgrade pattern). Set from the
-        # model name.
+        # (qwen3-235b-a22b-thinking-*) REQUIRE true. Set from the model name.
+        payload["enable_thinking"] = "thinking" in (args.model or "").lower()
+    elif args.provider == "qwenpaid":
+        # Paid-plan lane: qwen3.8-*-preview are thinking hybrids and 400
+        # ("restricted to True") when sent false (probe-verified 2026-07-28;
+        # ORCHESTRATION.md Lesson 12 masked-downgrade pattern).
         _mname = (args.model or "").lower()
         payload["enable_thinking"] = ("thinking" in _mname) or _mname.startswith("qwen3.8")
 
@@ -291,6 +295,7 @@ def send_request(args, prompt, resolved_model, display_model, round_num=None):
         ]
         _url_map = {
             "qwen": QWEN_URL,
+            "qwenpaid": QWENPAID_URL,
             "openrouter": OPENROUTER_URL,
             "groq": GROQ_URL,
             "gemini": GEMINI_URL,
@@ -335,7 +340,7 @@ def send_request(args, prompt, resolved_model, display_model, round_num=None):
     transient_attempts = 0
     while True:
         try:
-            with urllib.request.urlopen(req, timeout=600) as r:
+            with urllib.request.urlopen(req, timeout=(1800 if args.provider == "qwenpaid" else 600)) as r:
                 resp = json.loads(r.read().decode("utf-8"))
 
             if args.provider == "ollama":
@@ -368,6 +373,9 @@ def send_request(args, prompt, resolved_model, display_model, round_num=None):
         except urllib.error.HTTPError as e:
             if (e.code == 429 or e.code == 403) and args.provider == "qwen":
                 print("[WARN] Rate limit or Quota hit. Rotating model...")
+                return None, None
+            if (e.code == 429 or e.code == 403) and args.provider == "qwenpaid":
+                print("[WARN] Paid-plan rate limit / quota hit; will retry same model...")
                 return None, None
             body = ""
             try:
@@ -478,7 +486,7 @@ def apply_diff_blocks(diff_blocks, task_base_name, round_num, allowed_files):
 def main():
     parser = argparse.ArgumentParser(description="Universal Swarm Delegate Script")
     parser.add_argument("--task", required=True, help="Task markdown file path (e.g., HANDOFF/todo/PQC_07_PQ_RATCHET.md)")
-    parser.add_argument("--provider", choices=["qwen", "openrouter", "ollama", "groq", "gemini"], required=True, help="API provider to use")
+    parser.add_argument("--provider", choices=["qwen", "qwenpaid", "openrouter", "ollama", "groq", "gemini"], required=True, help="API provider to use")
     parser.add_argument("--model", help="Model name override (e.g., qwen-max, anthropic/claude-3.5-sonnet, llama3)")
     parser.add_argument("--tier", choices=["thinking", "max", "standard", "plus", "flash"],
                         help="Qwen tier for auto model selection: thinking > max > standard > plus > flash")
@@ -561,7 +569,9 @@ Return your changes as unified diffs, one fenced ```diff block per file, using s
         file_chunks = [args.files]
 
     # Resolve model
-    if args.provider == "qwen" and not args.tier and not args.model:
+    if args.provider == "qwenpaid" and not args.model:
+        resolved_model = "qwen3.8-max-preview"
+    elif args.provider == "qwen" and not args.tier and not args.model:
         resolved_model = get_next_qwen_model()
     elif args.provider == "qwen":
         if args.tier:
@@ -591,12 +601,19 @@ Return your changes as unified diffs, one fenced ```diff block per file, using s
         
         chunk_content, response_file = send_request(args, prompt, resolved_model, display_model)
         retry_count = 0
-        while chunk_content is None and retry_count < 10 and args.provider == "qwen":
-            # Qwen-only: rotate through the DashScope model pool. Other lanes
-            # have no in-provider pool here; cross-lake failover is the
-            # orchestrator's job (lake_route.py), not this transport script's.
-            resolved_model = get_next_qwen_model()
-            print(f"Retrying with rotated model {resolved_model}...")
+        while chunk_content is None and retry_count < 10 and args.provider in ("qwen", "qwenpaid"):
+            if args.provider == "qwen":
+                # Qwen-only: rotate through the DashScope model pool. Other
+                # lanes have no in-provider pool here; cross-lake failover is
+                # the orchestrator's job (lake_route.py), not this transport
+                # script's.
+                resolved_model = get_next_qwen_model()
+                print(f"Retrying with rotated model {resolved_model}...")
+            else:
+                # qwenpaid: paid subscription lane, no model pool -- retry the
+                # same model with escalating backoff (operator 2026-07-28).
+                print(f"Retrying same model {resolved_model} after backoff...")
+                time.sleep(5 * (retry_count + 1))
             chunk_content, response_file = send_request(args, prompt, resolved_model, resolved_model)
             retry_count += 1
 
