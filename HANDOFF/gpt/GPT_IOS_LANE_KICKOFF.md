@@ -17,9 +17,13 @@ v0.4.0 security wave.
 2. Worker contract: first line of every response is RESULT: DONE |
    RESULT: BLOCKED: <reason> | RESULT: FAILED: <reason> | PATCH: <n>,
    then max 10 lines of summary.
-3. The Mac session NEVER pushes, never tags, never moves HANDOFF files.
-   Produce a branch (`gpt/ios-lane-1`) or unified diffs; the Windows
-   orchestrator reviews, gates, moves tickets, and commits.
+3. UPDATED operator directive 2026-07-28: the Mac session MAY commit and
+   push to its OWN branches (naming: gpt/<lane-or-task>) and may open and
+   manage its own pull requests -- branch, commit, push, PR, and iterate
+   on review feedback directly. Still reserved to the Windows
+   orchestrator: merging PRs into main, moving HANDOFF ticket files
+   between todo/in_progress/done, release tags, and anything touching
+   core/ Rust (routes back through the AUDIT-GATE on this side).
 4. Gate for every task: `xcodebuild` output pasted verbatim (build + test).
    A clean compile is NOT completion: grep your own diff for
    simulate|mock|placeholder|in a real implementation before declaring DONE.
