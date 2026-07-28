@@ -61,3 +61,6 @@ thread 'test_ledger_convergence' panicked at 'swarm2.dial(node1_addr) failed: no
 ## Output Location
 
 Save test run output to: `HANDOFF/work_files/F1_ledger_test_run.log`
+
+## 2026-07-28 closure (orchestrator takeover audit)
+Moved to done/ on authority of _QUEUE.md header (DONE 2026-07-23: file committed, p2p addr suffix bug fixed). Evidence on disk: core/tests/integration_ledger_convergence.rs (updated 2026-07-26).

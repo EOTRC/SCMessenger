@@ -55,3 +55,6 @@ Dispatch to Qwen CODER with `--mode diff --apply --verify "cd android && ./gradl
 
 ## Handoff
 Move this file to `HANDOFF/done/` ON COMPLETION via `mv` command.
+
+## 2026-07-28 closure (orchestrator takeover audit)
+Moved to done/ on authority of _QUEUE.md status-correction header (COMPLETED 2026-07-21) plus ledger entry A-04-receipt-unification result=ok. compileDebugKotlin re-verified 2026-07-28; local Robolectric test-execution hangs are a known infra issue (CI green on main 2026-07-24).

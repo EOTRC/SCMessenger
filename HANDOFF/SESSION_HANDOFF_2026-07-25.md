@@ -227,3 +227,6 @@ without removing the five inheriting member lines fails the manifest load).
    `Status: DONE 2026-07-17`, build-verified with a unanimous adversarial pass.
    **[ADDRESSED 2026-07-25]** Planning unity pass added a 2026-07-25 header;
    historical 2026-07-17 section marked historical.
+
+## 2026-07-28 UPDATE (orchestrator takeover audit)
+Priority #1 (leaked ollama.com session cookie): operator confirms HANDLED -- session revoked; no history rewrite needed (operator decision 2026-07-28). Item CLOSED.
