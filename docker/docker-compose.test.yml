@@ -193,7 +193,7 @@ services:
     environment:
       - RUST_LOG=info,scmessenger=debug
       - LISTEN_PORT=0
-      - BOOTSTRAP_NODES=/ip4/172.30.0.10/tcp/4001
+      - SC_BOOTSTRAP_NODES=/ip4/172.30.0.10/tcp/4001
       - NODE_NAME=client-a
     depends_on:
       mock-relay:
@@ -211,7 +211,7 @@ services:
     environment:
       - RUST_LOG=info,scmessenger=debug
       - LISTEN_PORT=0
-      - BOOTSTRAP_NODES=/ip4/172.31.0.10/tcp/4001
+      - SC_BOOTSTRAP_NODES=/ip4/172.31.0.10/tcp/4001
       - NODE_NAME=client-b
     depends_on:
       mock-relay:

@@ -50,7 +50,7 @@ services:
     environment:
       - RUST_LOG=info,scmessenger=debug
       - LISTEN_PORT=0
-      - SC_BOOTSTRAP_NODES=/ip4/relay1/tcp/4001
+      - SC_BOOTSTRAP_NODES=/dns4/relay1/tcp/4001
       - NODE_NAME=alice
     depends_on:
       relay1:
@@ -73,7 +73,7 @@ services:
     environment:
       - RUST_LOG=info,scmessenger=debug
       - LISTEN_PORT=0
-      - SC_BOOTSTRAP_NODES=/ip4/relay1/tcp/4001
+      - SC_BOOTSTRAP_NODES=/dns4/relay1/tcp/4001
       - NODE_NAME=bob
     depends_on:
       relay1:

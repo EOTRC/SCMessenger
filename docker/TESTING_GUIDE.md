@@ -251,7 +251,7 @@ jobs:
 
 **Mock Nodes:**
 - `LISTEN_PORT` - Port to listen on
-- `BOOTSTRAP_NODES` - Comma-separated multiaddrs
+- `SC_BOOTSTRAP_NODES` - Comma-separated multiaddrs (renamed 2026-07-28; the unprefixed var is ignored by the CLI)
 - `NODE_NAME` - Human-readable node identifier
 - `RUST_LOG` - Logging level
 
@@ -419,12 +419,12 @@ For issues or questions:
 ## Summary
 
 This Docker test infrastructure provides:
-- ✅ Isolated, reproducible test environments
-- ✅ Real multi-node mesh testing without physical devices
-- ✅ Mock infrastructure that behaves like production
-- ✅ Android unit tests with proper mocking
-- ✅ Comprehensive integration testing
-- ✅ Easy CI/CD integration
-- ✅ Developer-friendly debugging tools
+- [DONE] Isolated, reproducible test environments
+- [DONE] Real multi-node mesh testing without physical devices
+- [DONE] Mock infrastructure that behaves like production
+- [DONE] Android unit tests with proper mocking
+- [DONE] Comprehensive integration testing
+- [DONE] Easy CI/CD integration
+- [DONE] Developer-friendly debugging tools
 
 Run `./run-all-tests.sh` to get started!

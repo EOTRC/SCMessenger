@@ -129,7 +129,7 @@ if [ ! -z "$PUBLIC_IP" ]; then
     echo "  --name scmessenger-local \\"
     echo "  -p 9000:9000 -p 9001:9001 \\"
     echo "  -v ~/scm_data:/root/.local/share/scmessenger \\"
-    echo "  -e BOOTSTRAP_NODES=\"${MULTIADDR}\" \\"
+    echo "  -e SC_BOOTSTRAP_NODES=\"${MULTIADDR}\" \\"
     echo "  testbotz/scmessenger:latest"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 fi

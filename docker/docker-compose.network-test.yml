@@ -42,7 +42,7 @@ services:
     environment:
       - RUST_LOG=info,scmessenger=debug,libp2p=debug,libp2p_dcutr=debug,libp2p_relay=debug
       - LISTEN_PORT=0
-      - BOOTSTRAP_NODES=/ip4/10.2.0.10/tcp/4001
+      - SC_BOOTSTRAP_NODES=/ip4/10.2.0.10/tcp/4001
       - ENABLE_DCUTR=true
       - ENABLE_HOLE_PUNCHING=true
     depends_on:
@@ -71,7 +71,7 @@ services:
     environment:
       - RUST_LOG=info,scmessenger=debug,libp2p=debug,libp2p_dcutr=debug,libp2p_relay=debug
       - LISTEN_PORT=0
-      - BOOTSTRAP_NODES=/ip4/10.3.0.10/tcp/4001
+      - SC_BOOTSTRAP_NODES=/ip4/10.3.0.10/tcp/4001
       - ENABLE_DCUTR=true
       - ENABLE_HOLE_PUNCHING=true
     depends_on:

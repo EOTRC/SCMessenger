@@ -53,7 +53,7 @@ services:
     environment:
       - RUST_LOG=info,scmessenger=debug
       - LISTEN_PORT=9001
-      - BOOTSTRAP_NODES=/dns/relay/tcp/9000
+      - SC_BOOTSTRAP_NODES=/dns/relay/tcp/9000
     ports:
       - "9001:9001"
     networks:
@@ -78,7 +78,7 @@ services:
     environment:
       - RUST_LOG=info
       - ANDROID_HOME=/root/Android
-      - BOOTSTRAP_NODES=/dns/relay/tcp/9000
+      - SC_BOOTSTRAP_NODES=/dns/relay/tcp/9000
     networks:
       farm-bridge:
         ipv4_address: 10.0.0.4
@@ -98,7 +98,7 @@ services:
     container_name: scm-farm-ios
     environment:
       - RUST_LOG=info
-      - BOOTSTRAP_NODES=/dns/relay/tcp/9000
+      - SC_BOOTSTRAP_NODES=/dns/relay/tcp/9000
     networks:
       farm-bridge:
         ipv4_address: 10.0.0.5
@@ -141,7 +141,7 @@ services:
     environment:
       - RUST_LOG=info
       - ANDROID_HOME=/root/Android
-      - BOOTSTRAP_NODES=/dns/relay/tcp/9000
+      - SC_BOOTSTRAP_NODES=/dns/relay/tcp/9000
       - NETWORK_CONDITION=cellular
     networks:
       far-field:
@@ -165,7 +165,7 @@ services:
     environment:
       - RUST_LOG=info,scmessenger=debug
       - LISTEN_PORT=9001
-      - BOOTSTRAP_NODES=/dns/relay/tcp/9000
+      - SC_BOOTSTRAP_NODES=/dns/relay/tcp/9000
       - NETWORK_CONDITION=cellular
     networks:
       far-field:

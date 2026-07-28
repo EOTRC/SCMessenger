@@ -14,8 +14,8 @@ services:
       - RUST_LOG=info
       - LISTEN_PORT=9000
       # Add bootstrap nodes as comma-separated multiaddrs
-      # Example: BOOTSTRAP_NODES=/ip4/136.117.121.95/tcp/9001/p2p/12D3KooW...
-      - BOOTSTRAP_NODES=${BOOTSTRAP_NODES:-}
+      # Example: SC_BOOTSTRAP_NODES=/ip4/136.117.121.95/tcp/9001/p2p/12D3KooW...
+      - SC_BOOTSTRAP_NODES=${SC_BOOTSTRAP_NODES:-}
     volumes:
       - scm-data:/root/.local/share/scmessenger
       - scm-config:/root/.config/scmessenger

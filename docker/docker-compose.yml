@@ -30,7 +30,7 @@ services:
       # Format: /ip4/<ip>/tcp/<port>
       # But we need the IP. In strict mode we might need static IPs or DNS resolution.
       # libp2p supports dns multiaddrs: /dns/relay/tcp/4001
-      - BOOTSTRAP_NODES=/dns/relay/tcp/4001
+      - SC_BOOTSTRAP_NODES=/dns/relay/tcp/4001
     depends_on:
       - relay
     networks:
@@ -46,7 +46,7 @@ services:
     environment:
       - RUST_LOG=info,scmessenger=debug
       - LISTEN_PORT=0
-      - BOOTSTRAP_NODES=/dns/relay/tcp/4001
+      - SC_BOOTSTRAP_NODES=/dns/relay/tcp/4001
     depends_on:
       - relay
     networks:
