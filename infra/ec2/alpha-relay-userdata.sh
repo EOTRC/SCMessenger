@@ -34,8 +34,10 @@ cd /opt
 git clone --depth 1 --branch main https://github.com/Sovereign-Communication/SCMessenger.git SCMessenger
 cd SCMessenger
 
-docker build --build-arg CARGO_BUILD_JOBS=2 -t scmessenger:latest -f docker/Dockerfile .
-docker builder prune -af || true
+# Live relay runs the CI-published image; building from source OOMs on
+# small instances (observed 16h thrash on t3.micro, 2026-07-19).
+docker pull testbotz/scmessenger:latest
+docker tag testbotz/scmessenger:latest scmessenger:latest
 
 # --network host + explicit `scm relay ...` command: bypasses
 # entrypoint.sh's `scm start`-only flag injection entirely (see

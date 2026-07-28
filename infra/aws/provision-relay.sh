@@ -20,8 +20,8 @@
 #     current public IP only, not 0.0.0.0/0).
 #   - One t3.micro EC2 instance (free tier: 750 hrs/month), 20GB gp3 root
 #     volume (well under the 30GB free allowance), Amazon Linux 2023 AMI.
-#   - user_data that installs Docker and runs the scm-cli-node relay image
-#     (cloud/mesh/Dockerfile.cli) with --http-bind 0.0.0.0:9876 for health
+#   - user_data that installs Docker and runs the testbotz/scmessenger relay image
+#     (published by CI) with --http-bind 0.0.0.0:9876 for health
 #     checks (B3, already landed on main).
 #
 # Usage:
@@ -107,11 +107,11 @@ USER_DATA=$(cat <<'CLOUDINIT'
 #!/bin/bash
 dnf install -y docker
 systemctl enable --now docker
-docker pull scm-cli-node:latest 2>/dev/null || true
+docker pull testbotz/scmessenger:latest
 docker run -d --restart unless-stopped \
     --name scm-relay \
     -p 443:443 -p 80:80 -p 443:443/udp -p 9876:9876 \
-    scm-cli-node:latest \
+    testbotz/scmessenger:latest \
     scm relay --http-bind 0.0.0.0:9876
 CLOUDINIT
 )
