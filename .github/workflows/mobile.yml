@@ -12,6 +12,9 @@ on:
       - 'core/src/api.udl'
       - 'mobile/**'
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
