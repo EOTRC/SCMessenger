@@ -1,3 +1,5 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
@@ -291,6 +293,7 @@ impl MeshService {
         );
 
         // Initialize IronCore
+        #[cfg(not(target_arch = "wasm32"))]
         let core = if let Some(ref log_dir) = self.log_directory {
             if let Some(ref path) = self.storage_path {
                 tracing::info!("MeshService::start: Creating IronCore::with_storage_and_logs");
@@ -313,6 +316,9 @@ impl MeshService {
             tracing::info!("MeshService::start: Creating IronCore::new (no storage)");
             crate::IronCore::new()
         };
+
+        #[cfg(target_arch = "wasm32")]
+        let core = crate::IronCore::new();
 
         // Start the core
         core.start()?;
@@ -3383,8 +3389,17 @@ pub fn recommended_transport(peer_id: String) -> ProximityTransport {
             let mut arr = [0u8; 32];
             arr.copy_from_slice(&bytes);
             let engine = get_escalation_engine();
-            if let Some(transport) = engine.recommended_transport(&arr) {
-                return transport;
+            if let Some(t) = engine.current_transport(arr) {
+                return match t {
+                    crate::transport::abstraction::TransportType::BLE => ProximityTransport::Ble,
+                    crate::transport::abstraction::TransportType::WiFiAware => {
+                        ProximityTransport::WifiAware
+                    }
+                    crate::transport::abstraction::TransportType::WiFiDirect => {
+                        ProximityTransport::WifiDirect
+                    }
+                    _ => ProximityTransport::Ble,
+                };
             }
         }
     }
