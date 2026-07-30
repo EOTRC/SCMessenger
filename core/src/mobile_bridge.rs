@@ -970,6 +970,7 @@ impl MeshService {
                                                         // picks the resolved IP at dial time and
                                                         // can re-point it between probes -- the
                                                         // IP rules above never run on a name.
+                                                        let mut accepted = Vec::new();
                                                         for addr in &listen_addrs {
                                                             let addr_str = addr.to_string();
                                                             if !crate::transport::addr_filter::is_dialable_multiaddr(
@@ -984,12 +985,15 @@ impl MeshService {
                                                                 );
                                                                 continue;
                                                             }
-                                                            core_ref.ledger_manager.annotate_identity(
+                                                            accepted.push((
                                                                 addr_str,
                                                                 peer_id.to_string(),
                                                                 public_key.clone(),
                                                                 None, // Nickname not available in Identify
-                                                            );
+                                                            ));
+                                                        }
+                                                        if !accepted.is_empty() {
+                                                            core_ref.ledger_manager.annotate_identities_batch(accepted);
                                                         }
                                                     }
 
@@ -1048,6 +1052,8 @@ impl MeshService {
                                                     // re-gossiped, so it is filtered before it is
                                                     // stored, not after.
                                                     #[cfg(not(target_arch = "wasm32"))]
+                                                    {
+                                                        let mut accepted = Vec::new();
                                                     for entry in entries {
                                                         let stripped =
                                                             crate::transport::addr_filter::strip_peer_id(
@@ -1072,13 +1078,17 @@ impl MeshService {
                                                             continue;
                                                         }
                                                         if let Some(peer_id) = entry.last_peer_id {
-                                                            core_ref.ledger_manager.annotate_identity(
+                                                            accepted.push((
                                                                 stripped,
                                                                 peer_id,
                                                                 None,
                                                                 None,
-                                                            );
+                                                            ));
                                                         }
+                                                    }
+                                                    if !accepted.is_empty() {
+                                                        core_ref.ledger_manager.annotate_identities_batch(accepted);
+                                                    }
                                                     }
                                                 }
                                             }
@@ -3422,6 +3432,94 @@ pub fn safety_number(our_pubkey_hex: String, their_pubkey_hex: String) -> String
     crate::identity::keys::safety_number(&our_pubkey_hex, &their_pubkey_hex).unwrap_or_default()
 }
 
+// ============================================================================
+// UNIFFI EXPORTS: ABUSE ENGINE & DEVICE PROTECTION
+// ============================================================================
+
+/// Check if a peer is exempt from auto-blocking.
+#[uniffi::export]
+pub fn auto_block_is_exempt(peer_id: String) -> bool {
+    let core = crate::IronCore::new();
+    core.auto_block_is_exempt(&peer_id)
+}
+
+/// Exclude a peer from automatic blocking rules.
+#[uniffi::export]
+pub fn auto_block_exempt_peer(peer_id: String) {
+    let core = crate::IronCore::new();
+    core.auto_block_exempt_peer(peer_id);
+}
+
+/// Remove a peer from the auto-block exemption list.
+#[uniffi::export]
+pub fn auto_block_unexempt_peer(peer_id: String) {
+    let core = crate::IronCore::new();
+    core.auto_block_unexempt_peer(&peer_id);
+}
+
+/// Get the current reputation score for a peer (0.0 to 100.0).
+#[uniffi::export]
+pub fn get_reputation_score(peer_id: String) -> f64 {
+    let core = crate::IronCore::new();
+    core.get_reputation_score(&peer_id)
+}
+
+/// Check if a peer's reputation score is within suspicious bounds.
+#[uniffi::export]
+pub fn is_peer_suspicious(peer_id: String) -> bool {
+    let core = crate::IronCore::new();
+    core.is_peer_suspicious(&peer_id)
+}
+
+/// Check if a peer's reputation score is abusive.
+#[uniffi::export]
+pub fn is_peer_abusive(peer_id: String) -> bool {
+    let core = crate::IronCore::new();
+    core.is_peer_abusive(&peer_id)
+}
+
+/// Get spam confidence score for a peer (0.0 to 1.0).
+#[uniffi::export]
+pub fn detect_spam_confidence(peer_id: String) -> f64 {
+    let core = crate::IronCore::new();
+    core.detect_spam_confidence(&peer_id)
+}
+
+/// Inspect binary envelope data to determine if content violates spam heuristics.
+#[uniffi::export]
+pub fn is_content_suspicious(envelope_data: Vec<u8>) -> bool {
+    let core = crate::IronCore::new();
+    core.is_content_suspicious(&envelope_data)
+}
+
+/// Prune stale peer records from the spam detection engine.
+#[uniffi::export]
+pub fn prune_stale_spam_peers(max_entries: u32) -> u32 {
+    let core = crate::IronCore::new();
+    core.prune_stale_spam_peers(max_entries as usize) as u32
+}
+
+/// Associate a device ID with a peer ID in the blocked manager.
+#[uniffi::export]
+pub fn register_device_id(peer_id: String, device_id: String) -> bool {
+    let core = crate::IronCore::new();
+    core.register_device_id(&peer_id, &device_id).is_ok()
+}
+
+/// Retrieve all known device IDs associated with a peer ID.
+#[uniffi::export]
+pub fn get_known_devices(peer_id: String) -> Vec<String> {
+    let core = crate::IronCore::new();
+    core.get_known_devices(&peer_id)
+}
+
+/// Check if a specific device ID has been blocked.
+#[uniffi::export]
+pub fn is_device_blocked(peer_id: String, device_id: String) -> bool {
+    let core = crate::IronCore::new();
+    core.is_device_blocked(&peer_id, &device_id)
+}
+
 fn current_timestamp() -> u64 {
     web_time::SystemTime::now()
         .duration_since(web_time::UNIX_EPOCH)
@@ -3943,25 +4041,30 @@ mod tests {
         let path = dir.path().to_str().unwrap().to_string();
         let ledger = LedgerManager::new(path);
 
+        // Valid libp2p peer ids -- record_connection rejects unparseable
+        // peer ids (v2a-2 wire-validation), so fixtures use real PeerIds.
+        let peer1 = libp2p::PeerId::random().to_string();
+        let peer2 = libp2p::PeerId::random().to_string();
+
         // Add some entries
-        ledger.record_connection("/ip4/1.2.3.4/tcp/1000".to_string(), "peer1".to_string());
-        ledger.record_connection("/ip4/1.2.3.4/tcp/1000".to_string(), "peer1".to_string()); // Make it successful
+        ledger.record_connection("/ip4/1.2.3.4/tcp/1000".to_string(), peer1.clone());
+        ledger.record_connection("/ip4/1.2.3.4/tcp/1000".to_string(), peer1.clone()); // Make it successful
 
         // Simulate time passing and another peer
         std::thread::sleep(web_time::Duration::from_millis(10));
-        ledger.record_connection("/ip4/5.6.7.8/tcp/2000".to_string(), "peer2".to_string());
-        ledger.record_connection("/ip4/5.6.7.8/tcp/2000".to_string(), "peer2".to_string());
+        ledger.record_connection("/ip4/5.6.7.8/tcp/2000".to_string(), peer2.clone());
+        ledger.record_connection("/ip4/5.6.7.8/tcp/2000".to_string(), peer2.clone());
 
         let preferred = ledger.get_preferred_relays(10);
         assert_eq!(preferred.len(), 2);
 
         // Peer 2 should be first because it was seen last
-        assert_eq!(preferred[0].peer_id, Some("peer2".to_string()));
-        assert_eq!(preferred[1].peer_id, Some("peer1".to_string()));
+        assert_eq!(preferred[0].peer_id, Some(peer2.clone()));
+        assert_eq!(preferred[1].peer_id, Some(peer1.clone()));
 
         let limited = ledger.get_preferred_relays(1);
         assert_eq!(limited.len(), 1);
-        assert_eq!(limited[0].peer_id, Some("peer2".to_string()));
+        assert_eq!(limited[0].peer_id, Some(peer2));
     }
 
     #[test]

@@ -261,6 +261,7 @@ pub use uniffi::deps::anyhow;
 /// migration, mismatched values silently partition the mesh.
 pub const TOPIC_LOBBY: &str = "sc-lobby";
 pub const TOPIC_MESH: &str = "sc-mesh";
+pub const TOPIC_RECEIPT_CONVERGENCE: &str = "sc-receipt-convergence";
 
 // Include UniFFI scaffolding
 #[cfg(not(target_arch = "wasm32"))]

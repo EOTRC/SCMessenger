@@ -375,7 +375,10 @@ def send_request(args, prompt, resolved_model, display_model, round_num=None):
                 print("[WARN] Rate limit or Quota hit. Rotating model...")
                 return None, None
             if (e.code == 429 or e.code == 403) and args.provider == "qwenpaid":
-                print("[WARN] Paid-plan rate limit / quota hit; will retry same model...")
+                retry_after = e.headers.get("Retry-After") if e.headers else None
+                wait = int(retry_after) if (retry_after or "").isdigit() else 30
+                print(f"[WARN] Paid-plan rate limit / quota hit (HTTP {e.code}); cooling down {wait}s before retry...")
+                time.sleep(wait)
                 return None, None
             body = ""
             try:
@@ -598,7 +601,7 @@ Return your changes as unified diffs, one fenced ```diff block per file, using s
                         prompt += f"\n--- {filepath} ---\n```rust\n{f.read()}\n```\n"
                 except Exception as e:
                     print(f"Warning: Could not read {filepath}: {e}")
-        
+
         chunk_content, response_file = send_request(args, prompt, resolved_model, display_model)
         retry_count = 0
         while chunk_content is None and retry_count < 10 and args.provider in ("qwen", "qwenpaid"):
@@ -611,9 +614,10 @@ Return your changes as unified diffs, one fenced ```diff block per file, using s
                 print(f"Retrying with rotated model {resolved_model}...")
             else:
                 # qwenpaid: paid subscription lane, no model pool -- retry the
-                # same model with escalating backoff (operator 2026-07-28).
+                # same model with escalating backoff (operator 2026-07-28;
+                # 30s steps ride out minute-scale rate windows).
                 print(f"Retrying same model {resolved_model} after backoff...")
-                time.sleep(5 * (retry_count + 1))
+                time.sleep(30 * (retry_count + 1))
             chunk_content, response_file = send_request(args, prompt, resolved_model, resolved_model)
             retry_count += 1
 
