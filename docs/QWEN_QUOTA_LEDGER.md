@@ -5,6 +5,56 @@ Last updated: 2026-08-03
 
 This document tracks the verified DashScope/Alibaba Qwen models, their enabling status, actions, and remaining free quota.
 
+## DISPATCH POLICY: one dedicated model per task. NO fallback chains.
+
+Chains were being built like qwq-plus -> qwen3-32b -> qwen3-30b-a3b -> qwen-max.
+That is a REASONING model falling back to a 3B-active MoE on the SAME task, so a
+failure landed on something that could not do the work and returned confident
+garbage instead of an honest failure. Several bad lane outputs today trace to it.
+
+**Pick ONE model matched to the task. If it fails, REPORT and re-dispatch
+deliberately.** Fallback only between models of the SAME tier.
+
+| Tier | Models | Use for |
+|---|---|---|
+| Reasoning | `qwq-plus`, `qwen3-30b-a3b-thinking-2507` | root cause, lock tracing, adversarial review |
+| Large general | `qwen3-32b`, `qwen-max`, `qwen3-235b-a22b` | design, planning, code review |
+| Coder | `qwen3-coder-plus-2025-07-22` | code written to a precise spec |
+| Mid mechanical | `qwen3-14b`, `qwen3-30b-a3b`, `qwen3.5-flash` | inventories, structured extraction |
+| Small/fast | `qwen3-8b`, `qwen-turbo`, `qwen-plus-2025-*` | counting, formatting, greps |
+
+A task with a fully specified METHOD is MECHANICAL -- mid or small tier. A task
+whose ANSWER IS UNKNOWN needs reasoning tier. Putting `qwq-plus` on a branch
+inventory wasted scarce reasoning budget on work a 14b could do.
+
+Thinking models need an OUTPUT CAP ("under 60 lines") plus "write a partial
+answer first", or they spend the budget reasoning and never write the file.
+
+## LANE FALLBACK: when the right tier is exhausted, change LANE not tier
+
+| Lane | Access | Best at |
+|---|---|---|
+| Qwen (Alibaba MaaS) | `claude --model <id>` + `.claude/alibaba_cloud_config.env` | PRIMARY -- full toolset: shell, edits, git |
+| Fusion Lite | `scripts/fusion_lite.py --panel --judge` | panel+judge on ONE hard question. 2c normal / 10c hard |
+| Groq | `delegate_task.py --provider groq` | fast micro. Tight TPM, needs curl UA |
+| OpenRouter free | `delegate_task.py --provider openrouter` | general text/code |
+| Ollama Cloud | `delegate_task.py --provider ollama` | `gpt-oss:120b`, verified reachable |
+| DashScope | `~/.config/scmorc/dashscope.env` | separate Qwen pool from MaaS |
+| Claude subagent | `Agent` tool, `model: haiku` | repo-aware structured analysis |
+
+Routing: reasoning -> Qwen reasoning, else Fusion Lite, else Ollama 120b.
+Mechanical -> Qwen mid/small, else Groq, else OpenRouter. Code -> Qwen coder,
+else OpenRouter.
+
+### NEVER delegated
+
+1. **Deterministic computation.** Branch classification, diff arithmetic, log
+   counting. A model asked to classify 55 branches returned 36 MERGE verdicts
+   including branches its own data showed would delete 12,933 lines from main.
+   If the answer is derivable, derive it with a script.
+2. **Final verdicts** on security or merge-readiness. Lanes analyse; the
+   decision stays native and is hand-verified.
+
 ## THE DASH RULE -- read this before building any fallback chain (2026-08-03)
 
 **A model whose Free Quota column shows `-` has NO free allowance and will 403
