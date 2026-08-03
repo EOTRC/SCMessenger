@@ -30,6 +30,28 @@ inventory wasted scarce reasoning budget on work a 14b could do.
 Thinking models need an OUTPUT CAP ("under 60 lines") plus "write a partial
 answer first", or they spend the budget reasoning and never write the file.
 
+## TASK SIZE: what each tier can actually carry
+
+Operator correction 2026-08-03: a 14b is for MICRO tasks ONLY. Sizing by "it is
+mechanical" is not enough -- mechanical tasks vary enormously in scope.
+
+| Size | Definition | Tier |
+|---|---|---|
+| MICRO | ONE step. A single grep, a count, extract one value, reformat a list. No branching, no verdict. | `qwen3-8b`, `qwen3-14b`, `qwen-turbo` |
+| SMALL | A few steps, fixed method, no judgement calls. | `qwen3.5-flash`, `qwen3.6-27b` |
+| MEDIUM | Multi-step with conditionals, OR any task returning a VERDICT, OR one that must judge whether evidence is sufficient. | `qwen3-32b`, `qwen3-30b-a3b`, `qwen-max` |
+| LARGE | Cross-file reasoning, design, reviewing someone else's work. | `qwen-max`, `qwen3-235b-a22b` |
+| REASONING | Answer unknown, must be inferred. Deadlocks, root cause, adversarial analysis. | `qwq-plus`, `qwen3-30b-a3b-thinking-2507` |
+
+**The concrete mistake this records:** an Android gate check -- run five adb
+commands, parse dumpsys, decide PASS/FAIL/INCONCLUSIVE per check, emit a GATE
+verdict -- was dispatched to `qwen3-14b`. That is MEDIUM, not MICRO. It
+branches, it judges evidence sufficiency, and it returns a verdict.
+
+Rule of thumb: if the task description contains "decide", "classify", "verify",
+or "if X then Y", it is NOT micro regardless of how mechanical the steps look.
+Anything that emits a verdict is at least MEDIUM.
+
 ## LANE FALLBACK: when the right tier is exhausted, change LANE not tier
 
 | Lane | Access | Best at |
