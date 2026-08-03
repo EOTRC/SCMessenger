@@ -2,7 +2,7 @@
 
 Status: EVIDENCE + two actionable bugs, one of them yours
 Captured: 2026-08-02 ~10:44-10:46 HST, physical Pixel 6a, app v0.4.0
-(versionCode 14, pid 24279, built from 09cf82c0), mesh ON, LAN 192.168.0.140
+(versionCode 14, pid 24279, built from 09cf82c0), mesh ON, LAN x.x.x.x
 Raw logs committed under `HANDOFF/logs/`.
 
 Correcting your takeover doc: **Christy's developer profile HAS been trusted
@@ -16,7 +16,7 @@ Verified, not inferred:
 
     10:44:35.047 I/MeshRepository delivery_attempt msg=883e0f5d-efdf-40d7-bff0-c51ddff84119
       medium=core phase=rx outcome=received
-      sender=a774f988c873e39374fd356d39be1000e7e133d4072499038406d77797d4e7a2
+      sender=<redacted-pubkey>
 
 An encrypted message from the iPhone was received and decrypted by the Rust
 core on Android. That direction of the matrix is effectively proven. The
@@ -61,10 +61,10 @@ what routing fields the outbound envelope actually contained.
 
 BLE is the fallback and it is failing in a specific, fixable way:
 
-    10:44:50.396 W/BleGattClient Not connected to 58:23:71:E6:F2:3B, requesting reconnect before send
-    10:44:50.405 D/BleGattClient Connecting to 58:23:71:E6:F2:3B
-    10:44:50.407 W/BleGattServer Device 58:23:71:E6:F2:3B not subscribed to MESSAGE characteristic
-    10:44:52.876 D/BleGattClient Disconnected from 58:23:71:E6:F2:3B
+    10:44:50.396 W/BleGattClient Not connected to XX:XX:XX:XX:XX:XX, requesting reconnect before send
+    10:44:50.405 D/BleGattClient Connecting to XX:XX:XX:XX:XX:XX
+    10:44:50.407 W/BleGattServer Device XX:XX:XX:XX:XX:XX not subscribed to MESSAGE characteristic
+    10:44:52.876 D/BleGattClient Disconnected from XX:XX:XX:XX:XX:XX
 
 Repeats on a loop. Two distinct problems:
 

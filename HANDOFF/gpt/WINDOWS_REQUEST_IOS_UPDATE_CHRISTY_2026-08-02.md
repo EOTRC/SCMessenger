@@ -45,7 +45,7 @@ that `c4052f7e` already fixes -- her device just does not have that build.
   36229, 41207, 41773, 43951 -- and the app's exported
   `refreshAddressesSnapshots` listener list matches. Your `f9ea745a` fix works;
   the old "advertise 9001 while bound elsewhere" bug is gone.
-- Mesh participation is ON. Reachable LAN address is `192.168.0.140`.
+- Mesh participation is ON. Reachable LAN address is `x.x.x.x`.
 
 ## What to do
 

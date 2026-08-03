@@ -7,7 +7,7 @@ Window: 2026-08-02T22:28Z - 22:45Z. Pixel 6a, app 0.4.0, SHA 5925a6cc.
 
     22:41:27.101 delivery_attempt msg=unassigned_1785710484356_send
       medium=core phase=smart_router outcome=failed
-      route=12D3KooWN3FL7WUmUbQoK19TNaj6tEPjTZStTngeR6aZPs8KCsHa
+      route=12D3KooW<redacted>
       reason=Swarm task not running
 
 And, verified live on the device just now:
@@ -41,7 +41,7 @@ bytes arrive and reassemble correctly. They land on a dead core.
 
 ## Same anti-pattern, one level higher
 
-The app continued advertising `192.168.0.140:9001` over mDNS while nothing was
+The app continued advertising `x.x.x.x:9001` over mDNS while nothing was
 bound to 9001. You fixed the advertise-what-you-bind bug for the BIND path in
 `f9ea745a`; this is the same class recurring because **swarm death does not
 retract the advertisement or surface to the UI**. The app reports a healthy

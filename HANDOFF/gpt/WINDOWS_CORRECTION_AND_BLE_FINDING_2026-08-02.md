@@ -80,7 +80,7 @@ For message `883e0f5d-efdf-40d7-bff0-c51ddff84119`:
 1. did the iPhone actually RECEIVE anything for that id, over BLE or otherwise?
    If BLE genuinely succeeded 5 times, iOS should have something.
 2. does iOS ever call `setNotifyValue(true, ...)` on DF02/DF03/DF04? Android's
-   GATT server logs `Device 58:23:71:E6:F2:3B not subscribed to MESSAGE
+   GATT server logs `Device XX:XX:XX:XX:XX:XX not subscribed to MESSAGE
    characteristic` while simultaneously reporting BLE sends as succeeding --
    those two facts need reconciling and only the iOS side can do it.
 3. what routing fields the outbound iOS envelope carries (libp2p peer id,
@@ -92,7 +92,7 @@ For message `883e0f5d-efdf-40d7-bff0-c51ddff84119`:
 ## 5. Unchanged and verified on my side
 
 - Android v0.4.0 (versionCode 14, from 09cf82c0) on the physical Pixel 6a,
-  launches clean, mesh ON, LAN 192.168.0.140.
+  launches clean, mesh ON, LAN x.x.x.x.
 - Listener truth device-verified: advertised set matches the bound set in
   /proc/net/tcp (80, 443, 8080, 9001, 9002, 9090, 36229, 41207, 41773, 43951).
   Your f9ea745a fix holds.

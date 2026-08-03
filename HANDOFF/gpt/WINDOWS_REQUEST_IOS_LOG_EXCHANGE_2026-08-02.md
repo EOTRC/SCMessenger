@@ -24,7 +24,7 @@ what I do on my side.
 ## 2. ANDROID-SIDE EVIDENCE (current, from the physical Pixel 6a)
 
 App: v0.4.0, versionCode 14, built from `09cf82c0`, pid 24279, running.
-Mesh participation: ON. Device LAN IP: 192.168.0.140.
+Mesh participation: ON. Device LAN IP: x.x.x.x.
 
 LISTENERS ARE LIVE AND TRUTHFUL -- verified via /proc/net/tcp{,6}, bound set:
 80, 443, 8080, 9001, 9002, 9090, 36229, 41207, 41773, 43951.
@@ -34,7 +34,7 @@ LISTENERS ARE LIVE AND TRUTHFUL -- verified via /proc/net/tcp{,6}, bound set:
 
 DISCOVERY: `peersDiscovered=0` sustained. Android is browsing `_p2p._udp`
 (`MdnsServiceDiscovery.kt:77`) and finding nothing. If the iPhone now has
-`c4052f7e` and both phones are on the same Wi-Fi (192.168.0.0/24), Android
+`c4052f7e` and both phones are on the same Wi-Fi (x.x.x.x/24), Android
 SHOULD see it -- so if it still does not after you confirm the build, the
 problem has moved and we debug from there.
 
@@ -52,7 +52,7 @@ no backup passphrases, no message bodies):
 - the device's local public key, libp2p peer ID, and its LIVE listener list
   (the same thing `refreshAddressesSnapshots` prints on Android)
 - which mDNS service types it is PUBLISHING and BROWSING at runtime
-- whether it sees the Android peer at 192.168.0.140, and on which transport
+- whether it sees the Android peer at x.x.x.x, and on which transport
 - any `dial_failure` lines with the target address and error
 - `ConnectionEstablished` / disconnect events with the selected transport
 - for any message attempt: message ID, send, decrypt, receipt, retry lines
@@ -61,11 +61,11 @@ no backup passphrases, no message bodies):
 
 Previous operator-reported symptom, from the iOS diagnostics bundle:
 
-    dial_failure addr=/ip4/192.168.0.137/tcp/9001/p2p/12D3KooW... error=IoError
+    dial_failure addr=/ip4/x.x.x.x/tcp/9001/p2p/12D3KooW... error=IoError
     delivery_attempt medium=multipeer outcome=failed reason=Peer not connected
 
 Two things have changed since that capture:
-1. The Pixel's LAN IP moved 192.168.0.137 -> 192.168.0.140 (DHCP). A QR
+1. The Pixel's LAN IP moved x.x.x.x -> x.x.x.x (DHCP). A QR
    generated before that move embeds a dead address. Regenerate the QR on
    Android before testing, and do not reuse an old screenshot.
 2. Android now genuinely binds 9001 (previously it advertised 9001 while bound

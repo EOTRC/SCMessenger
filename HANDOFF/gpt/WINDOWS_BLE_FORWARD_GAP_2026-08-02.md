@@ -58,7 +58,7 @@ alone. Two asks:
 
 ## Peer MAC rotated
 
-Peer is now `66:AE:96:E6:C2:E2`; earlier captures show `58:23:71:E6:F2:3B`.
+Peer is now `XX:XX:XX:XX:XX:XX`; earlier captures show `XX:XX:XX:XX:XX:XX`.
 That is iOS privacy MAC rotation -- the repo's known P2 issue
 (`P2_ANDROID_BLE_MAC_Rotation_Breaks_Session_Continuity`). If any Android-side
 peer identity is keyed on MAC, rotation will silently orphan the session. Worth
