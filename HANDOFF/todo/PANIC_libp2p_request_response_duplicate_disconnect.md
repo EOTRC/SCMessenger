@@ -33,8 +33,51 @@ Hypothesis: the connection-closed path fires more than once for a single peer
 (multiple connection ids, or a listener-close and a peer-disconnect racing), and
 libp2p-request-response asserts on bookkeeping it expects to be consistent.
 
-UNVERIFIED: whether this is our misuse of the swarm API or an upstream bug in
-libp2p-request-response 0.29.0. Both need checking before a fix is chosen.
+## ROOT CAUSE CONFIRMED -- it is OURS, not upstream
+
+    core/src/transport/swarm.rs:4803  (and :6837, the wasm arm)
+    SwarmEvent::ConnectionClosed { peer_id, .. } => {
+
+We destructure ONLY `peer_id` and discard the rest with `..`. The discarded
+fields include `num_established` -- how many connections to that peer REMAIN
+after this one closed.
+
+`grep -c num_established core/src/transport/swarm.rs` returns **0**. It is never
+checked anywhere.
+
+libp2p emits ConnectionClosed PER CONNECTION. We handle it PER PEER, and on the
+FIRST connection close we unconditionally tear down all peer-level state:
+
+    connection_tracker.remove_connection(&peer_id);
+    ledger_exchanged_peers.remove(&peer_id);
+    reported_peer_discoveries.remove(&peer_id);
+    reported_peer_info.remove(&peer_id);
+    swarm.remove_listener(listener_id);        // relay reservation
+    ... plus cancelling pending custody dispatches
+
+...while OTHER connections to the same peer are still live. libp2p-request-
+response then asserts on bookkeeping we removed out from under it.
+
+This explains the observed signature exactly: three "Disconnected from <peer>"
+lines for the SAME peer inside one millisecond are three CONNECTIONS closing,
+not three peers.
+
+## The fix
+
+Guard peer-level teardown on `num_established == 0`:
+
+    SwarmEvent::ConnectionClosed { peer_id, num_established, .. } => {
+        // per-connection cleanup may run every time
+        if num_established == 0 {
+            // peer-level teardown ONLY when the last connection is gone
+        }
+    }
+
+Both arms (:4803 and the wasm arm at :6837) need it. Anything that removes a
+listener, cancels dispatches, or clears per-peer maps belongs inside the guard.
+
+Likely also explains relay churn and reconnect thrash previously attributed to
+network conditions.
 
 ## Second defect exposed by the recovery attempt
 
