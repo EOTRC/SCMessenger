@@ -228,6 +228,12 @@ enum Commands {
     Start {
         #[arg(short, long)]
         port: Option<u16>,
+        /// Automatically echo a reply back to the sender of every text message.
+        /// Test-harness capability: without it a CLI node can receive but never
+        /// respond, so it can only ever demonstrate one direction of a pair.
+        /// Also enabled by setting SCM_AUTO_REPLY=1.
+        #[arg(long)]
+        auto_reply: bool,
     },
     /// Run headless relay node (no interactive console)
     Relay {
@@ -688,7 +694,7 @@ async fn main() -> Result<()> {
             search,
             limit,
         } => cmd_history(peer, search, limit).await,
-        Commands::Start { port } => cmd_start(port, cli.http_bind).await,
+        Commands::Start { port, auto_reply } => cmd_start(port, cli.http_bind, auto_reply).await,
         Commands::Relay {
             listen,
             http_port,
@@ -1565,7 +1571,24 @@ fn find_free_port_pair(start: u16) -> Option<u16> {
         })
 }
 
-async fn cmd_start(port: Option<u16>, http_bind: Option<String>) -> Result<()> {
+/// Marks a message as machine-generated so responder nodes do not answer each
+/// other in an unbounded loop.
+const AUTO_REPLY_PREFIX: &str = "[auto-reply] ";
+
+async fn cmd_start(port: Option<u16>, http_bind: Option<String>, auto_reply: bool) -> Result<()> {
+    // Env fallback so a node already under a process supervisor can be flipped
+    // into responder mode without changing its argv.
+    let auto_reply = auto_reply
+        || matches!(
+            std::env::var("SCM_AUTO_REPLY").as_deref(),
+            Ok("1") | Ok("true")
+        );
+    if auto_reply {
+        println!(
+            "{} Auto-reply ENABLED: this node will echo a response to every text message it receives",
+            "[INFO]".yellow()
+        );
+    }
     let config = config::Config::load()?;
     let ws_port = port.unwrap_or({
         if config.listen_port == 0 {
@@ -1955,6 +1978,37 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>) -> Result<()> {
     let ctrl_c_ledger = ledger.clone();
     let ctrl_c_data_dir = data_dir.clone();
 
+    // Swarm liveness watchdog.
+    //
+    // The swarm runs in its OWN task. When it died in 5-node run 1 the process
+    // survived: the HTTP control API kept accepting connections while the mesh
+    // was gone. That zombie then blocked its own restart, because the "is it
+    // already running?" check is a bare TCP connect against that same port and
+    // cannot tell a healthy node from a corpse still holding the socket.
+    //
+    // SwarmTaskLivenessGuard already flips this flag on unwind; nothing on the
+    // CLI side was reading it. Fail fast and loudly instead of lying about being
+    // up -- a node that exits gets restarted, a zombie silently drops traffic
+    // and looks like a messaging bug.
+    let watchdog_swarm = swarm_handle.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(10));
+        ticker.tick().await; // first tick is immediate
+        loop {
+            ticker.tick().await;
+            if !watchdog_swarm.is_event_loop_alive() {
+                tracing::error!(
+                    "swarm_event_loop_died: the mesh is down but the process is still up; exiting so this node does not linger as a zombie"
+                );
+                eprintln!(
+                    "{} Swarm event loop died -- exiting rather than running without a mesh.",
+                    "[FAIL]".red()
+                );
+                std::process::exit(1);
+            }
+        }
+    });
+
     let stdin = tokio::io::BufReader::new(tokio::io::stdin());
     let mut stdin_lines = tokio::io::AsyncBufReadExt::lines(stdin);
 
@@ -2222,6 +2276,70 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>) -> Result<()> {
                                                     }
                                                     Err(e) => {
                                                         tracing::debug!("Failed to prepare delivery ACK: {}", e);
+                                                    }
+                                                }
+                                            }
+
+                                            // Auto-reply. A delivery ACK proves the
+                                            // envelope arrived; it does NOT prove this
+                                            // node can ENCRYPT TO the sender, because
+                                            // the ACK path and the send path resolve
+                                            // keys differently. Echoing a real Text
+                                            // message back exercises the same code an
+                                            // actual user send would, which is what
+                                            // makes a CLI node usable as the receiving
+                                            // half of a directional pair.
+                                            if auto_reply {
+                                                let incoming =
+                                                    msg.text_content().unwrap_or_default();
+                                                // Never auto-reply to an auto-reply. Run 2
+                                                // has three CLI nodes; any two of them with
+                                                // this flag on would otherwise ping-pong
+                                                // without bound and flood the mesh.
+                                                if incoming.starts_with(AUTO_REPLY_PREFIX) {
+                                                    tracing::debug!(
+                                                        "auto_reply_suppressed_echo in_reply_to={} from={}",
+                                                        msg.id,
+                                                        peer_id
+                                                    );
+                                                } else if let Some(ref pk_hex) =
+                                                    sender_public_key_hex
+                                                {
+                                                    let echo =
+                                                        format!("{}{}", AUTO_REPLY_PREFIX, incoming);
+                                                    match core_rx.prepare_message_with_id(
+                                                        pk_hex.clone(),
+                                                        echo,
+                                                        scmessenger_core::MessageType::Text,
+                                                        None,
+                                                    ) {
+                                                        Ok(prep) => {
+                                                            match swarm_handle
+                                                                .send_message(peer_id, prep.envelope_data, None, None)
+                                                                .await
+                                                            {
+                                                                Ok(_) => tracing::info!(
+                                                                    "auto_reply_sent in_reply_to={} to={}",
+                                                                    msg.id,
+                                                                    peer_id
+                                                                ),
+                                                                Err(e) => tracing::warn!(
+                                                                    "auto_reply_send_failed in_reply_to={} to={}: {}",
+                                                                    msg.id,
+                                                                    peer_id,
+                                                                    e
+                                                                ),
+                                                            }
+                                                        }
+                                                        // This is the branch that would have
+                                                        // caught the run-1 identity defect on
+                                                        // the CLI side, so log it loudly.
+                                                        Err(e) => tracing::error!(
+                                                            "auto_reply_prepare_failed in_reply_to={} to={}: {}",
+                                                            msg.id,
+                                                            peer_id,
+                                                            e
+                                                        ),
                                                     }
                                                 }
                                             }
