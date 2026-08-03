@@ -43,6 +43,29 @@ Threshold: 25 GB minimum free space.
    Cheap insurance before any clean: `cp -r core/target/generated-sources <tmp>`
    (1.2 MB).
 
+**Use the script, not raw commands.** Both traps above are now handled by
+`scripts/clean_target.sh`, which never invokes `cargo clean` at all — it removes
+directories by explicit path, which is the only way to actually scope the
+operation. It also backs up and verifies `core/target/generated-sources/`, and
+refuses to run while a build tool is live (multiple agent sessions share this
+repo; deleting objects under a running cargo corrupts the build in ways that
+look like source errors).
+
+```bash
+scripts/clean_target.sh --dry-run --all   # always look first
+scripts/clean_target.sh --triples         # cross-compile outputs only
+scripts/clean_target.sh --deps            # debug intermediates, KEEPS binaries
+scripts/clean_target.sh --all
+```
+
+`--deps` preserves built binaries in `target/debug/`, so a running CLI node
+survives the clean and does not need a rebuild to restart. Measured 2026-08-03:
+`--all` reclaimed ~51 GB (30 GB of `target/debug/deps` plus 20 GB of Android
+triples) with the node still running.
+
+Do NOT reach for `cargo clean --target <triple>` to reclaim one triple. It does
+not do that. Use `--triples`, or delete the specific `target/<triple>/` path.
+
 ## Docs Sync
 
 Run `./scripts/docs_sync_check.sh` (or the `.ps1`) after any documentation
