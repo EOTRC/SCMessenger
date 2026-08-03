@@ -1,0 +1,75 @@
+# PANIC: libp2p-request-response assertion on duplicate disconnect
+
+Status: OPEN -- node-fatal, reproduced on the Windows CLI node
+Found: 2026-08-03 during 5-node prep, by the Haiku node-driver lane
+Severity: HIGH -- kills the process, loses all listeners, blocks unattended running
+
+## The crash
+
+    thread 'tokio-rt-worker' panicked at
+      libp2p-request-response-0.29.0/src/lib.rs:678:9
+      assertion `left == right` failed
+        left: false
+       right: true
+
+Node-fatal. All 27 listeners lost; the node became LAN-unreachable until a
+manual restart.
+
+## Trigger, from the log immediately preceding
+
+The SAME peer is disconnect-processed several times inside about one
+millisecond, while a listener closes and dial-backoff marks it dead:
+
+    22:05:51.228  [ERROR] Disconnected from <peer>
+    22:05:51.229  Lost relay peer <peer>
+    22:05:51.229  Listener ListenerId(31) closed for addresses [...]
+    22:05:51.229  [WARNING] Connection failed to <addr>
+    22:05:51.229  [ERROR] Disconnected from <peer>      <-- same peer again
+    22:05:51.230  [ERROR] Disconnected from <peer>      <-- and again
+    22:05:51.230  [DIAL-BACKOFF] Peer marked as dead after 3 failed attempts
+    -> panic
+
+Hypothesis: the connection-closed path fires more than once for a single peer
+(multiple connection ids, or a listener-close and a peer-disconnect racing), and
+libp2p-request-response asserts on bookkeeping it expects to be consistent.
+
+UNVERIFIED: whether this is our misuse of the swarm API or an upstream bug in
+libp2p-request-response 0.29.0. Both need checking before a fix is chosen.
+
+## Second defect exposed by the recovery attempt
+
+After the panic, the first restart attempt was REFUSED:
+
+    SCMessenger is already running!
+    Run scm stop to stop the existing node first.
+
+A stale lock or PID file survived the crash, so the node could not self-recover.
+A crashed process that then blocks its own restart cannot be left running
+unattended, which is exactly what a multi-node test requires.
+
+## Why it matters now
+
+The 5-node matrix needs nodes that stay up across peer churn. This crash fires
+precisely during relay peer reconnection churn, which is the normal condition
+during a multi-node test. Hitting it mid-matrix would look like a messaging
+failure rather than a node death.
+
+## Suggested work
+
+1. Determine whether the duplicate disconnect originates in our swarm event
+   handling or in libp2p. Check whether we handle ConnectionClosed per
+   CONNECTION or per PEER -- treating a per-connection event as per-peer is the
+   classic source of this.
+2. If ours: dedupe disconnect handling by connection id.
+3. If upstream: check libp2p-request-response for a fixed release, or gate the
+   assertion path.
+4. Independently: make the lock/PID guard detect a dead PID and clear it, so a
+   crashed node can restart itself.
+5. Add a supervisor for test runs so a node death is visible as a node death,
+   not misread as a delivery failure.
+
+## Evidence
+
+Full driver log: `HANDOFF/audit/windows_node_driver_log.md`.
+Cycles 1-3 healthy at 27 listeners, cycle 4 degraded to 2, panic, restart to a
+new PID with full listener restoration, cycles 5-8 stable.
