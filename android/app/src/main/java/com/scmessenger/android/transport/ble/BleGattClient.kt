@@ -76,6 +76,17 @@ class BleGattClient(
         val activeConnections: Int
     )
 
+    /**
+     * Addresses with a live central-side GATT connection.
+     *
+     * Receipt fallback used to inspect only the peripheral/server side. That
+     * made a connected Android central invisible to the delivery router, which
+     * stranded receipts when the peer had no libp2p route yet.
+     */
+    fun getConnectedDeviceAddresses(): List<String> = activeConnections.keys
+        .filter { connectionStates[it] == ConnectionState.CONNECTED }
+        .sorted()
+
     companion object {
         // Initial identity beacon can arrive before the peer publishes final nickname.
         // Re-read shortly after connect to surface nickname promptly in Nearby UI.
@@ -711,6 +722,10 @@ class BleGattClient(
                         reassemblyBuffers[deviceAddress]?.clear()
                         Timber.v("BLE-RX (Central): Message start ($totalFrags frags) from $deviceAddress")
                     }
+                    Timber.i(
+                        "mesh_ble_rx_fragment role=central device=$deviceAddress total=$totalFrags " +
+                            "index=$fragIndex bytes=${payload.size}"
+                    )
                     val buffer = reassemblyBuffers.getOrPut(deviceAddress) { ConcurrentHashMap<Int, ByteArray>() }
                     buffer[fragIndex] = payload
                     expectedFragments[deviceAddress] = totalFrags
@@ -729,8 +744,21 @@ class BleGattClient(
                         reassemblyBuffers.remove(deviceAddress)
                         expectedFragments.remove(deviceAddress)
 
-                        Timber.d("Reassembled complete message from $deviceAddress: ${completeData.size} bytes")
+                        val fingerprint = BlePayloadDiagnostics.fingerprint(completeData)
+                        Timber.i(
+                            "mesh_ble_rx_complete role=central device=$deviceAddress bytes=${completeData.size} " +
+                                "payload_sha256_64=$fingerprint"
+                        )
+                        Timber.i(
+                            "mesh_ble_forward role=central device=$deviceAddress bytes=${completeData.size} " +
+                                "payload_sha256_64=$fingerprint"
+                        )
                         onDataReceived(deviceAddress, completeData)
+                        Timber.i(
+                            "mesh_ble_forward_return role=central device=$deviceAddress bytes=${completeData.size} " +
+                                "payload_sha256_64=$fingerprint"
+                        )
+                        Timber.d("Reassembled complete message from $deviceAddress: ${completeData.size} bytes")
                     }
                 }
             }

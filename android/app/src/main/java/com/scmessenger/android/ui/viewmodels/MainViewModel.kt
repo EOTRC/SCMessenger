@@ -6,6 +6,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.scmessenger.android.data.MeshRepository
 import com.scmessenger.android.data.PreferencesRepository
+import com.scmessenger.android.utils.ContactImportParseResult
+import com.scmessenger.android.utils.DeepLinkValidator
+import com.scmessenger.android.utils.PeerIdValidator
+import com.scmessenger.android.utils.parseContactImportPayload
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -215,53 +219,71 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Mirror of the public-key validation inside
+     * [com.scmessenger.android.data.MeshRepository.addContact]. That function
+     * returns Unit and drops invalid contacts silently, so callers must check
+     * the same condition themselves to avoid reporting success for a contact
+     * that was never stored.
+     */
+    internal fun isValidPublicKeyHex(key: String?): Boolean {
+        val trimmed = key?.trim() ?: return false
+        if (trimmed.length != 64) return false
+        return trimmed.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
+    }
+
     fun importContact(jsonString: String) {
         viewModelScope.launch {
             try {
                 _importError.value = null
                 _importSuccess.value = false
-                val json = org.json.JSONObject(jsonString)
-                val publicKey = json.optString("public_key")
-                // UNIFIED ID FIX: public_key is the canonical contact key.
-                // identity_id is secondary (human fingerprint). peer_id is the libp2p network ID.
-                val peerId = json.optString("peer_id").takeIf { it.isNotBlank() }
-                val identityId = json.optString("identity_id")
-                if (publicKey.isBlank()) {
-                    _importError.value = "Invalid identity format — missing public_key"
-                    return@launch
-                }
-                val nickname = json.optString("nickname").takeIf { it.isNotBlank() }
-                val libp2pPeerId = peerId
-                    ?: json.optString("libp2p_peer_id").takeIf { it.isNotBlank() }
-                val listenersArr = json.optJSONArray("listeners")
-                val listeners = listenersArr?.let { arr ->
-                    (0 until arr.length()).map { i -> arr.getString(i) }
-                } ?: emptyList()
-                val notes = libp2pPeerId?.let { pid ->
-                    buildString {
-                        append("libp2p_peer_id:$pid")
-                        if (listeners.isNotEmpty()) append(";listeners:${listeners.joinToString(",")}")
+                when (val parsed = parseContactImportPayload(jsonString)) {
+                    is ContactImportParseResult.Invalid -> {
+                        _importError.value = parsed.reason
+                    }
+                    is ContactImportParseResult.Valid -> {
+                        val payload = parsed.payload
+                        val notes = payload.libp2pPeerId?.let { pid ->
+                            buildString {
+                                append("libp2p_peer_id:$pid")
+                                if (payload.listeners.isNotEmpty()) {
+                                    append(";listeners:${payload.listeners.joinToString(",")}")
+                                }
+                            }
+                        }
+                        // Store contact with public_key as the canonical peerId.
+                        val contact = uniffi.api.Contact(
+                            peerId = payload.publicKey,
+                            nickname = payload.nickname,
+                            localNickname = null,
+                            publicKey = payload.publicKey,
+                            addedAt = (System.currentTimeMillis() / 1000).toULong(),
+                            lastSeen = null,
+                            notes = notes,
+                            lastKnownDeviceId = null,
+                            verifiedAt = null,
+                            isTombstone = false
+                        )
+                        // SECURITY: MeshRepository.addContact returns Unit and
+                        // silently drops a contact whose public key is empty,
+                        // not 64 chars, or non-hex. Without mirroring that
+                        // check here the import reported success -- and dialed
+                        // the payload's addresses -- for a contact that was
+                        // never stored. Validate at the boundary so failure is
+                        // observable and nothing is dialed on a rejected import.
+                        if (!isValidPublicKeyHex(payload.publicKey)) {
+                            Timber.e("Contact import rejected: invalid public key")
+                            _importError.value = "Invalid public key in contact payload"
+                            return@launch
+                        }
+                        meshRepository.addContact(contact)
+                        Timber.i("Contact imported: ${payload.publicKey.take(8)}...")
+                        if (!payload.libp2pPeerId.isNullOrEmpty() && payload.listeners.isNotEmpty()) {
+                            meshRepository.connectToPeer(payload.libp2pPeerId, payload.listeners)
+                        }
+                        _importSuccess.value = true
                     }
                 }
-                // Store contact with public_key as the canonical peerId
-                val contact = uniffi.api.Contact(
-                    peerId = publicKey,
-                    nickname = nickname,
-                    localNickname = null,
-                    publicKey = publicKey,
-                    addedAt = (System.currentTimeMillis() / 1000).toULong(),
-                    lastSeen = null,
-                    notes = notes,
-                    lastKnownDeviceId = null,
-                    verifiedAt = null,
-                    isTombstone = false
-                )
-                meshRepository.addContact(contact)
-                Timber.i("Contact imported: ${identityId.take(8)}...")
-                if (!libp2pPeerId.isNullOrEmpty() && listeners.isNotEmpty()) {
-                    meshRepository.connectToPeer(libp2pPeerId, listeners)
-                }
-                _importSuccess.value = true
             } catch (e: Exception) {
                 Timber.e(e, "Failed to import contact")
                 _importError.value = "Failed to import: ${e.message}"
@@ -283,19 +305,62 @@ class MainViewModel @Inject constructor(
     }
 
     fun handleDeepLink(uri: Uri) {
+        if (uri.scheme != "scmessenger" || uri.host !in setOf("invite", "add")) {
+            Timber.w("Ignoring unsupported deep link: $uri")
+            return
+        }
         val publicKey = uri.getQueryParameter("public_key")?.trim()
         if (publicKey.isNullOrBlank()) {
             Timber.w("Deep link missing public_key: $uri")
             return
         }
+        if (!publicKey.matches(Regex("^[0-9a-fA-F]{64}$"))) {
+            Timber.w("Deep link has invalid public_key; ignoring: $uri")
+            return
+        }
+        val rawRoutePeerId = uri.getQueryParameter("libp2p_peer_id")?.trim()
+            ?: uri.getQueryParameter("peer_id")?.trim()
+        val routePeerId = rawRoutePeerId?.takeIf { PeerIdValidator.isLibp2pPeerId(it) }
+        if (!rawRoutePeerId.isNullOrBlank() && routePeerId == null) {
+            Timber.w("Deep link has invalid libp2p peer ID; suppressing automatic dial: $rawRoutePeerId")
+        }
+        // Parse multiaddrs from multiple query params: 'listeners' (repeated),
+        // 'connection_hints', 'listener', and 'bootstrap' (single, comma-separated).
+        // The APK share flow uses 'bootstrap' in the download URL.
+        val rawListeners = (
+            uri.getQueryParameters("listeners") +
+                uri.getQueryParameters("connection_hints") +
+                uri.getQueryParameters("listener") +
+                listOfNotNull(uri.getQueryParameter("bootstrap"))
+        )
+            .flatMap { it.split(',') }
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+
+        // Validate multiaddrs to prevent attacker-chosen addresses from untrusted QR codes.
+        // SECURITY: This is a new attack surface -- validation is critical.
+        val deviceIp = meshRepository.getLocalIpAddress()
+        val listeners = if (routePeerId != null) {
+            DeepLinkValidator.sanitizeDeepLinkMultiaddrs(rawListeners, deviceIp)
+        } else {
+            emptyList()
+        }
+
         val data = DeepLinkData(
             publicKey = publicKey,
-            peerId = uri.getQueryParameter("peer_id")?.trim(),
+            peerId = routePeerId,
             nickname = uri.getQueryParameter("nickname")?.trim(),
-            identityId = uri.getQueryParameter("identity_id")?.trim()
+            identityId = uri.getQueryParameter("identity_id")?.trim(),
+            libp2pPeerId = routePeerId,
+            listeners = listeners
         )
-        Timber.i("Deep link parsed: peerId=${data.peerId}, nickname=${data.nickname}")
+        Timber.i("Deep link parsed: peerId=${data.peerId}, nickname=${data.nickname}, listeners=${data.listeners.size}")
         _pendingDeepLink.value = data
+
+        // TODO: Wire auto-dial via MeshRepository.connectToPeer(peerId, addresses)
+        // once validation is reviewed and approved by the operator.
+        // For now, only parse and expose via DeepLinkData.listeners.
     }
 
     fun consumeDeepLink(): DeepLinkData? {
@@ -319,5 +384,7 @@ data class DeepLinkData(
     val publicKey: String,
     val peerId: String?,
     val nickname: String?,
-    val identityId: String?
+    val identityId: String?,
+    val libp2pPeerId: String?,
+    val listeners: List<String>
 )

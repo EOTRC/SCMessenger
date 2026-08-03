@@ -212,6 +212,10 @@ open class MeshRepository(
         } ?: Triple(false, null, null)
     }
 
+    internal suspend fun gateInboundMessage(messageId: String): Triple<Boolean, Long?, TransportType?> {
+        return checkAndRecordMessage(messageId, TransportType.INTERNET)
+    }
+
     private suspend fun enhanceNetworkErrorLogging(exception: Exception, node: String) {
         val errorDetails = classifyBootstrapError(exception, node)
         Timber.w("Bootstrap failed for $node - $errorDetails")
@@ -1747,30 +1751,30 @@ open class MeshRepository(
                 ) {
                     Timber.i("Message from $senderId: $messageId")
                     repoScope.launch {
-                        // Check for duplicate messages across transports
-                        val (isDuplicate, timeVarianceMs, firstTransport) = checkAndRecordMessage(messageId, TransportType.INTERNET)
+                        // Fail fast on duplicate messages before any decode/history/receipt side effects.
+                        val (isDuplicate, timeVarianceMs, firstTransport) = gateInboundMessage(messageId)
                         if (isDuplicate) {
                             Timber.i("Message duplicate detected (core transport): $messageId time_variance=${timeVarianceMs}ms first_transport=$firstTransport")
                             return@launch
                         }
-                    }
 
-                    logDeliveryAttempt(
-                        messageId = messageId,
-                        medium = "core",
-                        phase = "rx",
-                        outcome = "received",
-                        detail = "sender=$senderId",
-                        callerContext = "onMessageReceived"
-                    )
-                    try {
+                        logDeliveryAttempt(
+                            messageId = messageId,
+                            medium = "core",
+                            phase = "rx",
+                            outcome = "received",
+                            detail = "sender=$senderId",
+                            callerContext = "onMessageReceived"
+                        )
+
+                        try {
                         // Check if relay/messaging is enabled (bidirectional control)
                         // Treat null/missing settings as disabled (fail-safe)
                         // Cache settings value to avoid race condition during check
                         val currentSettings = settingsManager?.load()
                         if (!Companion.isMeshParticipationEnabled(currentSettings)) {
                             Timber.w("Dropping received message - mesh participation is disabled or settings unavailable")
-                            return
+                            return@launch
                         }
 
                         val normalizedSenderKey = normalizePublicKey(senderPublicKeyHex)
@@ -1829,7 +1833,7 @@ open class MeshRepository(
 
                         if (isBootstrapRelayPeer(canonicalPeerId)) {
                             Timber.i("Ignoring payload attributed to bootstrap relay peer $canonicalPeerId")
-                            return
+                            return@launch
                         }
 
                         // Auto-upsert contact: senderPublicKeyHex is guaranteed valid Ed25519 key
@@ -2030,14 +2034,14 @@ open class MeshRepository(
                                 preferredWifiPeerId = routeWifiPeerId,
                                 preferredListenerHints = hintedDialCandidates
                             )
-                            return
+                            return@launch
                         }
 
                         if (messageKind == "history_sync") {
                             Timber.d("Processed history sync request from $canonicalPeerId")
                             sendHistorySyncDataIfNeeded(canonicalPeerId, routePeerId, senderPublicKeyHex, hintedDialCandidates, routeWifiPeerId)
                             sendDeliveryReceiptAsync(senderPublicKeyHex, messageId, canonicalPeerId, routePeerId, routeWifiPeerId, preferredListenerHints = hintedDialCandidates)
-                            return
+                            return@launch
                         }
                         if (messageKind == "history_sync_data") {
                             Timber.d("Processed history sync data from $canonicalPeerId")
@@ -2082,7 +2086,7 @@ open class MeshRepository(
                                 historyManager?.flush()
                             } catch (e: Exception) { Timber.e(e, "Failed to parse history_sync_data") }
                             sendDeliveryReceiptAsync(senderPublicKeyHex, messageId, canonicalPeerId, routePeerId, routeWifiPeerId, preferredListenerHints = hintedDialCandidates)
-                            return
+                            return@launch
                         }
 
                         val existingRecord = try {
@@ -2100,7 +2104,7 @@ open class MeshRepository(
                                 preferredWifiPeerId = routeWifiPeerId,
                                 preferredListenerHints = hintedDialCandidates
                             )
-                            return
+                            return@launch
                         }
 
                         val content = decodedPayload.text
@@ -2144,6 +2148,7 @@ open class MeshRepository(
                     } catch (e: Exception) {
                         Timber.e(e, "Failed to process received message")
                     }
+                }
                 }
 
                 override fun onReceiptReceived(messageId: String, status: String) {
@@ -3320,8 +3325,9 @@ open class MeshRepository(
             ensureLocalIdentityFederation()
             // Initiate swarm in Rust core.
             // Core auto-selects headless mode when identity is absent and upgrades when identity appears.
-            // P0_TRANSPORT_001: Use static port 9001 for LAN connectivity with CLI daemon.
-            // This ensures both sides can dial each other using predictable addresses.
+            // P0_TRANSPORT_001: Prefer port 9001 for LAN connectivity with the CLI daemon.
+            // The Rust multi-port listener may fall back when that port is unavailable;
+            // all exported identity hints must therefore come from the live listener list.
             // Bootstrap addrs: empty for now — mobile will discover LAN peers via mDNS
             // and relay peers via the ledger exchange protocol. Can be populated from
             // config or QR-scanned contact addrs in future.
@@ -3347,7 +3353,7 @@ open class MeshRepository(
                 performStartupDialSweep()
             }
 
-            Timber.i("[OK] Internet transport (Swarm) listening on tcp/9001 and bridge wired")
+            Timber.i("[OK] Internet transport (Swarm) started and bridge wired; listeners=${getListeningAddresses()}")
         } catch (e: Exception) {
             swarmBridge = null
             Timber.e(e, "Swarm failed to start listening — inbound internet/LAN transport unavailable")
@@ -3641,11 +3647,32 @@ open class MeshRepository(
             .onFailure { Timber.w(it, "Failed to stop WiFi transport") }
 
         // TransportManager.startAll() is called when the service starts (see
-        // above); stopAll() must be called here too so WiFi Aware detaches
+        // above); teardown must happen here too so WiFi Aware detaches
         // (WifiAwareSession.close()) instead of leaking an attach session
         // for the lifetime of the process after the mesh service stops.
-        kotlin.runCatching { transportManager?.stopAll() }
-            .onFailure { Timber.w(it, "Failed to stop TransportManager (BLE/WiFi Aware/WiFi Direct/mDNS)") }
+        //
+        // cleanup(), NOT stopAll(). stopAll() does not cancel TransportManager's
+        // own CoroutineScope (TransportManager.kt:70,
+        // Dispatchers.IO + SupervisorJob) -- it actually LAUNCHES more work on
+        // it on the way out. Only cleanup() calls scope.cancel(). Since
+        // transportManager is set to null a few lines below, the manager is
+        // being discarded here and a full teardown is what is wanted.
+        //
+        // Consequence of the old stopAll(): that scope outlived the mesh
+        // service, so the bootstrap retry loop (which backs off to a 60s period
+        // and then retries forever) and the SubnetProbe sweep kept running.
+        // On device that is a resource leak; in the JVM unit tests it kept the
+        // Gradle test worker alive after the last test finished, so
+        // :app:testDebugUnitTest never exited and died on "Timeout has been
+        // exceeded" (10 min guard at android/app/build.gradle:203, added after
+        // this hang burned 90-151 min of CI while passing locally in 54s).
+        // Cancelling repoScope did not help, because none of that work was ever
+        // owned by repoScope.
+        //
+        // cleanup() calls stopAll() first, so the WiFi Aware detach above is
+        // preserved.
+        kotlin.runCatching { transportManager?.cleanup() }
+            .onFailure { Timber.w(it, "Failed to clean up TransportManager (BLE/WiFi Aware/WiFi Direct/mDNS)") }
 
         // shutdown() is now a suspend FFI call; teardown must complete before
         // meshService.stop() below, so block here (bounded: it only awaits the
@@ -3918,13 +3945,18 @@ open class MeshRepository(
             }
         } catch (_: Exception) { null }
 
+        // Public-key hex is the sole persisted contact identity. A libp2p
+        // peer ID is transport routing metadata and may change across device
+        // reinstalls; keeping it as Contact.peerId creates duplicate contacts
+        // and makes message lookup depend on the import surface used.
+        val canonicalContactId = trimmedKey.lowercase()
         val finalContact = if (existingWithKey != null) {
             Timber.i("Idempotent contact upsert: peer ${contact.peerId} matches existing contact ${existingWithKey.peerId} by public key")
             uniffi.api.Contact(
-                peerId = existingWithKey.peerId,
+                peerId = canonicalContactId,
                 nickname = contact.nickname ?: existingWithKey.nickname,
                 localNickname = contact.localNickname ?: existingWithKey.localNickname,
-                publicKey = existingWithKey.publicKey,
+                publicKey = trimmedKey,
                 addedAt = existingWithKey.addedAt,
                 lastSeen = if (contact.lastSeen != null) {
                     val currentLastSeen = existingWithKey.lastSeen ?: 0u
@@ -3936,23 +3968,18 @@ open class MeshRepository(
                 isTombstone = false
             )
         } else {
-            val canonical = canonicalId(contact.peerId)
-            if (canonical != contact.peerId) {
-                uniffi.api.Contact(
-                    peerId = canonical,
-                    nickname = contact.nickname,
-                    localNickname = contact.localNickname,
-                    publicKey = contact.publicKey,
-                    addedAt = contact.addedAt,
-                    lastSeen = contact.lastSeen,
-                    notes = contact.notes,
-                    lastKnownDeviceId = contact.lastKnownDeviceId,
-                    verifiedAt = contact.verifiedAt,
-                    isTombstone = contact.isTombstone
-                )
-            } else {
-                contact
-            }
+            uniffi.api.Contact(
+                peerId = canonicalContactId,
+                nickname = contact.nickname,
+                localNickname = contact.localNickname,
+                publicKey = trimmedKey,
+                addedAt = contact.addedAt,
+                lastSeen = contact.lastSeen,
+                notes = contact.notes,
+                lastKnownDeviceId = contact.lastKnownDeviceId,
+                verifiedAt = contact.verifiedAt,
+                isTombstone = contact.isTombstone
+            )
         }
 
         contactManager?.add(finalContact)
@@ -6282,8 +6309,12 @@ open class MeshRepository(
             }
         }
 
-        val connectedBleDevices = kotlin.runCatching { bleGattServer?.getConnectedDeviceAddresses().orEmpty() }
-            .getOrDefault(emptyList())
+        val connectedBleDevices = buildList {
+            addAll(kotlin.runCatching { bleGattServer?.getConnectedDeviceAddresses().orEmpty() }
+                .getOrDefault(emptyList()))
+            addAll(kotlin.runCatching { bleGattClient?.getConnectedDeviceAddresses().orEmpty() }
+                .getOrDefault(emptyList()))
+        }
             .mapNotNull { it.trim().takeIf { value -> value.isNotEmpty() } }
             .distinct()
         val requestedBlePeerId = blePeerId?.trim()?.takeIf { it.isNotEmpty() }
@@ -6696,6 +6727,25 @@ open class MeshRepository(
         
         val localAcked = smartResult.success
 
+        // A transport result is authoritative for this attempt. Do not let a
+        // later core-route check downgrade a successful BLE/Wi-Fi/TCP send to
+        // "no_route_candidates". This is a transport ACK (not proof that the
+        // recipient decrypted/displayed the message), so the caller will keep
+        // its receipt window and can distinguish delivery from acknowledgement.
+        if (localAcked) {
+            logDeliveryAttempt(
+                messageId = traceMessageId,
+                medium = smartResult.transport.value,
+                phase = "aggregate",
+                outcome = "accepted",
+                detail = "ctx=$attemptContext source=smart_router transport_ack=true"
+            )
+            return DeliveryAttemptResult(
+                acked = true,
+                routePeerId = routePeerCandidates.firstOrNull()
+            )
+        }
+
         if (strictBleOnly) {
             logDeliveryAttempt(
                 messageId = traceMessageId,
@@ -7002,10 +7052,29 @@ open class MeshRepository(
                 )
                 logMessageDeliveryAttempt(item.historyRecordId, item.attemptCount + 1, "forwarding")
 
-                val envelope = try {
+                // Base64.decode returns a PLATFORM type (ByteArray!), so Kotlin
+                // does not enforce non-null here. It can legitimately be null:
+                // under JVM unit tests android.util.* is stubbed and
+                // `returnDefaultValues = true` (android/app/build.gradle) makes
+                // stubbed object returns null. Without the null branch the null
+                // flowed into attemptDirectSwarmDelivery's non-null
+                // `encryptedData` parameter and threw NullPointerException from
+                // a background coroutine, which surfaced against whichever test
+                // happened to be running.
+                //
+                // A null decode is the same situation as the corrupt-envelope
+                // catch below -- there is no sendable payload -- so it takes the
+                // same path rather than propagating.
+                val envelope: ByteArray? = try {
                     android.util.Base64.decode(item.envelopeBase64, android.util.Base64.NO_WRAP)
                 } catch (_: Exception) {
                     Timber.w("Dropping corrupt pending envelope ${item.queueId}")
+                    iterator.remove()
+                    updated = true
+                    continue
+                }
+                if (envelope == null) {
+                    Timber.w("Dropping pending envelope with undecodable payload ${item.queueId}")
                     iterator.remove()
                     updated = true
                     continue
@@ -8483,17 +8552,78 @@ open class MeshRepository(
         }
     }
 
+    /**
+     * SECURITY: default-deny address admission.
+     *
+     * This gate gained a remotely-reachable caller when contact-import and
+     * deep-link payloads began carrying a `listeners` array, so an untrusted
+     * QR code or URL can now propose dial targets. It previously returned
+     * `true` for anything that was not literal `/ip4/`, which admitted every
+     * `/ip6/`, `/dns4/`, `/dns6/`, `/dnsaddr/` and `/dns/` form -- reaching
+     * loopback, link-local, ULA and NAT64-mapped metadata addresses, and
+     * allowing DNS rebinding. Unknown forms are now rejected rather than
+     * allowed.
+     */
     private fun isDialableAddress(multiaddr: String): Boolean {
-        if (multiaddr.contains("/p2p-circuit")) return true
+        // DNS forms are never accepted from import-sourced hints: the name can
+        // be re-pointed after validation (rebinding). The Rust seed path
+        // enforces the same rule via DnsPolicy::Reject.
+        if (multiaddr.contains("/dns")) return false
 
-        val ip = extractIpv4FromMultiaddr(multiaddr) ?: return true
-        if (isSpecialUseIpv4(ip)) return false
-
-        return if (isPrivateIpv4(ip)) {
-            isSameLanAddress(multiaddr)
-        } else {
-            true
+        val ipv4 = extractIpv4FromMultiaddr(multiaddr)
+        if (ipv4 != null) {
+            if (isSpecialUseIpv4(ipv4)) return false
+            val ipv4Ok = if (isPrivateIpv4(ipv4)) isSameLanAddress(multiaddr) else true
+            if (!ipv4Ok) return false
+            // A circuit address carries a real socket to the relay hop, which
+            // is the leading IP just validated above.
+            return true
         }
+
+        val ipv6 = extractIpv6FromMultiaddr(multiaddr)
+        if (ipv6 != null) {
+            return !isRestrictedIpv6(ipv6)
+        }
+
+        // Circuit address with no resolvable leading IP, or an unrecognised
+        // protocol stack. Default deny.
+        return false
+    }
+
+    /** Extract the address literal from a `/ip6/<addr>/...` multiaddr. */
+    private fun extractIpv6FromMultiaddr(multiaddr: String): String? {
+        val marker = "/ip6/"
+        val start = multiaddr.indexOf(marker)
+        if (start == -1) return null
+        val rest = multiaddr.substring(start + marker.length)
+        val end = rest.indexOf('/')
+        val literal = if (end == -1) rest else rest.substring(0, end)
+        return literal.takeIf { it.isNotEmpty() }
+    }
+
+    /**
+     * IPv6 equivalents of [isSpecialUseIpv4]. Unique-local (fc00::/7) is
+     * rejected outright here rather than LAN-gated: there is no reliable
+     * same-subnet test for ULA on Android without the interface prefix, and
+     * admitting it would reopen the internal-probe vector.
+     */
+    private fun isRestrictedIpv6(ip: String): Boolean {
+        val v = ip.lowercase().trim()
+        if (v.isEmpty()) return true
+        if (v == "::" || v == "::1") return true // unspecified, loopback
+        // Link-local fe80::/10 spans fe80..febf.
+        if (v.startsWith("fe8") || v.startsWith("fe9") ||
+            v.startsWith("fea") || v.startsWith("feb")
+        ) {
+            return true
+        }
+        if (v.startsWith("ff")) return true // multicast ff00::/8
+        if (v.startsWith("fc") || v.startsWith("fd")) return true // ULA fc00::/7
+        // IPv4-mapped/compatible and NAT64 (64:ff9b::/96) can smuggle a
+        // restricted IPv4 target through the IPv6 path.
+        if (v.startsWith("::ffff:") || v.startsWith("64:ff9b:")) return true
+        if (v.startsWith("2002:")) return true // 6to4, embeds an IPv4 target
+        return false
     }
 
     private fun parseIpv4Octets(ip: String): List<Int>? {
@@ -9308,11 +9438,24 @@ open class MeshRepository(
         return null
     }
 
-    fun getIdentityExportString(
+    suspend fun getIdentityExportString(
         minimalForQr: Boolean = false,
         identityInfo: uniffi.api.IdentityInfo? = null
     ): String {
         val identity = identityInfo ?: getIdentityInfoNonBlocking() ?: return "{}"
+        // Read the authoritative listener list at export time.  The cached list is
+        // retained as a fallback for a just-started swarm, but a guessed port must
+        // never be emitted as routing truth.
+        val liveListeners = try {
+            swarmBridge?.getListeners().orEmpty()
+        } catch (e: Exception) {
+            Timber.w(e, "Failed to read live listeners while exporting identity")
+            emptyList()
+        }
+        if (liveListeners.isNotEmpty()) {
+            listeningAddressesSnapshot = liveListeners
+        }
+        val listenerAddresses = liveListeners.ifEmpty { listeningAddressesSnapshot }
         val localIp = getLocalIpAddress()
         val relay = if (minimalForQr) null else getPreferredRelay()
 
@@ -9330,13 +9473,22 @@ open class MeshRepository(
 
         if (minimalForQr) {
             // P0_ANDROID_QR_FIX: Keep payload small to avoid QR code capacity errors.
-            val minimalHints = mutableListOf<String>()
-            if (localIp != null) {
-                minimalHints.add("/ip4/$localIp/tcp/9001")
-            }
+            // Do not synthesize /tcp/9001: the core may have selected another
+            // port after a bind conflict.  An empty hint list is safer than a
+            // false address; mDNS/ledger discovery remains available.
+            val minimalHints = normalizeOutboundListenerHints(listenerAddresses)
+                .map { addr ->
+                    if (localIp != null && addr.contains("0.0.0.0")) {
+                        addr.replace("0.0.0.0", localIp)
+                    } else {
+                        addr
+                    }
+                }
+                .distinct()
+                .take(3)
             payload.put("connection_hints", org.json.JSONArray(minimalHints))
         } else {
-            var listeners = normalizeOutboundListenerHints(getListeningAddresses()).toMutableList()
+            var listeners = normalizeOutboundListenerHints(listenerAddresses).toMutableList()
             val externalAddresses = normalizeExternalAddressHints(getExternalAddresses())
             
             if (localIp != null) {

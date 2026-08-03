@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -60,13 +60,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
       
       - name: Cache Gradle dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v6
         with:
           path: |
             ~/.gradle/caches
@@ -85,7 +85,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       
       - name: Install swiftlint
         run: brew install swiftlint
@@ -100,7 +100,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       
       - uses: actions/setup-node@v4
         with:
@@ -118,7 +118,7 @@ jobs:
       
       - name: Cache npm dependencies
         if: steps.check-package.outputs.exists == 'true'
-        uses: actions/cache@v3
+        uses: actions/cache@v6
         with:
           path: wasm/node_modules
           key: ${{ runner.os }}-node-${{ hashFiles('wasm/package-lock.json') }}

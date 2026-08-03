@@ -353,6 +353,11 @@ class BleGattServer(
         ) {
             super.onCharacteristicWriteRequest(device, requestId, characteristic, preparedWrite, responseNeeded, offset, value)
 
+            Timber.i(
+                "mesh_ble_rx_write device=${device.address} char=${characteristic.uuid} " +
+                    "bytes=${value?.size ?: 0} offset=$offset prepared=$preparedWrite response=$responseNeeded"
+            )
+
             if (value == null) {
                 if (responseNeeded) {
                     sendResponseSafe(device, requestId, BluetoothGatt.GATT_FAILURE, offset, null)
@@ -363,7 +368,20 @@ class BleGattServer(
             when (characteristic.uuid) {
                 MESSAGE_CHAR_UUID -> {
                     handleReassembly(device.address, value) { completeData ->
+                        val fingerprint = BlePayloadDiagnostics.fingerprint(completeData)
+                        Timber.i(
+                            "mesh_ble_rx_complete device=${device.address} bytes=${completeData.size} " +
+                                "payload_sha256_64=$fingerprint"
+                        )
+                        Timber.i(
+                            "mesh_ble_forward device=${device.address} bytes=${completeData.size} " +
+                                "payload_sha256_64=$fingerprint"
+                        )
                         onDataReceived(device.address, completeData)
+                        Timber.i(
+                            "mesh_ble_forward_return device=${device.address} bytes=${completeData.size} " +
+                                "payload_sha256_64=$fingerprint"
+                        )
                         Timber.d("Reassembled complete message (${completeData.size} bytes) from ${device.address}")
                     }
                     if (responseNeeded) {
@@ -445,6 +463,11 @@ class BleGattServer(
             val totalFrags = (value[0].toInt() and 0xFF) or ((value[1].toInt() and 0xFF) shl 8)
             val fragIndex = (value[2].toInt() and 0xFF) or ((value[3].toInt() and 0xFF) shl 8)
             val payload = value.copyOfRange(4, value.size)
+
+            Timber.i(
+                "mesh_ble_rx_fragment device=$deviceAddress total=$totalFrags " +
+                    "index=$fragIndex bytes=${payload.size}"
+            )
 
             if (fragIndex == 0) {
                 reassemblyBuffers[deviceAddress]?.clear()

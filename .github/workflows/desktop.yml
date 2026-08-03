@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -42,5 +42,5 @@ jobs:
       - name: Generate Kotlin bindings
         run: cargo run -p scmessenger-desktop-bridge --bin gen_kotlin --features gen-bindings
 
-      - name: Compile Kotlin for LinuxX64
-        run: ./gradlew :shared:compileKotlinLinuxX64
+      - name: Compile Kotlin for desktop JVM
+        run: ./gradlew :shared:compileKotlinDesktop

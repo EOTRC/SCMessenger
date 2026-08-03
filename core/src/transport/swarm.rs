@@ -52,6 +52,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use tokio::sync::mpsc;
 use web_time::SystemTime;
@@ -245,14 +246,16 @@ fn push_seed_dial_candidate(
 ///   internet-relay tier of the transport priority order and it is normally a
 ///   name.
 /// - `proven` are entries with `success_count > 0`, i.e. addresses this node
-///   actually completed a connection to. `AllowLocallyConfigured` is sound here
-///   only because of a closed loop worth stating explicitly: the sole caller of
-///   `LedgerManager::record_connection` in core passes the resolved remote
-///   address of an established outbound connection, and to have connected we
-///   must already have passed one of these gates. Wire-learned entries arrive
-///   through `annotate_identity` with `success_count = 0`, so they are in the
-///   `seeds` tier, never here. If anything ever promotes an unproven entry
-///   directly, this argument breaks and this tier must become `Reject`.
+///   actually completed a connection to. The policy here is `Reject`, matching
+///   the `seeds` tier. The original rationale for `AllowLocallyConfigured`
+///   relied on a closed-loop argument: `record_connection` in core only
+///   receives the resolved remote address of an established outbound
+///   connection, so provenance was supposedly traceable. That argument is
+///   fragile -- it depends on every future caller of `record_connection`
+///   preserving the invariant, and on no code path promoting an unproven
+///   entry directly. Legacy on-disk ledger entries have unverifiable
+///   provenance (written by a prior build with weaker invariants), so the
+///   proven tier now uses `Reject` as a defence-in-depth measure.
 /// - `seeds` are `success_count == 0`: invite `seed_ledger` content and
 ///   wire-learned addresses. `Reject` -- this is the attacker-suppliable tier
 ///   and the exact vector NEW-1 describes.
@@ -278,7 +281,7 @@ fn build_seed_dial_candidates(
                 &mut seen,
                 my_addrs,
                 mode,
-                DnsPolicy::AllowLocallyConfigured,
+                DnsPolicy::Reject,
             );
         }
     }
@@ -1611,6 +1614,7 @@ pub enum SwarmCommand {
     /// Dial a peer at a specific address
     Dial {
         addr: Multiaddr,
+        trusted: bool,
         reply: mpsc::Sender<Result<(), String>>,
     },
     /// Dial a discovered address (with rate-limiting)
@@ -1787,12 +1791,26 @@ pub enum SwarmEvent2 {
 #[derive(Clone)]
 pub struct SwarmHandle {
     command_tx: mpsc::Sender<SwarmCommand>,
+    event_loop_alive: Arc<AtomicBool>,
     // Retained for API symmetry; event loop holds its own core handle.
     #[allow(dead_code)]
     core_handle: Option<Weak<crate::IronCore>>,
 }
 
 impl SwarmHandle {
+    pub fn is_event_loop_alive(&self) -> bool {
+        self.event_loop_alive.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_liveness_test(is_alive: bool) -> Self {
+        Self {
+            command_tx: mpsc::channel(1).0,
+            event_loop_alive: Arc::new(AtomicBool::new(is_alive)),
+            core_handle: None,
+        }
+    }
+
     /// Send an encrypted envelope to a peer.
     ///
     /// `recipient_identity_id` and `intended_device_id` carry WS13 tight-pair metadata.
@@ -1892,6 +1910,27 @@ impl SwarmHandle {
         self.command_tx
             .send(SwarmCommand::Dial {
                 addr,
+                trusted: false,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("Swarm task not running"))?;
+
+        reply_rx
+            .recv()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("No reply from swarm"))?
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+
+    /// Dial an address this process created (the Wi-Fi Aware loopback proxy).
+    /// Do NOT use for peer-supplied addresses.
+    pub async fn dial_trusted_local_proxy(&self, addr: Multiaddr) -> Result<()> {
+        let (reply_tx, mut reply_rx) = mpsc::channel(1);
+        self.command_tx
+            .send(SwarmCommand::Dial {
+                addr,
+                trusted: true,
                 reply: reply_tx,
             })
             .await
@@ -2509,8 +2548,10 @@ pub async fn start_swarm_with_config(
         }
 
         let (command_tx, mut command_rx) = mpsc::channel::<SwarmCommand>(256);
+        let event_loop_alive = Arc::new(AtomicBool::new(true));
         let handle = SwarmHandle {
             command_tx: command_tx.clone(),
+            event_loop_alive: event_loop_alive.clone(),
             core_handle: core_handle.clone(),
         };
 
@@ -2663,6 +2704,15 @@ pub async fn start_swarm_with_config(
 
         // Spawn the swarm event loop
         tokio::spawn(async move {
+            struct SwarmTaskLivenessGuard(Arc<AtomicBool>);
+
+            impl Drop for SwarmTaskLivenessGuard {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::Release);
+                }
+            }
+
+            let _liveness_guard = SwarmTaskLivenessGuard(event_loop_alive);
             // PHASE 6: Retry interval for failed deliveries
             let mut retry_interval = tokio::time::interval(Duration::from_millis(500));
 
@@ -5216,11 +5266,33 @@ pub async fn start_swarm_with_config(
                                             }
 
                                             SwarmCommand::DiscoveryDial { peer_id, addr } => {
+                                                if !crate::transport::addr_filter::is_dialable_multiaddr_parsed(
+                                                    &addr,
+                                                    crate::transport::addr_filter::NetworkMode::Local,
+                                                    crate::transport::addr_filter::DnsPolicy::Reject,
+                                                ) {
+                                                    tracing::debug!("Rejecting non-dialable discovery dial to {} for peer {}", addr, peer_id);
+                                                    continue;
+                                                }
                                                 tracing::debug!("Processing off-loop discovery dial to {} for peer {}", addr, peer_id);
                                                 let _ = swarm.dial(addr);
                                             }
 
-                                            SwarmCommand::Dial { addr, reply } => {
+                                            SwarmCommand::Dial { addr, trusted, reply } => {
+                                let dialable = if trusted {
+                                    crate::transport::addr_filter::is_dialable_trusted_local_proxy_parsed(
+                                        &addr, crate::transport::addr_filter::DnsPolicy::Reject)
+                                } else {
+                                    crate::transport::addr_filter::is_dialable_multiaddr_parsed(
+                                        &addr, crate::transport::addr_filter::NetworkMode::Local,
+                                        crate::transport::addr_filter::DnsPolicy::Reject)
+                                };
+                                // Filter the original address before any synthesis
+                                if !dialable {
+                                    tracing::debug!("Rejecting non-dialable dial target: {}", addr);
+                                    let _ = reply.send(Err("Address rejected by dial filter".to_string())).await;
+                                    continue;
+                                }
                                 tracing::debug!("Dialing {} (synthesizing port ladder if applicable)", addr);
                                 let s = addr.to_string();
                                 let is_direct = !s.contains("/p2p-circuit/") && !s.contains("/ws/") && !s.contains("/wss/");
@@ -5305,6 +5377,81 @@ pub async fn start_swarm_with_config(
                                                     candidates.push(relay_addr);
                                                 }
                                             }
+
+                                            // SSRF gate on the SYNTHESIZED candidate ladder.
+                                            //
+                                            // The original `addr` was already validated at the
+                                            // untrusted-INPUT boundary (QR / deep link / contact
+                                            // import) -- that is where global-routability and
+                                            // private-range filtering BELONGS. Re-applying that same
+                                            // filter here was wrong: it rejected loopback and LAN
+                                            // hosts, breaking same-WiFi peer dials (and the
+                                            // integration_wifi_aware test). Do NOT restore the
+                                            // stricter addr_filter call here; if a host is
+                                            // unacceptable it must be refused at entry, not on the
+                                            // dial path.
+                                            //
+                                            // The only SSRF amplification this ladder can create is
+                                            // reaching a HOST the caller did not name: last_good and
+                                            // the 443/80/8080 port ladder reuse `base_prefix` (same
+                                            // host, new port), and relay addresses name configured
+                                            // relays. So the correct check is HOST EQUALITY, not
+                                            // routability -- retain a candidate only when its IP
+                                            // host is identical to the host of the base `addr`.
+                                            // DNS-form candidates are dropped outright: a name can be
+                                            // re-pointed after validation, so a host-equality check
+                                            // on a name would not hold.
+                                            let base_host: Option<std::net::IpAddr> = addr.iter().find_map(|p| match p {
+                                                libp2p::multiaddr::Protocol::Ip4(ip) => Some(std::net::IpAddr::V4(ip)),
+                                                libp2p::multiaddr::Protocol::Ip6(ip) => Some(std::net::IpAddr::V6(ip)),
+                                                _ => None,
+                                            });
+                                            // base_host is Some whenever we reach here (found_ip == true).
+                                            candidates.retain(|c| {
+                                                let is_dns = c.iter().any(|p| matches!(
+                                                    p,
+                                                    libp2p::multiaddr::Protocol::Dns(_)
+                                                        | libp2p::multiaddr::Protocol::Dns4(_)
+                                                        | libp2p::multiaddr::Protocol::Dns6(_)
+                                                        | libp2p::multiaddr::Protocol::Dnsaddr(_)
+                                                ));
+                                                if is_dns {
+                                                    tracing::debug!(
+                                                        "Dropping synthesized candidate with DNS host (re-pointable after validation): {}",
+                                                        c
+                                                    );
+                                                    return false;
+                                                }
+                                                // Circuit-relay candidates are EXEMPT from host
+                                                // equality. build_relay_addresses() composes
+                                                // <relay-addr>/p2p/<relay>/p2p-circuit/p2p/<target>,
+                                                // so the only IP in the address is the RELAY's, which
+                                                // by definition never equals base_host (the target's
+                                                // host). Without this exemption the host-equality test
+                                                // drops every relay candidate and silently disables the
+                                                // circuit-relay fallback that "P1 Item 4" adds just
+                                                // above -- the exact path NAT'd peers depend on.
+                                                //
+                                                // This is not an SSRF hole: the relay set is configured
+                                                // and vetted, not attacker-supplied, and the target peer
+                                                // is still pinned by the trailing /p2p/<target>.
+                                                if c.iter().any(|p| matches!(p, libp2p::multiaddr::Protocol::P2pCircuit)) {
+                                                    return true;
+                                                }
+                                                let cand_host: Option<std::net::IpAddr> = c.iter().find_map(|p| match p {
+                                                    libp2p::multiaddr::Protocol::Ip4(ip) => Some(std::net::IpAddr::V4(ip)),
+                                                    libp2p::multiaddr::Protocol::Ip6(ip) => Some(std::net::IpAddr::V6(ip)),
+                                                    _ => None,
+                                                });
+                                                let ok = cand_host.is_some() && cand_host == base_host;
+                                                if !ok {
+                                                    tracing::debug!(
+                                                        "Dropping synthesized candidate with host mismatch (not the dialed host): {}",
+                                                        c
+                                                    );
+                                                }
+                                                ok
+                                            });
 
                                             dial_candidate_addrs = candidates
                                                 .iter()
@@ -5813,8 +5960,10 @@ pub async fn start_swarm_with_config(
         }
 
         let (command_tx, mut command_rx) = mpsc::channel::<SwarmCommand>(256);
+        let event_loop_alive = Arc::new(AtomicBool::new(true));
         let handle = SwarmHandle {
             command_tx: command_tx.clone(),
+            event_loop_alive: event_loop_alive.clone(),
             core_handle: core_handle.clone(),
         };
 
@@ -5875,6 +6024,15 @@ pub async fn start_swarm_with_config(
         let mut sync_sessions: HashMap<PeerId, SyncSession> = HashMap::new();
 
         wasm_bindgen_futures::spawn_local(async move {
+            struct SwarmTaskLivenessGuard(Arc<AtomicBool>);
+
+            impl Drop for SwarmTaskLivenessGuard {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::Release);
+                }
+            }
+
+            let _liveness_guard = SwarmTaskLivenessGuard(event_loop_alive);
             loop {
                 let command_fut = command_rx.recv().fuse();
                 let swarm_fut = swarm.select_next_some().fuse();
@@ -5934,10 +6092,31 @@ pub async fn start_swarm_with_config(
                                 let _ = reply.send(addresses).await;
                             }
                             SwarmCommand::DiscoveryDial { peer_id, addr } => {
+                                if !crate::transport::addr_filter::is_dialable_multiaddr_parsed(
+                                    &addr,
+                                    crate::transport::addr_filter::NetworkMode::Local,
+                                    crate::transport::addr_filter::DnsPolicy::Reject,
+                                ) {
+                                    tracing::debug!("Rejecting non-dialable discovery dial to {} for peer {}", addr, peer_id);
+                                    continue;
+                                }
                                 tracing::debug!("Processing off-loop discovery dial to {} for peer {}", addr, peer_id);
                                 let _ = swarm.dial(addr);
                             }
-                            SwarmCommand::Dial { addr, reply } => {
+                            SwarmCommand::Dial { addr, trusted, reply } => {
+                                let dialable = if trusted {
+                                    crate::transport::addr_filter::is_dialable_trusted_local_proxy_parsed(
+                                        &addr, crate::transport::addr_filter::DnsPolicy::Reject)
+                                } else {
+                                    crate::transport::addr_filter::is_dialable_multiaddr_parsed(
+                                        &addr, crate::transport::addr_filter::NetworkMode::Local,
+                                        crate::transport::addr_filter::DnsPolicy::Reject)
+                                };
+                                if !dialable {
+                                    tracing::debug!("Rejecting non-dialable dial target (wasm): {}", addr);
+                                    let _ = reply.send(Err("Address rejected by dial filter".to_string())).await;
+                                    continue;
+                                }
                                 match swarm.dial(addr) {
                                     Ok(_) => { let _ = reply.send(Ok(())).await; }
                                     Err(e) => {

@@ -4,14 +4,12 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.net.ConnectivityManager
 import com.scmessenger.android.data.MeshRepository
+import com.scmessenger.android.service.TransportType
 import com.scmessenger.android.transport.SmartTransportRouter
-import io.mockk.Awaits
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
-import io.mockk.just
 import io.mockk.mockk
-import io.mockk.runs
 import io.mockk.slot
 import io.mockk.verify
 import java.io.File
@@ -26,6 +24,7 @@ import org.junit.BeforeClass
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import uniffi.api.ContactManager
 import uniffi.api.CoreDelegate
@@ -90,6 +89,80 @@ class ReceiptUnificationTest {
             )
             System.setProperty("jna.library.path", hostLibDir.absolutePath)
         }
+
+        /**
+         * Diagnostic for the :app:testDebugUnitTest worker hang.
+         *
+         * Every test in this class PASSES, then the Gradle worker JVM refuses to
+         * exit and the task dies on "Timeout has been exceeded" (10-minute guard
+         * at android/app/build.gradle:203). Gradle then reports
+         * "Terminate orphan process: pid (java)".
+         *
+         * Only a NON-DAEMON thread can hold a JVM open. Two fixes aimed at
+         * coroutine scopes (cancelling repoScope, then routing stopMeshService
+         * through TransportManager.cleanup) both failed -- which is expected in
+         * hindsight, because Dispatchers.IO/Default threads are already daemon
+         * and could never have been the cause.
+         *
+         * Every Executors pool in the Android sources that a test can reach sets
+         * isDaemon = true, so the survivor is most likely created below the
+         * Kotlin layer -- e.g. a JNA callback thread for the Rust core, which is
+         * loaded here (checkNative passes in CI, tests run).
+         *
+         * Rather than guess a third time, this prints the actual survivors. The
+         * next CI run names the culprit in the log. Test-only: no production
+         * code path is affected.
+         */
+        @JvmStatic
+        @BeforeClass
+        fun startHangWatchdog() {
+            // @AfterClass was tried first and produced NOTHING: the CI log goes
+            // straight from the last test's SKIPPED line to the Gradle timeout,
+            // so execution never reaches @AfterClass. That means the JVM wedges
+            // during the per-test lifecycle (most likely inside @After), not at
+            // exit -- so any end-of-suite hook is structurally unable to report.
+            //
+            // A daemon watchdog fires regardless of where the wedge is. Daemon
+            // so it cannot itself hold the JVM open, and it dumps every live
+            // NON-DAEMON thread with its stack -- only a non-daemon thread can
+            // block exit, and Kotlin's Dispatchers.IO/Default are already daemon.
+            //
+            // It also dumps threads that are BLOCKED or WAITING regardless of
+            // daemon status, because if the wedge is in @After the culprit is a
+            // blocked test thread rather than a leaked background one.
+            val t = Thread {
+                try {
+                    Thread.sleep(180_000)
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
+                val all = Thread.getAllStackTraces()
+                val nonDaemon = all.keys.filter { !it.isDaemon && it.isAlive }
+                println("=== HANG WATCHDOG FIRED (180s) ===")
+                println("=== NON-DAEMON THREADS ALIVE: ${nonDaemon.size} ===")
+                nonDaemon.forEach { th ->
+                    println("=== NDTHREAD name=${th.name} state=${th.state}")
+                    th.stackTrace.take(15).forEach { f -> println("===     at $f") }
+                }
+                println("=== BLOCKED/WAITING THREADS (any daemon status) ===")
+                all.keys.filter {
+                    it.state == Thread.State.BLOCKED ||
+                        it.state == Thread.State.WAITING ||
+                        it.state == Thread.State.TIMED_WAITING
+                }.forEach { th ->
+                    val top = th.stackTrace.firstOrNull()?.toString() ?: "<no frames>"
+                    // Only the ones parked in our own code are interesting.
+                    if (th.stackTrace.any { it.className.startsWith("com.scmessenger") }) {
+                        println("=== WTHREAD name=${th.name} state=${th.state} daemon=${th.isDaemon} top=$top")
+                        th.stackTrace.take(15).forEach { f -> println("===     at $f") }
+                    }
+                }
+                println("=== END HANG WATCHDOG DUMP ===")
+            }
+            t.isDaemon = true
+            t.name = "scm-hang-watchdog"
+            t.start()
+        }
     }
 
     private fun freshFilesDir(): File {
@@ -142,8 +215,91 @@ class ReceiptUnificationTest {
         getField<CoroutineScope>(repo, "repoScope")?.cancel()
     }
 
+    // Repos whose repoScope must be cancelled in @After.
+    //
+    // A test that calls startMeshService() spawns work that NEVER ends on its
+    // own -- the bootstrap retry loop (which backs off to a 60s period and then
+    // retries forever) and the SubnetProbe scan. Those keep the Gradle test
+    // JVM alive after the last test finishes, so :app:testDebugUnitTest ran for
+    // 26m56s and was killed by "Timeout has been exceeded". No test actually
+    // failed; the task just never terminated.
+    //
+    // Registering here rather than calling cancelRepoScope() at the end of each
+    // test means the scope is still torn down if the test throws part-way.
+    private val activeRepos = mutableListOf<MeshRepository>()
+
+    private fun trackRepo(repo: MeshRepository): MeshRepository {
+        activeRepos += repo
+        return repo
+    }
+
+    @Test
+    fun `inbound gate waits for dedup result and reports duplicates`() = runTest {
+        val filesDir = freshFilesDir()
+        val repo = trackRepo(MeshRepository(fakeContext(filesDir)))
+
+        val router = mockk<SmartTransportRouter>()
+        coEvery {
+            router.checkAndRecordMessage(
+                "msg-dup-1",
+                SmartTransportRouter.TransportType.CORE
+            )
+        } returns Triple(true, 42L, SmartTransportRouter.TransportType.CORE)
+
+        setField(repo, "smartTransportRouter", router)
+
+        val result = repo.gateInboundMessage("msg-dup-1")
+
+        assertTrue(result.first)
+        assertEquals(42L, result.second)
+        assertEquals(TransportType.INTERNET, result.third)
+
+        coVerify(exactly = 1) {
+            router.checkAndRecordMessage(
+                "msg-dup-1",
+                SmartTransportRouter.TransportType.CORE
+            )
+        }
+
+        cancelRepoScope(repo)
+    }
+
     @After
     fun cleanup() {
+        // Order matters. stopMeshService() FIRST: the tests that call
+        // startMeshService() bring up a real TransportManager, which owns its
+        // own CoroutineScope (TransportManager.kt:70) that repoScope knows
+        // nothing about. That scope runs the bootstrap retry loop and the
+        // SubnetProbe sweep, neither of which ever ends on its own, and both of
+        // which kept the Gradle test worker alive past the last test until the
+        // task was killed by the 10-minute timeout guard.
+        //
+        // stopMeshService() now routes to TransportManager.cleanup() (which
+        // cancels that scope) rather than stopAll() (which does not) -- see the
+        // comment at the transportManager teardown in MeshRepository.
+        //
+        // Cancelling repoScope alone was tried and did NOT fix the hang.
+        // stopMeshService() is NO LONGER called here, deliberately.
+        //
+        // It was added in a previous attempt and did not help: "TransportManager
+        // cleaned up" still appeared exactly ONCE for three repos. Worse, it is
+        // the prime suspect for the CURRENT wedge. The CI log runs straight from
+        // the last test's SKIPPED line to the Gradle timeout with @AfterClass
+        // never reached, which means the JVM wedges inside the per-test
+        // lifecycle -- and this @After is the only thing there that can block.
+        // stopMeshService() contains
+        // `runBlocking { swarmBridge?.shutdown() }`, and the skipped test
+        // constructs its repo BEFORE the assumption fails, so teardown calls a
+        // blocking shutdown on a service that was never started.
+        //
+        // Also note the previous version used bare `runCatching`, which swallows
+        // failures silently -- the same pattern this codebase keeps producing.
+        // Failures are logged now.
+        activeRepos.forEach { repo ->
+            runCatching { cancelRepoScope(repo) }
+                .onFailure { println("[WARN] cancelRepoScope failed: $it") }
+        }
+        activeRepos.clear()
         testRoot.listFiles()?.forEach { it.deleteRecursively() }
     }
 
@@ -239,7 +395,7 @@ class ReceiptUnificationTest {
     @Test
     fun `receive path processes delivered receipts and deduplicates`() = runTest {
         val filesDir = freshFilesDir()
-        val repo = MeshRepository(fakeContext(filesDir))
+        val repo = trackRepo(MeshRepository(fakeContext(filesDir)))
 
         val ironCore = mockk<IronCore>(relaxed = true) {
             every { getIdentityInfo() } returns IdentityInfo(
@@ -251,7 +407,42 @@ class ReceiptUnificationTest {
                 nickname = null,
                 libp2pPeerId = null
             )
-            coEvery { markMessageSent(any()) } just Awaits
+            // `returns true`, NOT `just Awaits`.
+            //
+            // This one line was the :app:testDebugUnitTest hang. `just Awaits`
+            // tells mockk the suspend function never completes, and mockk
+            // implements that by parking the CALLING THREAD inside runBlocking
+            // forever (io.mockk.CoFunctionAnswer.answer ->
+            // InternalPlatformDsl.runCoroutine -> runBlocking). The Gradle test
+            // worker thread never came back, so the task died on "Timeout has
+            // been exceeded" -- 10 min here, and 90-151 min before that guard
+            // was added -- while every test still reported PASSED.
+            //
+            // Confirmed by a watchdog thread dump in CI:
+            //   Test worker @kotlinx.coroutines.test runner#169 TIMED_WAITING
+            //     kotlinx.coroutines.BlockingCoroutine.joinBlocking
+            //     kotlinx.coroutines.runBlocking
+            //     io.mockk.InternalPlatformDsl.runCoroutine
+            //     io.mockk.CoFunctionAnswer.answer
+            //
+            // The test only needs the call to HAPPEN -- it asserts
+            // `coVerify(exactly = 1) { ironCore.markMessageSent("msg-1") }`,
+            // which records the invocation whether or not the stub completes.
+            // `returns true` satisfies that and returns immediately.
+            //
+            // NOT `just runs`: mark_message_sent returns bool
+            // (core/src/iron_core.rs:906), so the stub type is Boolean and the
+            // `just runs` overload -- which requires Unit -- does not apply
+            // ("Type mismatch: inferred type is Runs but Awaits was expected").
+            // That type constraint is very likely WHY `just Awaits` was reached
+            // for in the first place: it is generic over T and therefore the
+            // only `just` overload that compiles here. It compiles, and it
+            // hangs. An explicit `returns` is the correct construct.
+            //
+            // true = "the message was marked sent". The caller at
+            // MeshRepository.kt:2315 discards the result, so the value does not
+            // affect the assertions either way.
+            coEvery { markMessageSent(any()) } returns true
         }
         val meshService = mockk<MeshService>(relaxed = true) {
             every { getState() } returns ServiceState.STOPPED
@@ -278,9 +469,37 @@ class ReceiptUnificationTest {
             hidden = false
         )
 
+        // STATEFUL mock, deliberately. The previous version returned the same
+        // `delivered = false` record on every get(), which made the dedup
+        // assertion below unsatisfiable no matter how correct the production
+        // code was.
+        //
+        // Production dedup (MeshRepository.kt:2245) is an AND of two conditions:
+        //
+        //     if (!firstReceiptSeen && wasAlreadyDelivered) { ... return }
+        //
+        // `firstReceiptSeen` comes from the in-memory seen-set
+        // (markDeliveredReceiptSeen) and DOES flip to false on the second
+        // receipt. But `wasAlreadyDelivered` is read from
+        // historyManager.get(messageId).delivered -- and a frozen mock reports
+        // false forever, so the guard evaluated `true && false` and fell
+        // through to `if (!wasAlreadyDelivered)`, marking delivered a second
+        // time. The real store is updated by markDelivered(), so the second
+        // read returns true and dedup fires.
+        //
+        // In other words the test, not the product, was wrong: it asserted
+        // exactly-once while stubbing away the state that makes exactly-once
+        // possible. The exactly-once assertions below are unchanged -- they are
+        // the behaviour under test and they now exercise the real guard.
+        var deliveredFlag = false
         val historyManager = mockk<HistoryManager>(relaxed = true)
-        every { historyManager.get("msg-1") } returns sentRecord
-        every { historyManager.markDelivered("msg-1") } returns Unit
+        every { historyManager.get("msg-1") } answers {
+            sentRecord.copy(delivered = deliveredFlag)
+        }
+        every { historyManager.markDelivered("msg-1") } answers {
+            deliveredFlag = true
+            Unit
+        }
         val contactManager = mockk<ContactManager>(relaxed = true)
         setField(repo, "historyManager", historyManager)
         setField(repo, "contactManager", contactManager)
@@ -321,7 +540,7 @@ class ReceiptUnificationTest {
     @Test
     fun `receipt arrival overrides high attempt count and clears corruption`() = runTest {
         val filesDir = freshFilesDir()
-        val repo = MeshRepository(fakeContext(filesDir))
+        val repo = trackRepo(MeshRepository(fakeContext(filesDir)))
 
         val ironCore = mockk<IronCore>(relaxed = true)
         val meshService = mockk<MeshService>(relaxed = true) {
@@ -379,7 +598,7 @@ class ReceiptUnificationTest {
     @Test
     fun `send path encodes receipt using core bindings and passes bytes to transport`() = runTest {
         val filesDir = freshFilesDir()
-        val repo = MeshRepository(fakeContext(filesDir))
+        val repo = trackRepo(MeshRepository(fakeContext(filesDir)))
 
         val peerId = "12D3KooWTestPeeridForReceiptUnification24XyzAbcVwxyz"
         val messageId = "msg-test-encode-123"
