@@ -1,7 +1,7 @@
 # Orchestration Token Reduction: Complete Implementation Guide
-**Date:** 2026-08-03  
-**Grounding:** V0.4.0 session (local_7b43c0a8), orchestration consolidation (local_c7a4c78b)  
-**Scope:** Pure orchestration efficiency. Zero changes to worker capability or ORCHESTRATION.md loop.  
+**Date:** 2026-08-03
+**Grounding:** V0.4.0 session (local_7b43c0a8), orchestration consolidation (local_c7a4c78b)
+**Scope:** Pure orchestration efficiency. Zero changes to worker capability or ORCHESTRATION.md loop.
 **Status:** SUPERSEDED -- see HANDOFF/ORCHESTRATION_TOKEN_STRATEGY.md (2026-08-03 consolidation, actually implemented, unit-tested against real repo data, and reconciled against AGENTS.md's existing worker contract there). Kept for history.
 
 ---
@@ -14,14 +14,14 @@
 ```
 Per task:
   - Read ORCHESTRATION.md + queue    50 tokens
-  - Write task file (P1.md, P2.md...)   300 tokens  
+  - Write task file (P1.md, P2.md...)   300 tokens
   - Call delegate_task.py                 10 tokens
   - Read + grep worker response      300 tokens
   - Move HANDOFF file (Edit call)     100 tokens
   - Commit + ledger record               50 tokens
   ────────────────────────────────
   Per task: 810 tokens
-  
+
 × 5 tasks = 4,050 tokens orchestration overhead
 
 Plus: Read ORCHESTRATION.md (shared, once per session) = 5,000 tokens
@@ -37,7 +37,7 @@ Per task:
   - Implementation                  2,000 tokens
   ────────────────────────────────
   Per task: ~6,300 tokens
-  
+
 × 5 tasks = 31,500 tokens (workers)
 ```
 
@@ -117,7 +117,7 @@ import json
 
 def parse_footer(response_text):
     """Extract metadata footer from worker response.
-    
+
     Returns:
         dict: {
             'result_code': int (0, 2, or 3),
@@ -133,16 +133,16 @@ def parse_footer(response_text):
         response_text,
         re.DOTALL
     )
-    
+
     if not match:
         return {
             'result_code': 3,  # Vacuous (no footer)
             'error': 'No orchestration metadata footer found'
         }
-    
+
     footer = match.group(1)
     result = {}
-    
+
     # Parse each line
     for line in footer.split('\n'):
         if line.startswith('RESULT_CODE:'):
@@ -150,7 +150,7 @@ def parse_footer(response_text):
                 result['result_code'] = int(line.split(':')[1].strip())
             except:
                 result['result_code'] = 3
-        
+
         elif line.startswith('TOUCHED_FILES:'):
             files_str = line.split(':', 1)[1].strip()
             # Parse JSON array
@@ -158,10 +158,10 @@ def parse_footer(response_text):
                 result['touched_files'] = json.loads(files_str)
             except:
                 result['touched_files'] = []
-        
+
         elif line.startswith('VERIFICATION_PASSED:'):
             result['verification_passed'] = 'true' in line.lower()
-        
+
         elif line.startswith('EVIDENCE_SUMMARY:'):
             # Parse JSON array of strings
             try:
@@ -169,17 +169,17 @@ def parse_footer(response_text):
                 result['evidence'] = json.loads(evidence_str)
             except:
                 result['evidence'] = []
-    
+
     return result
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         print("Usage: parse_orchestration_footer.py <response_file>")
         sys.exit(1)
-    
+
     with open(sys.argv[1], 'r') as f:
         response = f.read()
-    
+
     result = parse_footer(response)
     print(json.dumps(result, indent=2))
 ```
@@ -222,50 +222,50 @@ def batch_move_and_commit(tasks_dict, provider, message):
         provider: 'qwenpaid' (for commit message)
         message: Optional custom message suffix
     """
-    
+
     moved_count = 0
-    
+
     for task_id, destination in tasks_dict.items():
         # Find source file
         todo_files = list(Path("HANDOFF/todo").glob(f"{task_id}*.md"))
         if not todo_files:
             print(f"[WARN] No todo file for {task_id}")
             continue
-        
+
         source = todo_files[0]
         dest_dir = Path("HANDOFF") / destination
         dest_dir.mkdir(parents=True, exist_ok=True)
-        
+
         dest_file = dest_dir / source.name
         source.rename(dest_file)
         print(f"[OK] Moved {task_id} to {destination}/")
         moved_count += 1
-    
+
     if moved_count == 0:
         print("[INFO] No files to move")
         return True
-    
+
     # Single git commit
     result = subprocess.run(
         ["git", "add", "-A", "HANDOFF/"],
         capture_output=True,
         text=True
     )
-    
+
     if result.returncode != 0:
         print(f"[ERROR] git add failed: {result.stderr}")
         return False
-    
+
     commit_msg = f"{provider}: completed {moved_count} task(s)"
     if message:
         commit_msg += f" ({message})"
-    
+
     result = subprocess.run(
         ["git", "commit", "-m", commit_msg],
         capture_output=True,
         text=True
     )
-    
+
     if result.returncode == 0:
         print(f"[OK] Commit: {commit_msg}")
         return True
@@ -281,16 +281,16 @@ if __name__ == '__main__':
     parser.add_argument("--tasks", required=True, help="JSON dict: {'P1': 'done', 'P2': 'done'}")
     parser.add_argument("--provider", default="native", help="Provider name")
     parser.add_argument("--message", help="Optional commit message suffix")
-    
+
     args = parser.parse_args()
-    
+
     import json
     try:
         tasks = json.loads(args.tasks)
     except:
         print(f"[ERROR] Invalid tasks JSON: {args.tasks}")
         sys.exit(1)
-    
+
     success = batch_move_and_commit(tasks, args.provider, args.message)
     sys.exit(0 if success else 1)
 ```
@@ -373,7 +373,7 @@ run(f"python scripts/batch_handoff.py --tasks '{json.dumps(tasks)}' --provider q
   Orchestration overhead:    9,050 tokens
   Worker prompts:           31,500 tokens
   Total:                    40,550 tokens
-  
+
 Cost: 40,550 × ($0.005 / 1M) = $0.20 / batch
 ```
 
@@ -383,7 +383,7 @@ Cost: 40,550 × ($0.005 / 1M) = $0.20 / batch
   Orchestration overhead:      500 tokens (footer parse + batch move)
   Worker prompts:           31,500 tokens (unchanged)
   Total:                    32,000 tokens
-  
+
 Cost: 32,000 × ($0.005 / 1M) = $0.16 / batch
 
 Savings per batch: 8,550 tokens (21% reduction), $0.04

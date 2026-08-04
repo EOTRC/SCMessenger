@@ -1,6 +1,6 @@
 # Orchestration Token Reduction Plan
-**Date:** 2026-08-03  
-**Scope:** Pure implementation focus. No external refs (Hermes, etc.).  
+**Date:** 2026-08-03
+**Scope:** Pure implementation focus. No external refs (Hermes, etc.).
 **Status:** SUPERSEDED -- see HANDOFF/ORCHESTRATION_TOKEN_STRATEGY.md (2026-08-03 consolidation, actually implemented and tested there). Kept for history.
 
 ---
@@ -34,7 +34,7 @@ Task 1: Read ORCHESTRATION.md (~5K tokens, once per session)
         Call delegate_task.py (10 tokens overhead × 1)
         Parse response, extract files (300 tokens × 1)
         Move HANDOFF file manually via Edit (100 tokens × 1)
-        
+
 Total per task: ~50 + 300 + 10 + 300 + 100 = 760 tokens
 Total × 5 tasks: 3,800 tokens (Claude orchestrator overhead)
 Plus shared: 5,000 (ORCHESTRATION.md) = 8,800 tokens wasted on orchestration metadata
@@ -61,7 +61,7 @@ Plus shared: 5,000 (ORCHESTRATION.md) = 8,800 tokens wasted on orchestration met
 
 ### Principle: Worker Emits Structure, Orchestrator Consumes It
 
-**Current:** `[prose response] → orchestrator greps`  
+**Current:** `[prose response] → orchestrator greps`
 **Redesigned:** `[structure] → orchestrator parses`
 
 ### Two Changes (Zero Breaking Changes to Existing Flow)
@@ -94,7 +94,7 @@ EVIDENCE_LINES: ["line 42: added observability hook", "line 127: wired audit log
 - delegate_task.py reads prompt file once per task
 
 #### Change 3: HANDOFF Batch Operations
-**Current:** `mv HANDOFF/todo/P1.md HANDOFF/done/P1.md` (orchestrator reads, edits, commits)  
+**Current:** `mv HANDOFF/todo/P1.md HANDOFF/done/P1.md` (orchestrator reads, edits, commits)
 **Redesigned:** Supervisor script does batched operations
 ```bash
 supervisor.py --batch \
@@ -153,7 +153,7 @@ Orchestrator parses this footer, never reads prose above.
 ```python
 def parse_worker_response(response_text):
     """Extract metadata footer from worker response.
-    
+
     Returns: {
         'result_code': int,
         'touched_files': [str],
@@ -164,7 +164,7 @@ def parse_worker_response(response_text):
     # Find ---ORCHESTRATION_METADATA--- section
     # Parse JSON footer
     # Return dict
-    
+
     # Fallback: if no footer, return {result_code: 2, error: "no metadata"}
 ```
 
@@ -175,7 +175,7 @@ response = read_worker_response("tmp/P1_response.md")
 if "DriftEnvelope" in response and "test" in response:
     # worker succeeded
     files = extract_files_by_grep(response)
-    
+
 # New (50 tokens):
 response = read_worker_response("tmp/P1_response.md")
 parsed = parse_worker_response(response)
@@ -200,16 +200,16 @@ def batch_move_and_commit(tasks, results, provider, commit_message):
     """
     for task in tasks:
         if task['result'] == 'pass':
-            mv(f"HANDOFF/todo/{task['id']}*.md", 
+            mv(f"HANDOFF/todo/{task['id']}*.md",
                f"HANDOFF/done/{task['id']}_*.md")
         else:
             # Keep in todo or move to review
             pass
-    
+
     # Single git commit
     git_add("HANDOFF/")
     git_commit(commit_message)
-    
+
     # Log to ledger
     for task in tasks:
         ledger_append({

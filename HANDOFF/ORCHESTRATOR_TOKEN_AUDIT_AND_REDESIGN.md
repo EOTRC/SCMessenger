@@ -1,7 +1,7 @@
 # Orchestrator Token Usage Audit & Strict Redesign
-**Date:** 2026-08-03  
-**Scope:** Hermes (minimax orchestrator), recent Claude Code sessions, SCMessenger v0.4.0 Qwen dispatch  
-**Goal:** Pure delegator architecture with zero context waste on coordinator  
+**Date:** 2026-08-03
+**Scope:** Hermes (minimax orchestrator), recent Claude Code sessions, SCMessenger v0.4.0 Qwen dispatch
+**Goal:** Pure delegator architecture with zero context waste on coordinator
 **Status:** SUPERSEDED -- see HANDOFF/ORCHESTRATION_TOKEN_STRATEGY.md (2026-08-03 consolidation). This draft's token-cost tables were reasoned estimates, not measurements; the superseding doc separates measured facts from modeled estimates explicitly and adds implementation the following two drafts and this one did not have. Kept for history.
 
 ---
@@ -131,7 +131,7 @@ Total: 3,250 tokens PROMPT ONLY, before the worker writes a byte.
 **Waste:** Steps 2, 5, 6 duplicate what worker already knows. Worker could emit:
 ```
 RESULT: PATCH: 1
-VERIFIED_EVIDENCE: 
+VERIFIED_EVIDENCE:
   - core/src/transport/swarm.rs:42: added observability hook
   - core/src/logging/audit.rs was NOT modified (no bloat)
 LEDGER_JSON: {"ts":"...", "task":"E-04", "result":"ok", "in_tokens":6000, "out_tokens":800}
@@ -175,7 +175,7 @@ WORKER (implementer) — 6,000 tokens/task
 
 ### 3.2 Prompt File Pre-Generation
 
-**Current:** Orchestrator constructs prompt each time (waste).  
+**Current:** Orchestrator constructs prompt each time (waste).
 **Redesign:** At queue-time, generate dispatch packet once. Store in `tmp/tasks/<ID>.dispatch.md`.
 
 **File format:**
@@ -219,7 +219,7 @@ run_delegate_task(dispatch_file, lake, model)
 
 ### 3.3 Worker Response Format (Strict)
 
-**Current:** Prose + code + narrative explanation = 2,000-5,000 tokens.  
+**Current:** Prose + code + narrative explanation = 2,000-5,000 tokens.
 **Redesign:** Tight header + diff + JSON tail.
 
 **Format:**
@@ -253,7 +253,7 @@ mv(f"HANDOFF/todo/{task_id}.md", f"HANDOFF/done/{task_id}.md")
 
 ### 3.4 Verification Delegation (Supervisor Agent)
 
-**Current:** Orchestrator runs verification.  
+**Current:** Orchestrator runs verification.
 **Redesign:** Supervisor agent runs it (can be cheaper model, or batched across tasks).
 
 **Supervisor job:**
@@ -276,7 +276,7 @@ Input: [task_id, verification_command]
 
 ### 3.5 Ledger & State Management (File-Backed)
 
-**Current:** Orchestrator updates HANDOFF tree by reading/writing directories.  
+**Current:** Orchestrator updates HANDOFF tree by reading/writing directories.
 **Redesign:** Supervisor handles all file ops. Orchestrator just runs commands.
 
 **Orchestrator inputs to supervisor:**
