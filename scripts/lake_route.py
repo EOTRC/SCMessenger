@@ -46,12 +46,18 @@ REGISTRY_PATH = "tmp/lakes/registry.json"
 LEDGER_PATH = "tmp/lakes/ledger.jsonl"
 RR_STATE_PATH = "tmp/lakes/round_robin_state.json"
 
-# Tier preference ladders (first lake with quota wins)
+# Tier preference ladders (first lake with quota wins).
+# qwenpaid leads CODER/THINK/MAX per operator directive 2026-07-28 ("PRIMARY
+# lane for ALL non-FLASH dispatches" -- ORCHESTRATION.md Section 1, Active
+# lakes table). It carries no FLASH model (paid-plan budget is reserved for
+# real implementation/analysis work, not mechanical tasks), so FLASH and
+# MORPH ladders are unchanged. A lake with no key file is skipped silently
+# by _lake_has_key, so this is a safe no-op when qwenpaid.env is absent.
 TIER_LADDERS = {
     "FLASH":  ["groq", "qwen", "openrouter", "gemini", "ollama"],
-    "CODER":  ["qwen", "groq", "openrouter", "gemini", "ollama"],
-    "THINK":  ["qwen", "gemini", "openrouter", "groq"],
-    "MAX":    ["qwen", "gemini", "openrouter"],
+    "CODER":  ["qwenpaid", "qwen", "groq", "openrouter", "gemini", "ollama"],
+    "THINK":  ["qwenpaid", "qwen", "gemini", "openrouter", "groq"],
+    "MAX":    ["qwenpaid", "qwen", "gemini", "openrouter"],
     "MORPH":  ["openrouter"],
 }
 

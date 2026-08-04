@@ -178,6 +178,68 @@ def _looks_like_diff(text):
     head = "\n".join(text.strip().split("\n")[:5])
     return bool(re.search(r"^(---|\+\+\+) [ab]/|^@@ -\d+", head, re.MULTILINE))
 
+SCOPE_SUFFIX_RE = re.compile(r"^(.*):(\d+)-(\d+)$")
+
+def parse_scoped_files(raw_files):
+    """
+    Split --files entries into (real_paths, scope_map). Precise context/
+    scope control per dispatch: a plain path keeps today's whole-file
+    behavior unchanged; 'path:Lstart-Lend' (1-indexed, inclusive) sends
+    only that excerpt instead of the entire file.
+
+    real_paths is what EVERYTHING else in this script uses from here on
+    (allowlist checks, apply/write logic, chunk-token estimation, retry
+    prompts) -- scope is purely a prompt-construction concern and must
+    never leak into the write-target allowlist, so callers should
+    overwrite args.files with real_paths immediately after parsing argv
+    and keep scope_map as a separate side table consulted only by
+    _format_scoped_file.
+    """
+    real_paths = []
+    scope_map = {}
+    for raw in raw_files:
+        m = SCOPE_SUFFIX_RE.match(raw)
+        if not m:
+            real_paths.append(raw)
+            continue
+        real_path, start, end = m.group(1), int(m.group(2)), int(m.group(3))
+        if start < 1 or end < start:
+            print(f"[WARN] ignoring invalid scope '{raw}' (need start>=1, end>=start); sending full file")
+            real_paths.append(real_path)
+            continue
+        real_paths.append(real_path)
+        scope_map[real_path] = (start, end)
+    return real_paths, scope_map
+
+def _format_scoped_file(filepath, scope_map):
+    """
+    Build the '--- path ---\\n```rust\\n...\\n```\\n' block used in every
+    prompt. Slices to scope_map[filepath] when present; otherwise (or on
+    any failure to honor the scope) falls back to the FULL file -- a
+    broken or out-of-range scope must never silently starve the model of
+    context, it should at worst cost the tokens scoping was meant to save.
+    """
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception as e:
+        return f"\n--- {filepath} (COULD NOT READ: {e}) ---\n"
+
+    scope = scope_map.get(filepath)
+    if not scope:
+        return f"\n--- {filepath} ---\n```rust\n{''.join(lines)}\n```\n"
+
+    start, end = scope
+    total = len(lines)
+    if start > total:
+        print(f"[WARN] scope {start}-{end} for {filepath} starts past end of file ({total} lines); sending full file")
+        return f"\n--- {filepath} ---\n```rust\n{''.join(lines)}\n```\n"
+
+    end = min(end, total)
+    excerpt = "".join(lines[start - 1:end])
+    note = f"[scoped: lines {start}-{end} of {total} total -- full file NOT sent; this range came from the orchestrator's pre-dispatch grep of the target symbol]"
+    return f"\n--- {filepath} ---\n{note}\n```rust\n{excerpt}\n```\n"
+
 def extract_file_blocks(content, allowed_files=None):
     """
     Extract (filename, file_content) pairs from model output.
@@ -503,6 +565,13 @@ def main():
 
     args = parser.parse_args()
 
+    # Precise scope per dispatch: '--files path:L40-L120' sends only that
+    # excerpt; a plain path is unchanged (whole file). Downstream code
+    # (allowlist checks, apply logic, chunk-token estimation, retry
+    # prompts) only ever sees args.files as real paths from this point on;
+    # scope_map is consulted solely by _format_scoped_file at prompt time.
+    args.files, scope_map = parse_scoped_files(args.files)
+
     # Default model fallbacks
     if args.provider == "groq" and not args.model:
         args.model = "llama-3.3-70b-versatile"  # 128k context, 32k output
@@ -553,19 +622,18 @@ Return your changes as unified diffs, one fenced ```diff block per file, using s
         current_chunk = []
         current_tokens = estimate_tokens(base_prompt)
         for filepath in args.files:
-            try:
-                with open(filepath, "r", encoding="utf-8") as f:
-                    file_text = f"\n--- {filepath} ---\n```rust\n{f.read()}\n```\n"
-                    file_tokens = estimate_tokens(file_text)
-                    if current_tokens + file_tokens > args.max_chunk_tokens and current_chunk:
-                        file_chunks.append(current_chunk)
-                        current_chunk = [filepath]
-                        current_tokens = estimate_tokens(base_prompt) + file_tokens
-                    else:
-                        current_chunk.append(filepath)
-                        current_tokens += file_tokens
-            except Exception as e:
-                pass
+            # _format_scoped_file never raises (it returns a
+            # "COULD NOT READ" marker string on failure), so estimating on
+            # its output is safe without a try/except here.
+            file_text = _format_scoped_file(filepath, scope_map)
+            file_tokens = estimate_tokens(file_text)
+            if current_tokens + file_tokens > args.max_chunk_tokens and current_chunk:
+                file_chunks.append(current_chunk)
+                current_chunk = [filepath]
+                current_tokens = estimate_tokens(base_prompt) + file_tokens
+            else:
+                current_chunk.append(filepath)
+                current_tokens += file_tokens
         if current_chunk:
             file_chunks.append(current_chunk)
     else:
@@ -596,11 +664,7 @@ Return your changes as unified diffs, one fenced ```diff block per file, using s
         if chunk_files:
             prompt += "\n\n### Current Relevant File Contents:\n"
             for filepath in chunk_files:
-                try:
-                    with open(filepath, "r", encoding="utf-8") as f:
-                        prompt += f"\n--- {filepath} ---\n```rust\n{f.read()}\n```\n"
-                except Exception as e:
-                    print(f"Warning: Could not read {filepath}: {e}")
+                prompt += _format_scoped_file(filepath, scope_map)
 
         chunk_content, response_file = send_request(args, prompt, resolved_model, display_model)
         retry_count = 0
@@ -713,11 +777,7 @@ Return your changes as unified diffs, one fenced ```diff block per file, using s
                                 "### Current Relevant File Contents:\n"
                             )
                             for filepath in args.files:
-                                try:
-                                    with open(filepath, "r", encoding="utf-8") as f:
-                                        follow_up_prompt += f"\n--- {filepath} ---\n```rust\n{f.read()}\n```\n"
-                                except Exception as e:
-                                    print(f"Warning: Could not read {filepath}: {e}")
+                                follow_up_prompt += _format_scoped_file(filepath, scope_map)
 
                             follow_up_prompt += (
                                 "\nReturn your corrective changes as unified diffs, one fenced ```diff block per file, using standard `--- a/<path>` and `+++ b/<path>` headers with 3 lines of context. Do NOT return full files. For a NEW file, use `--- /dev/null` and `+++ b/<path>`."
@@ -730,11 +790,7 @@ Return your changes as unified diffs, one fenced ```diff block per file, using s
                                 "### Current Relevant File Contents:\n"
                             )
                             for filepath in args.files:
-                                try:
-                                    with open(filepath, "r", encoding="utf-8") as f:
-                                        follow_up_prompt += f"\n--- {filepath} ---\n```rust\n{f.read()}\n```\n"
-                                except Exception as e:
-                                    print(f"Warning: Could not read {filepath}: {e}")
+                                follow_up_prompt += _format_scoped_file(filepath, scope_map)
 
                             follow_up_prompt += (
                                 "\nPlease provide the FULL, completely updated/new contents of the relevant files using standard Markdown code blocks.\n"
