@@ -8,6 +8,78 @@ supporting detail that prompt refers to.
 
 ---
 
+## 0-CRITICAL. BLOCKING IS BROKEN IN CORE -- fix before anything else
+
+**Severity: CRITICAL. Security enforcement, production code, currently failing.**
+
+`core/tests/integration_contact_block.rs` has three failing tests on macOS Native
+Tests / the full CI suite:
+
+- `test_blocked_message_persisted_but_hidden`
+- `test_unblock_restores_hidden_message_visibility`
+- `test_block_and_delete_purges_messages_and_drops_future_payloads`
+
+**These are NOT broken tests. They are correctly detecting broken blocking.**
+
+At `core/src/iron_core.rs:3188-3215` the inbound receive path does:
+
+```rust
+let is_blocked_and_deleted = self.blocked_manager.read()
+    .is_blocked_and_deleted(&message.sender_id) ...
+let is_blocked = self.blocked_manager.read()
+    .is_blocked(&message.sender_id, sender_device_id.as_deref()) ...
+```
+
+After this branch's canonicalization, `message.sender_id` carries the **public
+key**. But `block_peer()` stores the block under whatever identifier the caller
+passed -- the **identity_id** in the tests, and in any block already on disk from
+before this change. The comparison therefore misses.
+
+**Consequence: a blocked peer's messages are no longer hidden, and a
+blocked-and-deleted peer's messages are no longer dropped.** Blocking silently
+stops working. Note the deliberate "FAIL CLOSED" comment sitting directly above
+the broken check -- that path was carefully reasoned about for a different edge
+case, and the identifier change went straight past it.
+
+This is the THIRD instance of the identifier-confusion bug class found in this
+one PR, and the first in production security enforcement rather than a UI
+listing. The other two: the CLI message-request gate (fixed, commit b69b5eee /
+ea0de26f) and the contacts migration tests (fixed, 79d51e17).
+
+**Deliberately left unfixed at session end.** The fix is not hard -- resolve both
+identifier flavors before the block check, using
+`core::identity::identity_id_from_public_key_hex()` which this branch already
+added for exactly this purpose. But it is security-critical core code,
+`.claude/rules/security.md` requires adversarial review for it, no review
+capacity was available (Anthropic session limit exhausted), and shipping a
+silently-broken block gate is far worse than a red CI run. **The red CI is the
+system correctly refusing to merge broken blocking. Leave it red until this is
+fixed AND reviewed.**
+
+Fix it, then re-run the FULL suite, not a scoped subset:
+
+```
+cargo test -p scmessenger-core --lib
+cargo test -p scmessenger-core --test integration_contact_block
+cargo test -p scmessenger-cli --test integration_message_requests
+```
+
+A scoped run is what let this reach CI in the first place: `--lib` passes 1286/1286
+while the integration tests in `core/tests/` fail.
+
+---
+
+## 0-B. Another agent session is committing to this branch
+
+Commits `1981f7b0` and `68875a7c` ("Qwen Code /orchestrate launcher", "FULL-QWEN
+capability class") landed on `fix/identity-canonicalization-steps2-5` from a
+different session while this one was working. Coordinate before assuming the
+branch is yours alone -- check `git log` for unexpected commits before and after
+any build, and re-read `.claude/rules/build.md` on never running two build tools
+concurrently on this host.
+
+---
+
 ## 0. READ FIRST -- branch state at session end (2026-08-04)
 
 **PR #136 was RED at session end.** Commit `b69b5eee` introduced a compile error:
