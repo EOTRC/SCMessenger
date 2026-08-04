@@ -54,8 +54,8 @@ RR_STATE_PATH = "tmp/lakes/round_robin_state.json"
 # MORPH ladders are unchanged. A lake with no key file is skipped silently
 # by _lake_has_key, so this is a safe no-op when qwenpaid.env is absent.
 TIER_LADDERS = {
-    "FLASH":  ["groq", "qwen", "openrouter", "gemini", "ollama"],
-    "CODER":  ["qwenpaid", "qwen", "groq", "openrouter", "gemini", "ollama"],
+    "FLASH":  ["groq", "qwen", "openrouter", "openrouter_direct", "gemini", "ollama"],
+    "CODER":  ["qwenpaid", "qwen", "groq", "openrouter", "openrouter_direct", "gemini", "ollama"],
     "THINK":  ["qwenpaid", "qwen", "gemini", "openrouter", "groq"],
     "MAX":    ["qwenpaid", "qwen", "gemini", "openrouter"],
     "MORPH":  ["openrouter"],

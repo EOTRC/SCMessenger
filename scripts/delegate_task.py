@@ -164,6 +164,13 @@ def get_api_key(provider):
                 or os.environ.get("GOOGLE_API_KEY")
                 or _key_from_env_file("~/.config/scmorc/gemini.env",
                                       ("GEMINI_API_KEY", "GOOGLE_API_KEY")))
+    elif provider == "openrouter_direct":
+        # Operator-added 2026-08-04: DeepSeek V4 Flash backup lane, USD 1/day
+        # cap, dedicated key (NOT the free-models-only openrouter.env key).
+        return (os.environ.get("OPENROUTER_DIRECT_API_KEY")
+                or os.environ.get("OpenRouter_Paid_Key")
+                or _key_from_env_file("~/.config/scmorc/openrouter_direct.env",
+                                      ("OPENROUTER_DIRECT_API_KEY", "OpenRouter_Paid_Key")))
     return None
 
 def _looks_like_diff(text):
@@ -359,6 +366,7 @@ def send_request(args, prompt, resolved_model, display_model, round_num=None):
             "qwen": QWEN_URL,
             "qwenpaid": QWENPAID_URL,
             "openrouter": OPENROUTER_URL,
+            "openrouter_direct": OPENROUTER_URL,
             "groq": GROQ_URL,
             "gemini": GEMINI_URL,
         }
@@ -551,7 +559,7 @@ def apply_diff_blocks(diff_blocks, task_base_name, round_num, allowed_files):
 def main():
     parser = argparse.ArgumentParser(description="Universal Swarm Delegate Script")
     parser.add_argument("--task", required=True, help="Task markdown file path (e.g., HANDOFF/todo/PQC_07_PQ_RATCHET.md)")
-    parser.add_argument("--provider", choices=["qwen", "qwenpaid", "openrouter", "ollama", "groq", "gemini"], required=True, help="API provider to use")
+    parser.add_argument("--provider", choices=["qwen", "qwenpaid", "openrouter", "openrouter_direct", "ollama", "groq", "gemini"], required=True, help="API provider to use")
     parser.add_argument("--model", help="Model name override (e.g., qwen-max, anthropic/claude-3.5-sonnet, llama3)")
     parser.add_argument("--tier", choices=["thinking", "max", "standard", "plus", "flash"],
                         help="Qwen tier for auto model selection: thinking > max > standard > plus > flash")
@@ -579,6 +587,9 @@ def main():
     elif args.provider == "gemini" and not args.model:
         args.model = "gemini-2.5-flash"  # large context, balanced cost
         print(f"[INFO] No model specified for Gemini, defaulting to {args.model}")
+    elif args.provider == "openrouter_direct" and not args.model:
+        args.model = "deepseek/deepseek-v4-flash-0731"  # probe-verified 2026-08-04
+        print(f"[INFO] No model specified for OpenRouter Direct, defaulting to {args.model}")
 
     if args.verify and not args.apply:
         print("Warning: --verify is only meaningful with --apply; ignoring --verify.")
@@ -649,6 +660,8 @@ Return your changes as unified diffs, one fenced ```diff block per file, using s
             resolved_model = f"qwen-{args.tier}"
         else:
             resolved_model = args.model
+    elif args.provider == "openrouter_direct" and not args.model:
+        resolved_model = "deepseek/deepseek-v4-flash-0731"
     else:
         if not args.model:
             print(f"Error: --model is required for provider '{args.provider}'.")

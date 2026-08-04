@@ -98,11 +98,18 @@ this Qwen Code installation.
 |---|---|
 | qwenpaid (qwen3.8-max-preview) | LIVE, operator PRIMARY for CODER/THINK/MAX; same paid plan as this Qwen Code session -- budget accordingly |
 | groq | LIVE but 6K TPM hard cap; in cooldown until UTC midnight after test dispatches |
-| qwen (DashScope free) | DOWN -- invalid API key (401 all models) |
+| qwen (DashScope free) | KEY INVALID (401 all models) but QUOTA ALIVE per operator console 2026-08-04 (1M-token/model allocations, most expiring 2026-10-06). Key swap pending; registry model lists pruned to quota-confirmed models (qwen3-coder-flash carries no free quota -- absent from the console table) |
 | openrouter :free | DOCUMENTED SATURATED (429s on 2026-07-17); untested today |
 | openrouter morph/fusion (paid keys) | presumed live (not probed; spend-capped) |
+| openrouter_direct (DeepSeek V4 Flash) | ADDED 2026-08-04 (operator): backup lane for clearly scoped tasks, USD 1/day cap; registry block live, provider wiring dispatched via ticket DISPATCH_LAKE_OPENROUTER_DIRECT.md; key file to be placed by operator |
 | gemini | no key file -- skipped by router (documented) |
 | ollama cloud | free tier, a few tasks/week; not probed today |
+
+Vision models (qwen3-vl-* on the same console, ~1M calls each): not a
+dispatch lane (delegate_task.py flow is text/diff-only) -- use as an
+ORCHESTRATOR capability: device/UI evidence verification (Android
+fresh-install screenshots, 5-node run 2 receipt screens, error-dialog
+transcription). This Qwen Code session accepts image input natively.
 
 Sprint economics rule (unchanged): free lanes first; qwenpaid for real
 work; never burn the paid window on orchestrator-side fan-out when a
