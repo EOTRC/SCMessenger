@@ -3035,20 +3035,21 @@ open class MeshRepository(
                     "identity=$identityId nickname='${discoveredNickname?.take(24) ?: ""}'"
             )
 
-            // Persist BLE -> Identity mapping in contact notes so it survives restarts
+            // STEP 3: Persist BLE -> Identity mapping in contact notes so it survives restarts
             // and helps routing even when BLE is the only transport initially.
+            // Use publicKeyHex as the canonical peer identifier, not identityId (hash).
             repoScope.launch {
                 try {
-                    val contact = contactManager?.get(identityId)
+                    val contact = contactManager?.get(publicKeyHex)
                     if (contact != null) {
                         val updatedNotes = appendRoutingHint(contact.notes, "ble_peer_id", blePeerId)
                         if (updatedNotes != contact.notes) {
                             contactManager?.add(contact.copy(notes = updatedNotes))
-                            Timber.d("Updated persistent BLE routing for $identityId: $blePeerId")
+                            Timber.d("Updated persistent BLE routing for $publicKeyHex: $blePeerId")
                         }
                     }
                 } catch (e: Exception) {
-                    Timber.w(e, "Failed to persist BLE routing for $identityId")
+                    Timber.w(e, "Failed to persist BLE routing for $publicKeyHex")
                 }
             }
 
@@ -3065,32 +3066,36 @@ open class MeshRepository(
             }
 
             repoScope.launch {
-                listOfNotNull(identityId, blePeerId, normalizedLibp2p)
+                // STEP 3: Promote pending outbox for known peer identifiers only.
+                // Use publicKeyHex and libp2pPeerId (route), NOT identityId (hash).
+                // identityId is metadata only, cannot be used for routing.
+                listOfNotNull(publicKeyHex, blePeerId, normalizedLibp2p)
                     .map { it.trim() }
                     .filter { it.isNotEmpty() }
                     .forEach { promotePendingOutboundForPeer(peerId = it) }
                 flushPendingOutbox("peer_discovered")
             }
 
-            // Update discovery map
+            // STEP 3: Update discovery map with canonical peer identifier (publicKeyHex, not identityId).
+            // identityId is stored as metadata only for backward compatibility.
             val discoveryInfo = PeerDiscoveryInfo(
-                peerId = identityId,
+                peerId = publicKeyHex,
                 publicKey = publicKeyHex,
                 nickname = discoveredNickname,
-                localNickname = try { contactManager?.get(identityId)?.localNickname } catch (_: Exception) { null },
+                localNickname = try { contactManager?.get(publicKeyHex)?.localNickname } catch (_: Exception) { null },
                 libp2pPeerId = normalizedLibp2p,
                 transport = com.scmessenger.android.service.TransportType.BLE,
                 isFull = true,
                 lastSeen = System.currentTimeMillis().toULong() / 1000u
             )
-            updateDiscoveredPeer(identityId, discoveryInfo)
+            updateDiscoveredPeer(publicKeyHex, discoveryInfo)
             if (!normalizedLibp2p.isNullOrBlank()) {
                 updateDiscoveredPeer(normalizedLibp2p, discoveryInfo)
             }
-            // Remove the preliminary BLE-UUID entry (isFull=false) that was created when
+            // STEP 3: Remove the preliminary BLE-UUID entry (isFull=false) that was created when
             // the connection was first established before identity was read. Now that we
-            // have the real identityId, the BLE UUID key is an duplicate we no longer need.
-            if (blePeerId != identityId && blePeerId != normalizedLibp2p) {
+            // have the real publicKeyHex, the BLE UUID key is a duplicate we no longer need.
+            if (blePeerId != publicKeyHex && blePeerId != normalizedLibp2p) {
                 _discoveredPeers.update { current ->
                     current.filterKeys { key ->
                         key != blePeerId &&
@@ -3098,7 +3103,7 @@ open class MeshRepository(
                             current[key]?.peerId != blePeerId
                     }
                 }
-                Timber.d("Removed preliminary BLE entry $blePeerId → promoted to identity $identityId")
+                Timber.d("Removed preliminary BLE entry $blePeerId → promoted to public_key $publicKeyHex")
             }
 
             // Emit identity to nearby peers bus — UI will show peer in Nearby section for user to add
@@ -3126,8 +3131,9 @@ open class MeshRepository(
                 includeRelayCircuits = true
             )
             repoScope.launch {
+                // STEP 3: Use publicKeyHex as the canonical peerId for all discovery emissions.
                 emitIdentityDiscoveredIfChanged(
-                    peerId = identityId,
+                    peerId = publicKeyHex,
                     publicKey = publicKeyHex,
                     nickname = discoveredNickname,
                     libp2pPeerId = routePeerId,
@@ -3142,21 +3148,31 @@ open class MeshRepository(
                 nickname = discoveredNickname
             )
             Timber.i("Emitted IdentityDiscovered for $blePeerId: ${publicKeyHex.take(8)}...")
-            // Trigger history sync over BLE when we discover a peer's identity
+            // Trigger history sync over BLE when we discover a peer's identity.
+            // Use publicKeyHex (canonical) and route via libp2pPeerId if available.
             if (!routePeerId.isNullOrEmpty()) {
                 sendHistorySyncIfNeeded(routePeerId, publicKeyHex)
             } else {
-                sendHistorySyncIfNeeded(identityId, publicKeyHex)
+                sendHistorySyncIfNeeded(publicKeyHex, publicKeyHex)
             }
-            // Update lastSeen if already a saved contact
+            // STEP 3: Update lastSeen if already a saved contact.
+            // Use canonical identifier (publicKeyHex) for contact lookups.
             try { contactManager?.updateLastSeen(blePeerId) } catch (_: Exception) { }
-            try { contactManager?.updateLastSeen(identityId) } catch (_: Exception) { }
+            try { contactManager?.updateLastSeen(publicKeyHex) } catch (_: Exception) { }
             routePeerId?.let {
                 try { contactManager?.updateLastSeen(it) } catch (_: Exception) { }
             }
             repoScope.launch {
+                // STEP 3: Upsert contact with canonical public_key as peerId.
+                // Store identity_id (hash) as metadata in notes for backward compatibility.
+                var additionalNotes = if (identityId.isNotBlank()) {
+                    "identity_id:$identityId"
+                } else {
+                    null
+                }
+
                 upsertFederatedContact(
-                    canonicalPeerId = publicKeyHex,       // UNIFIED ID FIX: canonical = public_key_hex
+                    canonicalPeerId = publicKeyHex,
                     publicKey = publicKeyHex,
                     nickname = rawNickname.takeIf { it.isNotBlank() },
                     libp2pPeerId = routePeerId,
@@ -3164,6 +3180,26 @@ open class MeshRepository(
                     blePeerId = blePeerId,
                     createIfMissing = false
                 )
+
+                // Persist identity_id metadata in contact notes after upsert
+                if (identityId.isNotBlank()) {
+                    try {
+                        val contact = contactManager?.get(publicKeyHex)
+                        if (contact != null) {
+                            val updatedNotes = appendRoutingHint(
+                                contact.notes,
+                                "identity_id",
+                                identityId
+                            )
+                            if (updatedNotes != contact.notes) {
+                                contactManager?.add(contact.copy(notes = updatedNotes))
+                                Timber.d("Stored identity_id metadata for $publicKeyHex")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Timber.w(e, "Failed to persist identity_id metadata for $publicKeyHex")
+                    }
+                }
             }
 
             if (!routePeerId.isNullOrEmpty() && listenersStrings.isNotEmpty()) {
