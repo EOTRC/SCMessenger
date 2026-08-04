@@ -8,8 +8,11 @@ allowed-tools: Bash
 Run the repo's existing build verification script, scoped by `$ARGUMENTS` (default to `full` if no argument was given):
 
 ```bash
-bash .Codex/skills/build_verify.sh $ARGUMENTS
+bash .claude/skills/build_verify.sh $ARGUMENTS
 ```
+
+On Windows hosts where `bash` is not on PATH, invoke it through Git Bash:
+`"C:\Program Files\Git\bin\bash.exe" .claude/skills/build_verify.sh $ARGUMENTS`
 
 Gate scopes:
 - `full` — Rust (build/check/clippy/fmt/compile-gate) + Android (assembleDebug + RoleNavigationPolicyTest)

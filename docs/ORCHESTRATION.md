@@ -123,7 +123,11 @@ orchestration by reading the queue and ledger.
 
 ## 2.1 Cross-Lane Dispatch Ladder
 
-For any task, try lanes in this order (first available with quota wins):
+For any task, try lanes in this order (first available with quota wins).
+Where this prose order and `scripts/lake_route.py`'s `TIER_LADDERS`
+disagree, the code is authoritative -- the dial (Section 2.2 step 3) always
+follows the code, and the router skips lakes with no key file or active
+cooldown automatically:
 
 1. **Groq FLASH** (`delegate_task.py --provider groq --model llama-3.1-8b-instant`):
    mechanical tasks, docs, config. Fastest inference. Micro-chunk to <=6K

@@ -123,3 +123,33 @@ Swarm-managed processes stop via `pool stop <id>` (bookkeeping), not raw kill.
 and `orchestrate.md` win on conflict.
 
 Windows process-tree kill (for non-pool processes): `kill -9 <PID>; taskkill //F //T //PID <PID>`.
+
+---
+
+## 5. Canonical dispatch tooling (the `lanes` backend)
+
+The script lane -- the only backend a non-Claude orchestrator needs -- is
+composed of (all in `scripts/`):
+
+- `delegate_task.py` -- canonical dispatch to a lake (`--provider
+  qwen|qwenpaid|openrouter|ollama|groq|gemini`), always `--mode diff`;
+  exit codes: 0 verified, 2 verify-failed after all rounds, 3 vacuous.
+- `dispatch_dial.py` -- Section 2.2 step 3: tier escalation, gate flags,
+  lake+model resolution via `lake_route.py`.
+- `parse_orchestration_footer.py` -- step 6 structured footer parse
+  (exit 0 DONE, 1 BLOCKED/FAILED, 2 degraded/unknown).
+- `batch_handoff.py` -- step 8 atomic state move + commit + ledger record
+  (`--dry-run` rehearses without committing).
+- `build_lock.py` -- Windows one-build-at-a-time advisory lock; wrap every
+  verify command with `--run "<gate>"`.
+- `lake_route.py` -- quota/cooldown/round-robin router + ledger writer
+  (`tmp/lakes/ledger.jsonl`). The registry snapshot
+  `tmp/lakes/registry.json` is gitignored: on a fresh checkout, regenerate
+  it per HANDOFF/ORCHESTRATION_TOKEN_STRATEGY.md Part 1.1 (ticket:
+  HANDOFF/todo/REGENERATE_LAKE_REGISTRY.md).
+
+Legacy, do not use: `supervisor.py` (superseded by batch_handoff +
+build_lock). Experimental, not gate-safe yet: `orchestrate_strict.py`
+(bypasses build_lock and the security gates -- ticket
+HANDOFF/todo/ORCHESTRATE_STRICT_HARDENING.md). Full protocol:
+`docs/ORCHESTRATION.md`.
