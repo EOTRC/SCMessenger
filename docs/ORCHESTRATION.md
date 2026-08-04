@@ -1,6 +1,12 @@
 # SCMessenger Orchestration Protocol
 
-Status: Active. Last updated: 2026-07-20.
+Status: Active. Last updated: 2026-08-03 (Section 2.2 loop and Section 3
+worker contract revised to route through `dispatch_dial.py` /
+`parse_orchestration_footer.py` / `batch_handoff.py` / `build_lock.py`;
+every rule below is unchanged in substance, only the mechanism for
+prompt construction, response parsing, and state moves changed -- full
+audit, what was tested, and every edge case considered:
+`HANDOFF/ORCHESTRATION_TOKEN_STRATEGY.md`).
 
 This is the single canonical reference for orchestration. There is now ONE
 orchestrator command -- `/orchestrate` (`.claude/commands/orchestrate.md`) -- and
@@ -39,8 +45,12 @@ tool-poor but instruction-following model can orchestrate correctly.
    (Windows rlib-lock safety, Section 9).
 
 4. **Follow the loop in Section 2.2 for every task**, in order: read queue ->
-   validate -> pick lake (2.1 ladder) -> dispatch -> verify gate -> security gate
-   if required -> move ticket -> commit -> record ledger. No step is optional.
+   validate -> dial (tier/lake/model via `dispatch_dial.py`, which applies
+   the 2.1 ladder automatically through `lake_route.py`) -> dispatch ->
+   verify gate (structured footer parse, then the real gate yourself -- a
+   worker's own claim is never a substitute) -> security gate if required
+   -> mark complete + commit + record ledger in one `batch_handoff.py`
+   call. No step is optional.
 
 5. **Record every dispatch in the ledger** (`tmp/lakes/ledger.jsonl` via
    `scripts/lake_route.py --record ...`). The router is blind to what you do not
@@ -146,69 +156,129 @@ For any task, try lanes in this order (first available with quota wins):
 ## 2.2 The Orchestration Loop (run this for every task)
 
 This is the whole job. It was previously duplicated across five command files;
-it now lives here once. Follow it in order.
+it now lives here once. Revised 2026-08-03: this used to be 10 steps: read,
+validate, write-prompt, pick-lake, dispatch, verify, security-gate,
+mark-complete, commit, record. It is now 9 -- pick-lake became step 3
+(DIAL, via `dispatch_dial.py`), and mark-complete/commit/record merged into
+one step 8 (`batch_handoff.py`) -- because those three used to be separate
+manual actions and now happen atomically in one call. See
+`HANDOFF/ORCHESTRATION_TOKEN_STRATEGY.md` for the full audit, what was
+tested, and every edge case considered. Every safety rule in Section 9
+still applies unchanged; only the mechanism changed. Follow it in order.
 
 1. **READ QUEUE.** Open `HANDOFF/todo/_QUEUE.md`; take the top actionable ticket.
    Group consecutive tickets by domain (rust-core / android / wasm / desktop /
    docs) to reuse worker context.
 2. **PRE-DISPATCH VALIDATION** (cheap, orchestrator-local -- never spend a worker
    on a dead task). Read the ticket, identify the concrete target (symbol/file),
-   grep for it:
+   grep for it and note the line range -- it feeds step 4's scoped `--files`:
    - FALSE_POSITIVE (target is a test/Kani/proptest/`GOLDEN_*` literal) -> move to
      `HANDOFF/done/` with a note; next ticket.
    - ALREADY_WIRED (the thing to "wire" already has callers) -> move to done/; next.
    - NEEDS_REVIEW (target missing/ambiguous) -> STOP, ask the operator.
    - VALID -> continue.
-3. **WRITE the worker prompt** to `tmp/<slug>.prompt.md`: self-contained --
-   requirement, exact target file paths, acceptance criteria, and the exact
-   build-gate command. Include the Worker Contract header (Section 3).
-4. **PICK THE LAKE** by the Section 2.1 ladder and the tier the task needs: FLASH
-   for mechanical, CODER for implementation, THINK/MAX for analysis and
-   adversarial review. Never send analysis or judgement to a FLASH lake (Section
-   9.13). Free lanes first, always.
+3. **DIAL.** `python scripts/dispatch_dial.py --tier <ticket tier> --files
+   <targets> --description "<ticket text>" --retry-count <N>`. Returns the
+   effective tier (auto-escalated to THINK if step 2's target falls under
+   `core/src/{crypto,transport,routing,privacy}/`, per Section 4 -- never
+   send analysis or judgement to a FLASH lake, Section 9.13), the
+   `thinking` flag, `security_gate_required`/`delivery_gate_required`
+   booleans, and the lake/model to dispatch to (applies the Section 2.1
+   ladder automatically via `lake_route.py` -- never pick a lake by hand
+   and never call `lake_route.py` directly from this step). Empty `lake`
+   in the output means no quota anywhere on this tier: escalate to the
+   operator or fall to the `native`/`agent` backends (Section 5) instead
+   of guessing.
+4. **WRITE the worker prompt** to `tmp/<slug>.prompt.md`: self-contained --
+   requirement, exact target file paths (use step 2's scoped
+   `path:Lstart-Lend` syntax when the target is a narrow slice of a large
+   file), acceptance criteria, and the exact build-gate command. Include
+   the Worker Contract header (Section 3) -- step 6 depends on the footer
+   format being present, don't skip it.
 5. **DISPATCH** (canonical, any model): `scripts/delegate_task.py --task <file>
-   --provider <lake> --files <targets> --apply --verify "<gate>" --mode diff
-   --max-rounds 3`. Claude-only accelerators, if available: the `Agent` tool,
-   `claude -p` workers, or the ollama pool via `orchestrator_manager.sh` (Section
-   5). Always `--mode diff` (Section 9.3).
-6. **VERIFY.** Parse the worker's first line (RESULT/PATCH/VERDICT, Section 3).
-   `git diff --stat` scoped to the ticket:
+   --provider <dial's lake> --model <dial's model> --files <targets, scoped
+   if applicable> --apply --verify "<gate>" --mode diff --max-rounds
+   <dial's max_rounds>`. Wrap the verify command with `scripts/build_lock.py
+   --run "<gate>"` (Section 9.5 -- never run two verify jobs concurrently).
+   Claude-only accelerators, if available: the `Agent` tool, `claude -p`
+   workers, or the ollama pool via `orchestrator_manager.sh` (Section 5).
+   Always `--mode diff` (Section 9.3).
+6. **VERIFY.** `python scripts/parse_orchestration_footer.py
+   tmp/<slug>_response.md` for the structured result (`result`, `files`,
+   `notes`). A missing/degraded footer (`degraded: true`) is not an error by
+   itself -- fall back to reading the response body directly and `git diff
+   --stat` scoped to the ticket, exactly as before this revision. Either way:
    - ZERO-DIFF -> do not trust it; ticket stays in todo/, log `requeued`.
-   - Real diff -> run the matching gate YOURSELF (Rust `cargo check --workspace`;
-     Android `cd android && ./gradlew assembleDebug -x lint --quiet`; WASM
-     `cargo check -p scmessenger-wasm --target wasm32-unknown-unknown`;
+   - Real diff -> run the matching gate YOURSELF, under `build_lock.py`
+     (Rust `cargo check --workspace`; Android `cd android && ./gradlew
+     assembleDebug -x lint --quiet`; WASM `cargo check -p
+     scmessenger-wasm --target wasm32-unknown-unknown`;
      `CARGO_INCREMENTAL=0` on Windows). Grep the diff for
-     `simulate|mock|placeholder|in a real implementation` -- a clean compile is
-     NOT completion (Section 9.1).
-7. **SECURITY GATE** (Section 4). Diff touches `core/src/{crypto,transport,routing,
-   privacy}/` -> mandatory adversarial review at THINK/MAX tier before commit.
-   Delivery-logic diffs (outbox, receipt, custody, retry) -> triangulate: 3
-   distinct verifier dispatches or one Fusion Lite panel (Section 10).
-8. **MARK COMPLETE.** Real diff + passing gate (+ security pass where required) ->
-   move the ticket to `HANDOFF/done/`, update the tracker. A task is not complete
-   until the file has moved.
-9. **COMMIT.** `git add -A && git commit -m "<prov>: completed <task>"` (provenance:
-   `native:` for Claude-worker completions, `swarm:` for foreign/pool completions).
-   Record the gate result in the message. Never push unless the operator asks.
-10. **RECORD** the dispatch in the ledger (`lake_route.py --record`), re-check
-    quota/cooldowns, and return to step 1. Stop when the queue is empty, a
-    NEEDS_REVIEW/escalation is hit, or the operator interrupts.
+     `simulate|mock|placeholder|in a real implementation` -- a clean compile
+     is NOT completion (Section 9.1). A worker's own `VERIFICATION:` field
+     is NEVER a substitute for running this yourself (Section 3: workers
+     dispatched via `delegate_task.py` cannot execute code at all and must
+     report `VERIFICATION: NONE`).
+7. **SECURITY GATE** (Section 4). Step 3's `security_gate_required` (or a
+   manual check: diff touches `core/src/{crypto,transport,routing,privacy}/`)
+   -> mandatory adversarial review at THINK/MAX tier before commit.
+   `delivery_gate_required` (outbox, receipt, custody, retry) -> triangulate:
+   3 distinct verifier dispatches or one Fusion Lite panel (Section 10).
+8. **MARK COMPLETE + COMMIT + RECORD**, in one call: `python
+   scripts/batch_handoff.py --batch-file <batch.json for this ticket>
+   --provider <lake> --commit-message "<task>"`. Moves the ticket to
+   `HANDOFF/done/` (only for a real diff + passing gate + security pass
+   where required -- a task is not complete until the file has moved),
+   commits (`git add -A && git commit`; provenance `<prov>:` in the
+   message, `native:` for Claude-worker completions, `swarm:` for
+   foreign/pool completions; never push unless the operator asks), and
+   records the ledger entry via `lake_route.py --record` in the same call
+   -- the router is blind to what you do not record. Batching several
+   tickets from one dispatch round into a single `batch_handoff.py` call
+   (one commit instead of N) is preferred; a single-ticket batch works too.
+9. Re-check quota/cooldowns and return to step 1. Stop when the queue is
+   empty, a NEEDS_REVIEW/escalation is hit, or the operator interrupts.
 
 ---
 
 ## 3. Worker Contract
 
-Every worker response MUST begin with one of:
+Revised 2026-08-03: field names and the RESULT vocabulary are now identical
+to AGENTS.md's own REMOTE SANDBOX/FOREIGN WORKER report contract (AGENTS.md
+lines 81-118), which states plainly it is "the canonical, model-agnostic
+rules contract for ANY agent" -- so this contract extends it instead of
+using a different vocabulary. The prior `PATCH:`/`VERDICT:` fields are
+retired; `RESULT` + `FILES` + `NOTES` cover the same information.
+
+Every worker response dispatched via `delegate_task.py` MUST end with this
+footer (the diff/file content is the main payload, parsed separately by
+`extract_diff_blocks`/`extract_file_blocks` -- this is a supplement at the
+end, not a replacement for the first line of the response):
+
 ```
-RESULT: DONE
-RESULT: BLOCKED: <reason>
-RESULT: FAILED: <reason>
-PATCH: <number-of-files>
-VERDICT: PASS|FAIL|NEEDS_INFO|ANALYSIS_COMPLETE
+---ORCHESTRATION_METADATA---
+RESULT: DONE|BLOCKED|FAILED
+VERIFICATION: NONE
+FILES: ["path/one.rs", "path/two.rs"]
+NOTES: ["what changed", "anything the verifier must know before running gates"]
+---END---
 ```
 
-Then max 10 lines: what changed, files touched, anything the verifier must
-know before running gates.
+`VERIFICATION` MUST always be `NONE` for workers dispatched through
+`delegate_task.py` -- they are pure text completion with no execution
+environment, so a `CONTAINER(...)` or other claim of having run a gate is
+false by construction and must never be trusted if one appears. (A
+`CONTAINER(...)` claim is only ever meaningful from an actual REMOTE
+SANDBOX-class agent with its own toolchain, and even then it is advisory
+only, never authoritative -- Section 9.1 and AGENTS.md both apply
+regardless of what a worker's footer says.)
+
+`FILES`/`NOTES` accept a JSON list (preferred -- ask for it explicitly in
+the dispatch prompt) or bare AGENTS.md-style comma-separated free text;
+either parses correctly via `scripts/parse_orchestration_footer.py`. A
+missing or unparseable footer (`degraded: true` in the parser's output) is
+never treated as success -- Section 2.2 step 6 falls back to reading the
+response body directly rather than assuming anything worked.
 
 Workers NEVER: run builds (`cargo`, `gradlew`), commit, push, or move HANDOFF
 files. The orchestrator owns ALL of those operations.
@@ -317,7 +387,12 @@ by 23960b35/8da8cc90 after audit; do not repeat their failure modes.
 5. **One build at a time on Windows.** Never run two concurrent
    `delegate_task.py --verify` jobs (2 concurrent cargo/gradle builds risk
    rlib lock corruption; see .claude/rules/build.md). `scripts/run_tasks.ps1` v2 is
-   strictly sequential for this reason.
+   strictly sequential for this reason. `scripts/build_lock.py --run "<gate
+   command>"` (added 2026-08-03) enforces this with a tested advisory
+   lockfile -- wrap every Section 2.2 step 5/6 verify command with it
+   rather than relying on discipline alone; it also has a stale-lock
+   recovery path and a `--wait-seconds` mode for a batch that would rather
+   queue than fail.
 6. **Batch runners NEVER auto-commit and NEVER move tickets.** Workers
    implement; the orchestrator reviews (adversarial gate for
    `core/src/{crypto,transport,routing,privacy}/`), moves tickets, and
@@ -367,6 +442,26 @@ by 23960b35/8da8cc90 after audit; do not repeat their failure modes.
     (primary), kimi-k2.7-code `implementer`, deepseek-v4-flash explore +
     small_model, glm-5.1 general. Config loads at startup only -- RESTART
     opencode to activate; verify model IDs resolve (`opencode-go/<id>`).
+16. **Orchestrator token overhead was the coordinator's problem, not the
+    workers'.** 2026-08-03 audit found the orchestrator itself (not
+    workers) was spending an estimated ~750-950 tokens/task on prompt
+    construction, response-grepping, and one-commit-per-ticket state moves
+    that a script can do for a fraction of that. `dispatch_dial.py`
+    (tier/effort/lake/model decision, Section 2.2 step 3),
+    `parse_orchestration_footer.py` (structured response parsing, step 6),
+    and `batch_handoff.py` (batched state move + single commit + ledger
+    record, step 8) now handle this. Full audit -- what was tested, the
+    two real bugs testing found and fixed, and every edge case considered
+    (concurrent builds, malformed worker output, capability-class limits):
+    `HANDOFF/ORCHESTRATION_TOKEN_STRATEGY.md`. The same pass found
+    `qwenpaid` was missing from `lake_route.py`'s `TIER_LADDERS` despite
+    being the operator's stated primary lane since 2026-07-28 (fixed for
+    CODER/THINK/MAX) -- and found that `tmp/lakes/registry.json` is
+    gitignored, so that half of the fix does not survive a fresh checkout
+    on its own; re-apply the `qwenpaid` block from
+    `docs/orchestration/SCM_UNIFIED_LAKE_ORCHESTRATION.md` Section 1 (or
+    write the regeneration script that document's Part 1.1 recommends) on
+    any machine where `qwenpaid` stops being picked automatically.
 
 ---
 
