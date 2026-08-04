@@ -28,6 +28,20 @@ pub fn is_valid_identity_id(hex_str: &str) -> bool {
     hex_str.len() == 64 && hex_str.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// Derive the identity_id from a hex-encoded Ed25519 public key.
+///
+/// This is the single source of truth for the public_key -> identity_id
+/// derivation, so callers outside this module never reimplement the hash.
+/// Returns `None` when the input is not a 32-byte hex key: the relation is
+/// one-way, so an identity_id can never be reversed back into a public key.
+pub fn identity_id_from_public_key_hex(public_key_hex: &str) -> Option<String> {
+    let bytes = hex::decode(public_key_hex).ok()?;
+    if bytes.len() != 32 {
+        return None;
+    }
+    Some(hex::encode(blake3::hash(&bytes).as_bytes()))
+}
+
 /// Get the type of a 64-hex identifier for logging/debugging
 pub fn identify_key_type(hex_str: &str) -> &'static str {
     if is_valid_public_key(hex_str) {

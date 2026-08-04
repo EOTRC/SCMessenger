@@ -4,8 +4,9 @@ pub mod keys;
 mod store;
 
 pub use keys::{
-    identify_key_type, is_valid_identity_id, is_valid_public_key, sign_bundle, verify_bundle,
-    IdentityKeys, KeyPair, PublicKeyBundle, IDENTITY_ID_PREFIX, PUBLIC_KEY_PREFIX,
+    identify_key_type, identity_id_from_public_key_hex, is_valid_identity_id, is_valid_public_key,
+    sign_bundle, verify_bundle, IdentityKeys, KeyPair, PublicKeyBundle, IDENTITY_ID_PREFIX,
+    PUBLIC_KEY_PREFIX,
 };
 pub use store::{DeviceMetadata, IdentityStore};
 

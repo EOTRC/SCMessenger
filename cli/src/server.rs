@@ -1340,18 +1340,11 @@ pub async fn handle_jsonrpc_request(
         // doesn't make requests vanish before the user acts on them.
         ClientIntent::GetPendingMessageRequests {} => {
             if let Some(ref core) = ctx.core {
-                // Given a sender identifier that may be either a hex public key
-                // or an identity_id hash, return the additional candidate
-                // identifier it implies. A 32-byte hex public key yields its
-                // blake3 identity_id; anything else yields None, since an
-                // identity_id cannot be reversed back into a public key.
-                fn derived_identity_id(sender_id: &str) -> Option<String> {
-                    let bytes = hex::decode(sender_id).ok()?;
-                    if bytes.len() != 32 {
-                        return None;
-                    }
-                    Some(hex::encode(blake3::hash(&bytes).as_bytes()))
-                }
+                // Derives the identity_id a public key implies, via core's
+                // single source of truth for that hash. Yields None for
+                // anything that is not a 32-byte hex key, since an identity_id
+                // cannot be reversed back into a public key.
+                use scmessenger_core::identity::keys::identity_id_from_public_key_hex as derived_identity_id;
 
                 let contacts = core.contacts_store_manager().list().unwrap_or_default();
                 // Hold BOTH identifier flavors for every contact: a contact may
