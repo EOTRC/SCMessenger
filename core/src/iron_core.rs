@@ -3199,17 +3199,6 @@ impl IronCore {
             }
         }
 
-        // Check blocked status (peer-level and device-specific)
-        let is_blocked_and_deleted = sender_candidates.iter().any(|candidate| {
-            self.blocked_manager
-                .read()
-                .is_blocked_and_deleted(candidate)
-                .unwrap_or(false)
-        });
-        if is_blocked_and_deleted {
-            return Err(IronCoreError::Blocked);
-        }
-
         // Also check device-specific blocks using the sender's last known device ID
         // Try the contact under both identifier flavors; first hit wins.
         let sender_device_id = sender_candidates.iter().find_map(|candidate| {
@@ -3221,20 +3210,42 @@ impl IronCore {
                 .and_then(|c| c.last_known_device_id)
         });
 
-        // FAIL CLOSED: this value drives `hidden` on the stored message. The
-        // previous `unwrap_or(false)` meant a block-store read error rendered a
-        // blocked sender's message as NOT hidden -- i.e. the message surfaced to
-        // the user despite an active block. On error we cannot prove the sender
-        // is unblocked, so hide it; the message is still retained, not dropped,
-        // so nothing is lost if the store recovers.
+        // Check blocked status (peer-level and device-specific).
+        // SINGLE LOCK SNAPSHOT: acquire the blocked_manager read lock ONCE and
+        // reuse the same guard for both the blocked+deleted check and the
+        // is_blocked check -- one consistent view of the block store, no
+        // per-candidate re-acquisition. The guard's scope ends before the
+        // history/audit/delegate work below, so concurrent block_peer()
+        // writers are not held off for the rest of receive processing.
         let is_blocked = {
+            let blocked_guard = self.blocked_manager.read();
+
+            // FAIL CLOSED for blocked+deleted: on a block-store read error for
+            // ANY candidate we cannot prove the sender is NOT blocked+deleted,
+            // so drop at ingress instead of processing the payload.
+            for candidate in &sender_candidates {
+                match blocked_guard.is_blocked_and_deleted(candidate) {
+                    Ok(true) => return Err(IronCoreError::Blocked),
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            "[WARN] blocked+deleted lookup failed for inbound sender; dropping message (fail-closed): {}",
+                            e
+                        );
+                        return Err(IronCoreError::Blocked);
+                    }
+                }
+            }
+
+            // FAIL CLOSED: this value drives `hidden` on the stored message. The
+            // previous `unwrap_or(false)` meant a block-store read error rendered a
+            // blocked sender's message as NOT hidden -- i.e. the message surfaced to
+            // the user despite an active block. On error we cannot prove the sender
+            // is unblocked, so hide it; the message is still retained, not dropped,
+            // so nothing is lost if the store recovers.
             let mut any_blocked = false;
             for candidate in &sender_candidates {
-                match self
-                    .blocked_manager
-                    .read()
-                    .is_blocked(candidate, sender_device_id.as_deref())
-                {
+                match blocked_guard.is_blocked(candidate, sender_device_id.as_deref()) {
                     Ok(b) => {
                         if b {
                             any_blocked = true;
