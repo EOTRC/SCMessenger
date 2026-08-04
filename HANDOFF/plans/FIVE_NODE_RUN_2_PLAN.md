@@ -26,8 +26,8 @@
 - Must fix `core/src/identity/keys.rs` canonicalization before test
 - iOS MUST agree on same convention
 
-| #1. ✅ CLI auto-reply mode (DONE in PR #133) |
-| #2. ✅ Panic fix + lock-file recovery (DONE in PR #133) |
+| #1. [OK] CLI auto-reply mode (DONE in PR #133) |
+| #2. [OK] Panic fix + lock-file recovery (DONE in PR #133) |
 | #3. [BLOCKED] **Identity canonicalization on public key** — BLOCKING |
 
 ---

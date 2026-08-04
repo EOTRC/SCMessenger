@@ -18,21 +18,21 @@ The session aimed to:
 - Reconcile `MILESTONE_RELEASE_PLAN.md` drift and triage 13 Dependabot alerts (5 HIGH)
 
 ### What Succeeded
-- ✅ Fourth adversarial review passed (Gemini free lane) — closed Tasks #14, #17, #19 with file:line evidence for F3 (SSRF), NEW-2 (RFC1918 disclosure), NEW-4 (eviction/token bucket)
-- ✅ Rust Lint failure diagnosed and fixed: `cargo fmt` on the new test file; local fmt gate bug discovered and corrected
-- ✅ Four commits pushed to main (`f521f142`, `8aec300e`, `8f866bfc`, `3b1d4147`)
-- ✅ `cargo clean` reclaimed 47.1 GiB (100% → 84% used); FFI `generated-sources` survived intact
-- ✅ CI watcher confirmed 7/8 workflows green (Lint, CI, Mobile, Cross, Docker Publish, Repository Hygiene, Push on main)
-- ✅ Robolectric disaster fully reversed: fabricated URLs removed, unused dependency deleted, sibling configs (`docker-compose.test.yml`) corrected
-- ✅ Gradle test logging added (`testLogging.events = ["started"]`) so next timeout names the blocking test
-- ✅ `.claude/rules/build.md` corrected: blanket `cargo clean` warning replaced with precise conditions
+- [OK] Fourth adversarial review passed (Gemini free lane) — closed Tasks #14, #17, #19 with file:line evidence for F3 (SSRF), NEW-2 (RFC1918 disclosure), NEW-4 (eviction/token bucket)
+- [OK] Rust Lint failure diagnosed and fixed: `cargo fmt` on the new test file; local fmt gate bug discovered and corrected
+- [OK] Four commits pushed to main (`f521f142`, `8aec300e`, `8f866bfc`, `3b1d4147`)
+- [OK] `cargo clean` reclaimed 47.1 GiB (100% -> 84% used); FFI `generated-sources` survived intact
+- [OK] CI watcher confirmed 7/8 workflows green (Lint, CI, Mobile, Cross, Docker Publish, Repository Hygiene, Push on main)
+- [OK] Robolectric disaster fully reversed: fabricated URLs removed, unused dependency deleted, sibling configs (`docker-compose.test.yml`) corrected
+- [OK] Gradle test logging added (`testLogging.events = ["started"]`) so next timeout names the blocking test
+- [OK] `.claude/rules/build.md` corrected: blanket `cargo clean` warning replaced with precise conditions
 
 ### What Failed
-- ❌ Docker Integration Suite: Android Unit Tests failed (image build failed — `wget` exit 8 on 404 URLs)
-- ❌ Robolectric "fix" (commit `8aec300e`) was **wrong on two independent counts**: fabricated URLs + unnecessary dependency
-- ❌ The fmt verification harness had a latent bug making it **incapable of failing** (5th instance of "green signal from no-op")
-- ❌ `MILESTONE_RELEASE_PLAN.md` drift and 13 Dependabot alerts (5 HIGH) remain unaddressed
-- ❌ Root cause of Android test hang **still unknown** (leading hypothesis: `kotlin.compiler.execution.strategy="daemon"` in compose)
+- [FAIL] Docker Integration Suite: Android Unit Tests failed (image build failed — `wget` exit 8 on 404 URLs)
+- [FAIL] Robolectric "fix" (commit `8aec300e`) was **wrong on two independent counts**: fabricated URLs + unnecessary dependency
+- [FAIL] The fmt verification harness had a latent bug making it **incapable of failing** (5th instance of "green signal from no-op")
+- [FAIL] `MILESTONE_RELEASE_PLAN.md` drift and 13 Dependabot alerts (5 HIGH) remain unaddressed
+- [FAIL] Root cause of Android test hang **still unknown** (leading hypothesis: `kotlin.compiler.execution.strategy="daemon"` in compose)
 
 ---
 
@@ -85,15 +85,15 @@ The session aimed to:
 ## 5. Verification Gaps (Claimed vs. Actually Verified)
 
 | Claim Made | Actually Verified? | Gap |
-|------------|-------------------|-----|
-| "Fourth adversarial review passed" | ✅ Yes — Gemini free lane, file:line evidence for 3 findings | 1 LOW finding (DiscoveryDial defence-in-depth) remains open |
-| "Rust Lint fixed" | ✅ Yes — `cargo fmt` applied, CI green | But only because harness bug was found mid-session |
-| "`cargo clean` safe" | ✅ Yes — 47.1 GiB reclaimed, generated-sources intact | Rule correction needed (done) |
-| "Robolectric fix works" | ❌ **No** — URLs never `curl -I`'d; tests never checked for Robolectric usage | **Fabricated URLs + unnecessary dependency** |
-| "Android hang fixed" | ❌ **No** — root cause still unknown; only logging + daemon switch added | Next run may still hang |
-| "All CI green" | ❌ **No** — 7/8 green; Docker Integration Suite red | Docker failure was the Robolectric fabrication |
-| "MILESTONE_RELEASE_PLAN.md reconciled" | ❌ **No** — only flagged | 3 stale tickets still in plan |
-| "Dependabot alerts triaged" | ❌ **No** — only counted (13 total, 5 HIGH) | No CVE analysis, no upgrade PRs |
+|---|---|---|
+| "Fourth adversarial review passed" | [OK] Yes — Gemini free lane, file:line evidence for 3 findings | 1 LOW finding (DiscoveryDial defence-in-depth) remains open |
+| "Rust Lint fixed" | [OK] Yes — `cargo fmt` applied, CI green | But only because harness bug was found mid-session |
+| "`cargo clean` safe" | [OK] Yes — 47.1 GiB reclaimed, generated-sources intact | Rule correction needed (done) |
+| "Robolectric fix works" | [FAIL] **No** — URLs never `curl -I`'d; tests never checked for Robolectric usage | **Fabricated URLs + unnecessary dependency** |
+| "Android hang fixed" | [FAIL] **No** — root cause still unknown; only logging + daemon switch added | Next run may still hang |
+| "All CI green" | [FAIL] **No** — 7/8 green; Docker Integration Suite red | Docker failure was the Robolectric fabrication |
+| "MILESTONE_RELEASE_PLAN.md reconciled" | [FAIL] **No** — only flagged | 3 stale tickets still in plan |
+| "Dependabot alerts triaged" | [FAIL] **No** — only counted (13 total, 5 HIGH) | No CVE analysis, no upgrade PRs |
 
 ---
 

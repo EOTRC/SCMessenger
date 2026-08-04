@@ -34,7 +34,7 @@
 
 ---
 
-## 🔄 DELEGATED TASKS (Still Running / Need Follow-up)
+## [IN PROGRESS] DELEGATED TASKS (Still Running / Need Follow-up)
 
 | Task | Owner | Status | Notes |
 |---|---|---|---|
@@ -63,14 +63,14 @@ Per `FIVE_NODE_RUN_1_ANALYSIS.md`: "Resolve identity keying -- BLOCKED, and noth
 ### 2. Cloud Node (100.56.248.69)
 [BLOCKED] SSH blocked — need IAM auth. Infra scripts at `infra/aws/farm-sim-manage.sh`, `infra/aws/provision-relay.sh`
 
-### 3. iOS Parity Tasks (Not in HEAD)
+## [BLOCKED] 3. iOS Parity Tasks (Not in HEAD)
 [NOT IN HEAD] U6 receipt unification (use UniFFI `encodeReceipt`/`decodeReceipt`)
 [NOT IN HEAD] Relay de-hardcode (delete `defaultBootstrapRelay`, wire computed `bootstrapAddrs` to `startSwarm`)
 [NOT IN HEAD] XCTest target registration (`D-03_iOS_XCTest_target_register_SC.md`)
 
 ---
 
-## 📋 NEXT ORCHESTRATOR FIRST ACTIONS
+## [NEXT] NEXT ORCHESTRATOR FIRST ACTIONS
 
 1. **Complete identity canonicalization** — Follow `HANDOFF/todo/QWEN_IDENTITY_CANONICALIZATION_CRITICAL.md`
 2. **Resolve cloud node SSH** — Use IAM auth, verify container = latest CI build
@@ -79,7 +79,7 @@ Per `FIVE_NODE_RUN_1_ANALYSIS.md`: "Resolve identity keying -- BLOCKED, and noth
 
 ---
 
-## 🎯 VERIFICATION STANDARD (Non-Negotiable)
+## [OK] VERIFICATION STANDARD (Non-Negotiable)
 
 | Claim | Required Evidence |
 |-------|------------------|
@@ -92,13 +92,13 @@ Per `FIVE_NODE_RUN_1_ANALYSIS.md`: "Resolve identity keying -- BLOCKED, and noth
 
 ---
 
-## 🚀 SIMPLE LAUNCH PROMPT FOR NEXT ORCHESTRATOR
+## [LAUNCH] SIMPLE LAUNCH PROMPT FOR NEXT ORCHESTRATOR
 
 > **Start here:** Read `HANDOFF/NEXT_ORCHESTRATOR_PROMPT.md` — it has the 3 immediate blockers, verification standard, and branch rules. Then pick up `HANDOFF/todo/QWEN_IDENTITY_CANONICALIZATION_CRITICAL.md` and finish the identity fix.
 
 ---
 
-## 📁 KEY FILES REFERENCE
+## [FILES] KEY FILES REFERENCE
 
 | File | Why It Matters |
 |------|----------------|

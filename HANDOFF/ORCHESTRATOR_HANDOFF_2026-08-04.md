@@ -15,7 +15,7 @@
 
 ## CURRENT STATE SUMMARY
 
-### ✅ DONE
+### [OK] DONE
 1. **PR #133 merged** — All 29 CI checks green (including iOS Build & Simulator Test)
 2. **Session audit** — `HANDOFF/audit/SESSION_AUDIT_2026-08-04_CLAUDE_LAST.md` (5 "green signal from no-op" patterns, Robolectric fabrication, fmt harness bug, 6 hardening recommendations)
 3. **PR #134 created** — `HANDOFF/audit/PR134_REMAINING_TASKS.md` (complete remaining work catalog)
@@ -23,14 +23,14 @@
 4. **5-Node Run 2 Plan** — `HANDOFF/plans/FIVE_NODE_RUN_2_PLAN.md` (20 directional pairs, evidence protocol, success criteria)
 5. **Task specs delegated** — Qwen (identity, cloud, iOS/macOS), GPT (iOS/macOS install)
 
-### 🔄 IN PROGRESS (Delegated)
+### [IN PROGRESS] IN PROGRESS (Delegated)
 | Task | Owner | Status | Deliverable |
 |------|-------|--------|-------------|
 | Identity canonicalization (full) | Qwen | Step 1/5 merged (PR #135); `iron_core.rs` + Android `MeshRepository.kt` next | PR with validation, index, migration |
 | Cloud node verification | Qwen | SSH blocked (key auth); infra scripts at `infra/aws/` | `HANDOFF/audit/CLOUD_NODE_RUN2_VERIFICATION_2026-08-04.md` |
 | iOS/macOS fresh install | GPT | Delegated; Christy's iPhone + macOS CLI | `HANDOFF/gpt/IOS_MACOS_RUN2_BUNDLE_2026-08-04.md` |
 
-### ❌ BLOCKERS FOR RUN 2
+### [BLOCKED] BLOCKERS FOR RUN 2
 1. **Identity canonicalization incomplete** — PR #135 is step 1 of 5:
    - `core/src/iron_core.rs`: validate `recipient_id` on send path, reject known `identity_id`, add `identity_id`→`public_key` index
    - `android/app/src/main/java/com/scmessenger/android/data/MeshRepository.kt`: key contacts by `public_key` from BLE beacon (not `identity_id`)

@@ -44,16 +44,16 @@ cat HANDOFF/todo/GPT_RUN2_IOS_MACOS_FRESH_INSTALL.md
 | Receipt round trip | Receipt created → sender core classifies → history/outbox/UI updated |
 | Recovered | After forced disconnect/restart, queued/custody drains unattended |
 
-## 🚫 DOES NOT COUNT
+## [BLOCKED] DOES NOT COUNT
 dial queued, transport ACK, relay custody, HTTP success, sender-side log, synthetic callback, manual redial
 
-## 🌿 BRANCH RULES
+## [RULES] BRANCH RULES
 - Windows host = authoritative build; direct commits to main OK
 - Mac lane = `gpt/*` branches only; iOS/xcodebuild authority
 - Qwen = Windows execution via `scripts/delegate_task.py --provider qwenpaid`
 - core/crypto/transport/routing/privacy = mandatory adversarial review
 
-## 📁 KEY FILES
+## [FILES] KEY FILES
 - `HANDOFF/audit/PR134_REMAINING_TASKS.md` — complete work catalog
 - `HANDOFF/plans/FIVE_NODE_RUN_2_PLAN.md` — 20 directional pairs test plan
 - `HANDOFF/audit/IDENTITY_HASH_VS_PUBKEY_CONFLICT.md` — root cause
