@@ -60,10 +60,11 @@ impl Contact {
 
 /// Key prefix namespacing contact records in the shared backend. `IronCore`
 /// hands identity, history, logs, blocked-list, and contact storage the same
-/// `Arc<dyn StorageBackend>` instance, so without a prefix, `list()`/`count()`
+/// `Arc<dyn StorageBackend>` instance, so without a prefix, `list()`/`count()`,
 /// would scan (and try to parse as `Contact`) every other subsystem's keys too.
 const CONTACT_KEY_PREFIX: &[u8] = b"contact:";
 const CONTACT_BUNDLE_KEY_PREFIX: &[u8] = b"contact_bundle:";
+const IDENTITY_ID_INDEX_PREFIX: &[u8] = b"identity_id_idx:";
 
 fn contact_key(peer_id: &str) -> Vec<u8> {
     [CONTACT_KEY_PREFIX, peer_id.as_bytes()].concat()
@@ -71,6 +72,10 @@ fn contact_key(peer_id: &str) -> Vec<u8> {
 
 fn contact_bundle_key(public_key_hex: &str) -> Vec<u8> {
     [CONTACT_BUNDLE_KEY_PREFIX, public_key_hex.as_bytes()].concat()
+}
+
+fn identity_id_index_key(identity_id: &str) -> Vec<u8> {
+    [IDENTITY_ID_INDEX_PREFIX, identity_id.as_bytes()].concat()
 }
 
 #[derive(Clone)]
@@ -185,7 +190,7 @@ impl ContactManager {
                     }
                 }
             }
-            // 64-hex but not a valid Ed25519 key → likely identity_id; cannot derive pubkey.
+            // 64-hex but not a valid Ed25519 key -> likely identity_id; cannot derive pubkey.
             return Err(IronCoreError::InvalidInput);
         }
 
@@ -232,6 +237,10 @@ impl ContactManager {
                 serde_json::from_slice(&data).map_err(|_| IronCoreError::Internal)?;
             Ok(Some(contact))
         } else {
+            // If not found by peer_id, try resolving as identity_id
+            if let Ok(Some(public_key)) = self.resolve_identity_id(&peer_id) {
+                return self.get(public_key);
+            }
             Ok(None)
         }
     }
@@ -277,6 +286,10 @@ impl ContactManager {
                 serde_json::from_slice(&data).map_err(|_| IronCoreError::Internal)?;
             Ok(Some(bundle))
         } else {
+            // If not found by public_key_hex, try resolving as identity_id
+            if let Ok(Some(pk)) = self.resolve_identity_id(public_key_hex) {
+                return self.get_contact_bundle(&pk);
+            }
             Ok(None)
         }
     }
@@ -420,6 +433,36 @@ impl ContactManager {
                 return Err(IronCoreError::CorruptionDetected);
             }
         }
+        Ok(())
+    }
+
+    /// Resolve an identity_id (blake3 hash of public key) to its public key
+    /// by looking up the identity_id index.
+    pub fn resolve_identity_id(&self, identity_id: &str) -> Result<Option<String>, IronCoreError> {
+        let key = identity_id_index_key(identity_id);
+        if let Some(data) = self
+            .backend
+            .get(&key)
+            .map_err(|_| IronCoreError::StorageError)?
+        {
+            let public_key = String::from_utf8(data).map_err(|_| IronCoreError::Internal)?;
+            Ok(Some(public_key))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Save the identity_id -> public_key mapping in the index.
+    #[allow(dead_code)]
+    fn save_identity_id_index(
+        &self,
+        identity_id: &str,
+        public_key_hex: &str,
+    ) -> Result<(), IronCoreError> {
+        let key = identity_id_index_key(identity_id);
+        self.backend
+            .put(&key, public_key_hex.as_bytes())
+            .map_err(|_| IronCoreError::StorageError)?;
         Ok(())
     }
 }
