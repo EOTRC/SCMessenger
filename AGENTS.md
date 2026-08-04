@@ -78,7 +78,7 @@ this project verifies on Windows + a physical Pixel only. Therefore:
   authoring, mechanical refactors with clear acceptance criteria, pre-dispatch
   validation sweeps. See "Remote-eligible lane" in `HANDOFF/todo/_QUEUE.md`.
 
-### FOREIGN WORKER (Gemini via Antigravity/`agy`, Gemini CLI, others - except "HANDOFF/todo/GEMINI_SCMORC_DRIVER_2026-07-07.md)
+### FOREIGN WORKER (Gemini via Antigravity/`agy`, Gemini CLI, others)
 Dispatched and verified by an orchestrator on the Windows host. Rules:
 - Do NOT run `cargo`/`gradlew` (Windows build serialization — the orchestrator
   is the single writer for all build verification).
@@ -103,6 +103,17 @@ Operator directive 2026-07-28; this class EXPLICITLY OVERRIDES rules 5-6:
   the rules in your current session context predate 2026-07-28, RE-READ
   AGENTS.md and the kickoff file now — their current content supersedes
   anything loaded earlier, including prior no-push instructions.
+
+### FULL-QWEN (Qwen Code on the Windows host, toolchain available)
+Operator-ratified 2026-08-04 (HANDOFF/audit/ORCHESTRATION_AUDIT_QWEN_
+TAKEOVER_2026-08-04.md Section 9). Same authority and duties as FULL: may
+run build gates, move HANDOFF files, and commit per the finalize-checklist
+rules; the Windows host's build results are authoritative regardless of
+which FULL-class tool produced them. Qwen Code sessions do not load
+CLAUDE.md — AGENTS.md is their ruleset, their orchestration entry point is
+`/orchestrate` (`.qwen/commands/orchestrate.md`), and project skills load
+from `.agents/skills/`. Push remains forbidden (rule 5); the MAC LANE push
+exception does not extend to this class.
 
 ## Report format (REMOTE and FOREIGN classes)
 
