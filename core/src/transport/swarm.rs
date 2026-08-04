@@ -4800,6 +4800,37 @@ pub async fn start_swarm_with_config(
                                 }
                             }
 
+                            // A peer may hold SEVERAL connections. libp2p emits
+                            // ConnectionClosed PER CONNECTION, and `num_established`
+                            // is how many remain. If any remain, the peer is still
+                            // connected and peer-level teardown must NOT run.
+                            //
+                            // Without this guard the first close tore down all peer
+                            // state -- connection_tracker, ledger_exchanged_peers,
+                            // the relay reservation via remove_listener, and pending
+                            // custody dispatches -- while other connections were live,
+                            // and libp2p-request-response then panicked on bookkeeping
+                            // we had removed underneath it:
+                            //
+                            //   libp2p-request-response-0.29.0/src/lib.rs:678
+                            //   assertion `left == right` failed (left: false, right: true)
+                            //
+                            // Observed on the Windows node during 5-node run 1: three
+                            // "Disconnected from <peer>" lines for the SAME peer inside
+                            // one millisecond -- three CONNECTIONS, not three peers --
+                            // followed immediately by a node-fatal panic that dropped
+                            // all 27 listeners.
+                            SwarmEvent::ConnectionClosed {
+                                peer_id,
+                                num_established,
+                                ..
+                            } if num_established > 0 => {
+                                tracing::debug!(
+                                    "Connection to {} closed, {} still established; skipping peer teardown",
+                                    peer_id,
+                                    num_established
+                                );
+                            }
                             SwarmEvent::ConnectionClosed { peer_id, .. } => {
                                 tracing::info!("[ERROR] Disconnected from {}", peer_id);
                                 connection_tracker.remove_connection(&peer_id);
@@ -6833,6 +6864,20 @@ pub async fn start_swarm_with_config(
                                         break;
                                     }
                                 }
+                            }
+                            // Same per-connection vs per-peer guard as the native
+                            // path above. See the comment there for the full
+                            // rationale and the observed panic signature.
+                            SwarmEvent::ConnectionClosed {
+                                peer_id,
+                                num_established,
+                                ..
+                            } if num_established > 0 => {
+                                tracing::debug!(
+                                    "Connection to {} closed, {} still established; skipping peer teardown (WASM)",
+                                    peer_id,
+                                    num_established
+                                );
                             }
                             SwarmEvent::ConnectionClosed { peer_id, .. } => {
                                 tracing::info!("[ERROR] Disconnected from {} (WASM)", peer_id);

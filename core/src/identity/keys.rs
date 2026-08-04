@@ -648,11 +648,23 @@ mod tests {
 
     #[test]
     fn test_identity_id_is_not_valid_ed25519_point() {
-        // A Blake3 hash of a public key is NOT itself a valid Ed25519 verifying key.
-        // This verifies that resolve_identity can distinguish the two formats.
-        // We test this probabilistically: generate 100 identity_id values.
-        // The chance of a random 32-byte string being a valid Ed25519 point is ~1/2
-        // (due to the cofactor-8 check / quadratic residue requirement on the sign bit).
+        // WHAT THIS ACTUALLY PROVES: that a curve-point test CANNOT be used to
+        // tell a public key apart from an identity_id.
+        //
+        // The chance of a random 32-byte string being a valid Ed25519 point is
+        // ~1/2 (quadratic-residue requirement when decompressing y). So roughly
+        // HALF of all identity_id values ARE valid Ed25519 points and would be
+        // misclassified as public keys by such a test.
+        //
+        // This comment used to claim the opposite -- that the check "verifies
+        // resolve_identity can distinguish the two formats" -- while the
+        // assertion below measured ~50/100 and therefore demonstrated it cannot.
+        // resolve_identity was written on that false premise: it tested the curve
+        // point FIRST and returned identity_ids as though they were public keys
+        // about half the time, so callers encrypted to a hash and produced
+        // ciphertext nobody could decrypt. It now resolves from stored contact
+        // and identity data first and uses the curve test only as a last-resort
+        // fallback for peers it has no record of.
         let mut valid_count = 0usize;
         for _ in 0..100 {
             let keys = IdentityKeys::generate();

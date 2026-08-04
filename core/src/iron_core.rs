@@ -1912,40 +1912,70 @@ impl IronCore {
 
         // If 64 hex chars, determine whether it's a public key or a Blake3 identity_id.
         if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
-            // Check if it's a valid Ed25519 public key (point on the curve).
-            if let Ok(bytes) = hex::decode(&trimmed) {
-                if bytes.len() == 32 {
-                    if let Ok(arr) = <[u8; 32]>::try_from(bytes.as_slice()) {
-                        if ed25519_dalek::VerifyingKey::from_bytes(&arr).is_ok() {
-                            // Valid Ed25519 public key — return as-is.
-                            return Ok(trimmed);
-                        }
-                    }
+            // ORDERING IS LOAD-BEARING. The curve-point test at the bottom is only
+            // a HEURISTIC and cannot distinguish the two forms: a Blake3
+            // identity_id is 32 essentially-random bytes, and roughly HALF of all
+            // such values decompress to a valid Ed25519 point. Testing it first
+            // (as this function used to) silently returns an identity_id as though
+            // it were a public key, and the caller then encrypts to a hash --
+            // producing ciphertext nobody can decrypt. Anything we can resolve
+            // from stored data is authoritative and must win over the guess.
+
+            // Snapshot our own identity first and release the lock. The
+            // established order is identity -> contact_manager (see
+            // prepare_message_internal, which holds identity across its contact
+            // reads); taking them the other way round risks a deadlock.
+            let (my_pk, my_id) = {
+                let identity = self.identity.read();
+                (
+                    identity.keys().map(|k| k.public_key_hex().to_lowercase()),
+                    identity.identity_id().map(|s| s.to_lowercase()),
+                )
+            };
+            if let Some(ref pk) = my_pk {
+                if *pk == trimmed || my_id.as_deref() == Some(trimmed.as_str()) {
+                    return Ok(pk.clone());
                 }
             }
 
-            // Not a valid Ed25519 key — likely a Blake3 identity_id.
-            // Search contacts for a match.
+            // Fast path: an O(1) hit on the contact store is authoritative.
+            if let Ok(Some(contact)) = self.contact_manager.read().get(trimmed.clone()) {
+                if !contact.public_key.is_empty() {
+                    return Ok(contact.public_key.to_lowercase());
+                }
+            }
+
+            // Miss. Scan once, checking BOTH identifier forms per contact.
             if let Ok(contacts) = self.contact_manager.read().list() {
                 for contact in contacts {
-                    let contact_id = blake3::hash(contact.public_key.as_bytes());
-                    let contact_id_hex = hex::encode(contact_id.as_bytes());
-                    if contact_id_hex == trimmed {
-                        return Ok(contact.public_key.to_lowercase());
+                    let pk_hex = contact.public_key.to_lowercase();
+                    if pk_hex == trimmed {
+                        return Ok(pk_hex);
+                    }
+                    // identity_id() is hex(blake3(RAW 32 pubkey bytes)) --
+                    // see identity/keys.rs. `public_key` is stored as HEX, so it
+                    // MUST be decoded before hashing. Hashing the hex string
+                    // instead produces an entirely different digest, which is why
+                    // this lookup previously could never match a real identity_id
+                    // and every hash-form resolve fell through to the heuristic.
+                    // resolve_to_identity_id() below shows the correct form.
+                    let Ok(pk_bytes) = hex::decode(&pk_hex) else {
+                        continue;
+                    };
+                    if hex::encode(blake3::hash(&pk_bytes).as_bytes()) == trimmed {
+                        return Ok(pk_hex);
                     }
                 }
             }
 
-            // Check if it matches our own identity_id.
-            let my_id = self.identity.read().identity_id();
-            if let Some(ref id) = my_id {
-                if id.to_lowercase() == trimmed {
-                    return self
-                        .identity
-                        .read()
-                        .keys()
-                        .map(|k| k.public_key_hex())
-                        .ok_or(IronCoreError::NotInitialized);
+            // No stored record resolves it. Only now fall back to the heuristic,
+            // which is correct for a genuine public key of a peer we have never
+            // seen, and is the best available answer for anything else.
+            if let Ok(bytes) = hex::decode(&trimmed) {
+                if let Ok(arr) = <[u8; 32]>::try_from(bytes.as_slice()) {
+                    if ed25519_dalek::VerifyingKey::from_bytes(&arr).is_ok() {
+                        return Ok(trimmed);
+                    }
                 }
             }
 
@@ -4395,6 +4425,68 @@ mod tests {
         let core = IronCore::new();
         let exported = core.export_logs().unwrap();
         assert_eq!(exported, "[]", "empty log store should export []");
+    }
+
+    /// identity_id is blake3 over the DECODED 32 key bytes, not over the
+    /// 64-character hex string. Code that hashes the hex string produces a
+    /// completely different digest and can never match a real identity_id.
+    /// That exact mistake made resolve_identity's contact lookup dead code.
+    #[test]
+    fn test_identity_id_hashes_raw_key_bytes_not_the_hex_string() {
+        let core = IronCore::new();
+        core.grant_consent();
+        core.initialize_identity().unwrap();
+
+        let info = core.get_identity_info();
+        let pk = info.public_key_hex.expect("public key");
+        let id = info.identity_id.expect("identity id");
+
+        let over_raw_bytes = hex::encode(blake3::hash(&hex::decode(&pk).unwrap()).as_bytes());
+        let over_hex_string = hex::encode(blake3::hash(pk.as_bytes()).as_bytes());
+
+        assert_eq!(
+            over_raw_bytes, id,
+            "identity_id must be blake3 over the raw 32 key bytes"
+        );
+        assert_ne!(
+            over_hex_string, id,
+            "blake3 over the hex STRING is a different value -- hashing the \
+             stored hex is the bug this test guards against"
+        );
+    }
+
+    /// Both identifier forms must resolve to the public key. A Blake3
+    /// identity_id is 32 essentially-random bytes and roughly half of such
+    /// values decompress to a valid Ed25519 point, so a curve-point test
+    /// cannot be used to tell the two forms apart.
+    #[test]
+    fn test_resolve_identity_accepts_both_identifier_forms() {
+        let core = IronCore::new();
+        core.grant_consent();
+        core.initialize_identity().unwrap();
+
+        let info = core.get_identity_info();
+        let pk = info.public_key_hex.expect("public key");
+        let id = info.identity_id.expect("identity id");
+
+        assert_ne!(pk, id, "the two forms must be distinct values");
+        assert_eq!(pk.len(), 64);
+        assert_eq!(
+            id.len(),
+            64,
+            "both are 64 hex chars -- format cannot disambiguate"
+        );
+
+        assert_eq!(
+            core.resolve_identity(pk.clone()).unwrap(),
+            pk,
+            "public key must resolve to itself"
+        );
+        assert_eq!(
+            core.resolve_identity(id).unwrap(),
+            pk,
+            "identity_id must resolve to the public key, not be returned as-is"
+        );
     }
 
     #[test]
