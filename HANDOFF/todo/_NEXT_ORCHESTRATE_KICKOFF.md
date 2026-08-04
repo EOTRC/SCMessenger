@@ -8,6 +8,45 @@ supporting detail that prompt refers to.
 
 ---
 
+## 0. READ FIRST -- branch state at session end (2026-08-04)
+
+**PR #136 was RED at session end.** Commit `b69b5eee` introduced a compile error:
+`cli/src/server.rs` referenced `blake3`, which is a dependency of `core` but NOT
+of the `scmessenger-cli` crate. Four CI jobs failed on it (Lint, Rust Linting,
+Docs, Test macos-latest) -- all the same root cause, since each compiles.
+
+A correction was written but its local verification build had not finished when
+the session ended. The correction:
+
+- Adds `identity_id_from_public_key_hex()` to `core/src/identity/keys.rs` as the
+  single source of truth for the public_key -> identity_id derivation, exported
+  from `core/src/identity/mod.rs`.
+- Changes `cli/src/server.rs` to import that instead of recomputing the hash
+  locally. This is deliberately NOT "add blake3 to cli/Cargo.toml" -- duplicating
+  the derivation across crates is exactly the drift that causes the identifier
+  bug class this branch exists to fix.
+
+**First action for the next session:**
+
+```
+git log --oneline -3
+cargo test -j6 -p scmessenger-cli --test integration_message_requests
+```
+
+If the correction is uncommitted in the working tree, verify it compiles, then
+commit and push it. If already committed, confirm CI went green. Either way, all
+FOUR tests in that file must pass, not just the one that was originally failing.
+
+**Useful discovery for Phase 1 (the identifier audit):** `core/src/identity/keys.rs`
+already contains `PUBLIC_KEY_PREFIX`, `IDENTITY_ID_PREFIX`, and
+`identify_key_type()`. The codebase already recognized that these two 64-hex
+identifiers are dangerously confusable and built prefix constants for logging --
+but they are not applied on the storage or comparison paths. The "add a prefix so
+the flavors stop being indistinguishable" option in the audit is therefore
+partially built already, not a from-scratch proposal.
+
+---
+
 ## 1. The kickoff prompt
 
 ```
