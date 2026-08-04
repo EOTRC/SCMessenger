@@ -792,28 +792,19 @@ mod tests {
 
         // Run the migration
         let migrated = mgr.migrate_identity_id_index().unwrap();
-        assert_eq!(
-            migrated, 2,
-            "migration should have indexed both contacts"
-        );
+        assert_eq!(migrated, 2, "migration should have indexed both contacts");
 
         // Verify both identity_ids are now resolvable
         if let Ok(pk1_bytes) = hex::decode(&pubkey1) {
             if pk1_bytes.len() == 32 {
                 let id1 = hex::encode(blake3::hash(&pk1_bytes).as_bytes());
-                assert_eq!(
-                    mgr.resolve_identity_id(&id1).unwrap().unwrap(),
-                    pubkey1
-                );
+                assert_eq!(mgr.resolve_identity_id(&id1).unwrap().unwrap(), pubkey1);
             }
         }
         if let Ok(pk2_bytes) = hex::decode(&pubkey2) {
             if pk2_bytes.len() == 32 {
                 let id2 = hex::encode(blake3::hash(&pk2_bytes).as_bytes());
-                assert_eq!(
-                    mgr.resolve_identity_id(&id2).unwrap().unwrap(),
-                    pubkey2
-                );
+                assert_eq!(mgr.resolve_identity_id(&id2).unwrap().unwrap(), pubkey2);
             }
         }
     }
@@ -821,8 +812,7 @@ mod tests {
     #[test]
     fn step5_test_migration_idempotent() {
         let mgr = make_manager();
-        let pubkey =
-            "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef".to_string();
+        let pubkey = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef".to_string();
         mgr.add(Contact::new("peer-idempotent".to_string(), pubkey))
             .unwrap();
 
