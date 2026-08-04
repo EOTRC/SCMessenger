@@ -3184,24 +3184,42 @@ impl IronCore {
             IronCoreError::Internal
         })?;
 
+        // Build the candidate identifier set: the sender_id as-is (which after
+        // identity canonicalization is the sender's public key) plus, when it
+        // is a valid 32-byte hex key, the derived identity_id (blake3 hash).
+        // Blocks are stored under the identifier the caller passed to
+        // block_peer()/block_and_delete_peer() -- historically the identity_id
+        // -- so we must check both flavors to avoid missing blocks.
+        let mut sender_candidates = vec![message.sender_id.clone()];
+        if let Some(derived_id) =
+            crate::identity::keys::identity_id_from_public_key_hex(&message.sender_id)
+        {
+            if derived_id != message.sender_id {
+                sender_candidates.push(derived_id);
+            }
+        }
+
         // Check blocked status (peer-level and device-specific)
-        let is_blocked_and_deleted = self
-            .blocked_manager
-            .read()
-            .is_blocked_and_deleted(&message.sender_id)
-            .unwrap_or(false);
+        let is_blocked_and_deleted = sender_candidates.iter().any(|candidate| {
+            self.blocked_manager
+                .read()
+                .is_blocked_and_deleted(candidate)
+                .unwrap_or(false)
+        });
         if is_blocked_and_deleted {
             return Err(IronCoreError::Blocked);
         }
 
         // Also check device-specific blocks using the sender's last known device ID
-        let sender_device_id = self
-            .contact_manager
-            .read()
-            .get(message.sender_id.clone())
-            .ok()
-            .flatten()
-            .and_then(|c| c.last_known_device_id);
+        // Try the contact under both identifier flavors; first hit wins.
+        let sender_device_id = sender_candidates.iter().find_map(|candidate| {
+            self.contact_manager
+                .read()
+                .get(candidate.clone())
+                .ok()
+                .flatten()
+                .and_then(|c| c.last_known_device_id)
+        });
 
         // FAIL CLOSED: this value drives `hidden` on the stored message. The
         // previous `unwrap_or(false)` meant a block-store read error rendered a
@@ -3209,19 +3227,31 @@ impl IronCore {
         // the user despite an active block. On error we cannot prove the sender
         // is unblocked, so hide it; the message is still retained, not dropped,
         // so nothing is lost if the store recovers.
-        let is_blocked = match self
-            .blocked_manager
-            .read()
-            .is_blocked(&message.sender_id, sender_device_id.as_deref())
-        {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::warn!(
-                    "[WARN] block lookup failed for inbound sender; hiding message (fail-closed): {}",
-                    e
-                );
-                true
+        let is_blocked = {
+            let mut any_blocked = false;
+            for candidate in &sender_candidates {
+                match self
+                    .blocked_manager
+                    .read()
+                    .is_blocked(candidate, sender_device_id.as_deref())
+                {
+                    Ok(b) => {
+                        if b {
+                            any_blocked = true;
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "[WARN] block lookup failed for inbound sender; hiding message (fail-closed): {}",
+                            e
+                        );
+                        any_blocked = true;
+                        break;
+                    }
+                }
             }
+            any_blocked
         };
 
         // Handle receipt classification AFTER blocked-peer check to prevent metadata leaks/spam bypass
