@@ -776,6 +776,21 @@ mod tests {
         }
     }
 
+    /// Simulate a contact stored BEFORE the identity_id index existed.
+    ///
+    /// `add()` now populates the index on insert, so a contact added through
+    /// the public API is already indexed and the migration correctly has
+    /// nothing to backfill. To exercise the migration itself, drop the index
+    /// entry that `add()` created, leaving the contact in its pre-migration
+    /// state.
+    fn strip_identity_id_index(mgr: &ContactManager, public_key_hex: &str) {
+        let pk_bytes = hex::decode(public_key_hex).expect("test pubkey must be valid hex");
+        let identity_id = hex::encode(blake3::hash(&pk_bytes).as_bytes());
+        mgr.backend
+            .remove(&identity_id_index_key(&identity_id))
+            .expect("removing the index entry must succeed");
+    }
+
     #[test]
     fn step5_test_migration_populates_identity_id_index() {
         let mgr = make_manager();
@@ -789,6 +804,11 @@ mod tests {
             .unwrap();
         mgr.add(Contact::new("peer2".to_string(), pubkey2.clone()))
             .unwrap();
+
+        // Put both contacts back into the pre-index state the migration exists
+        // to repair.
+        strip_identity_id_index(&mgr, &pubkey1);
+        strip_identity_id_index(&mgr, &pubkey2);
 
         // Run the migration
         let migrated = mgr.migrate_identity_id_index().unwrap();
@@ -813,8 +833,12 @@ mod tests {
     fn step5_test_migration_idempotent() {
         let mgr = make_manager();
         let pubkey = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef".to_string();
-        mgr.add(Contact::new("peer-idempotent".to_string(), pubkey))
+        mgr.add(Contact::new("peer-idempotent".to_string(), pubkey.clone()))
             .unwrap();
+
+        // Put the contact back into the pre-index state so the first migration
+        // has real work to do.
+        strip_identity_id_index(&mgr, &pubkey);
 
         // First migration
         let migrated1 = mgr.migrate_identity_id_index().unwrap();
