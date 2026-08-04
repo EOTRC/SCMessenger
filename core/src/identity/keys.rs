@@ -5,6 +5,40 @@ use ed25519_dalek::{Signature as Ed25519Signature, Signer, SigningKey, Verifier,
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
+/// Prefix for public key hex in logs and payloads to distinguish from identity_id
+pub const PUBLIC_KEY_PREFIX: &str = "pk:";
+/// Prefix for identity_id (blake3 hash) in logs and payloads to distinguish from public_key_hex
+pub const IDENTITY_ID_PREFIX: &str = "id:";
+
+/// Check if a 64-hex string looks like a public key (valid Ed25519 curve point)
+pub fn is_valid_public_key(hex_str: &str) -> bool {
+    if hex_str.len() != 64 || !hex_str.chars().all(|c| c.is_ascii_hexdigit()) {
+        return false;
+    }
+    if let Ok(bytes) = hex::decode(hex_str) {
+        if let Ok(arr) = <[u8; 32]>::try_from(bytes.as_slice()) {
+            return ed25519_dalek::VerifyingKey::from_bytes(&arr).is_ok();
+        }
+    }
+    false
+}
+
+/// Check if a 64-hex string is a valid identity_id format (always valid if 64 hex chars)
+pub fn is_valid_identity_id(hex_str: &str) -> bool {
+    hex_str.len() == 64 && hex_str.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Get the type of a 64-hex identifier for logging/debugging
+pub fn identify_key_type(hex_str: &str) -> &'static str {
+    if is_valid_public_key(hex_str) {
+        "public_key"
+    } else if is_valid_identity_id(hex_str) {
+        "identity_id"
+    } else {
+        "unknown"
+    }
+}
+
 /// Key pair for signing and verification
 #[derive(Clone)]
 pub struct KeyPair {
@@ -87,11 +121,21 @@ impl IdentityKeys {
         hex::encode(self.signing_key.verifying_key().to_bytes())
     }
 
+    /// Get public key as hex with prefix for logging distinction
+    pub fn public_key_hex_prefixed(&self) -> String {
+        format!("{}{}", PUBLIC_KEY_PREFIX, self.public_key_hex())
+    }
+
     /// Get identity ID (Blake3 hash of public key)
     pub fn identity_id(&self) -> String {
         let public_key = self.signing_key.verifying_key().to_bytes();
         let hash = blake3::hash(&public_key);
         hex::encode(hash.as_bytes())
+    }
+
+    /// Get identity ID with prefix for logging distinction
+    pub fn identity_id_prefixed(&self) -> String {
+        format!("{}{}", IDENTITY_ID_PREFIX, self.identity_id())
     }
 
     /// Sign data with Ed25519

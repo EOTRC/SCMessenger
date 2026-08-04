@@ -3,7 +3,10 @@
 pub mod keys;
 mod store;
 
-pub use keys::{sign_bundle, verify_bundle, IdentityKeys, KeyPair, PublicKeyBundle};
+pub use keys::{
+    identify_key_type, is_valid_identity_id, is_valid_public_key, sign_bundle, verify_bundle,
+    IdentityKeys, KeyPair, PublicKeyBundle, IDENTITY_ID_PREFIX, PUBLIC_KEY_PREFIX,
+};
 pub use store::{DeviceMetadata, IdentityStore};
 
 use crate::dspy::signatures::{blake3_hash, get_signature, signature_fingerprint};
