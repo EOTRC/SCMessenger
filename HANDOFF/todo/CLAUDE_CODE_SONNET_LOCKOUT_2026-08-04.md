@@ -28,11 +28,11 @@ Paid Anthropic Sonnet traffic reached the paid OpenRouter keys from two holes:
   to `deepseek/deepseek-v4-flash-0731`; `.claude/hooks/model_gate.sh` wired on
   SessionStart.
 
-NOTE 2026-08-05: commits 4df163a1 and 81797a40 live on local branch
-fix/identity-block-gate-readdeep-2026-08-04 and are NOT on main yet -- a
-checkout of main alone does not carry these pins. The lockout itself is the
-protection until they land; the unlock procedure below verifies spend before
-any Claude Code session regardless.
+NOTE 2026-08-05: commits 4df163a1 and 81797a40 originally landed only on
+local branch fix/identity-block-gate-readdeep-2026-08-04; they were
+cherry-picked onto main 2026-08-05 as 6e6f9c59 + 1cd073ea, so a checkout of
+main now carries these pins. The unlock procedure below still verifies spend
+before any Claude Code session regardless.
 
 ## Evidence the bleeding stopped (2026-08-04)
 
