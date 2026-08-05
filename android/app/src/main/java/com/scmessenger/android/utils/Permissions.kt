@@ -1,6 +1,8 @@
 package com.scmessenger.android.utils
 
 import android.Manifest
+import android.content.Context
+import androidx.core.content.ContextCompat
 import android.os.Build
 
 /**
@@ -127,5 +129,29 @@ object Permissions {
             "Camera is used to scan QR codes for adding contacts."
 
         else -> "This permission is required for mesh networking."
+    }
+
+    /**
+     * Check if all permissions required for mDNS discovery are granted.
+     *
+     * On API 33+ (Tiramisu), NEARBY_WIFI_DEVICES is required for NsdManager.
+     * On API 29-32, ACCESS_FINE_LOCATION is required for Wi-Fi/mDNS operations.
+     * Returns true only when the platform-appropriate permission set is fully granted.
+     *
+     * NOTE: If this returns false, MdnsServiceDiscovery will refuse to start
+     * and set lastFailureReason = "PERMISSION_DENIED" rather than timing out silently.
+     */
+    fun hasMdnsPermissions(context: Context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // API 33+: NEARBY_WIFI_DEVICES is the gating permission for mDNS
+            ContextCompat.checkSelfPermission(
+                context, Manifest.permission.NEARBY_WIFI_DEVICES
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        } else {
+            // API 29-32: Location permission gates Wi-Fi/mDNS discovery
+            ContextCompat.checkSelfPermission(
+                context, Manifest.permission.ACCESS_FINE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
     }
 }

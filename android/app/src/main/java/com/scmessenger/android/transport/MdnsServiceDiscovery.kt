@@ -10,6 +10,7 @@ import android.os.Looper
 import androidx.core.content.ContextCompat
 import timber.log.Timber
 import java.util.concurrent.ConcurrentHashMap
+import com.scmessenger.android.utils.Permissions
 
 /**
  * mDNS/DNS-SD service discovery for cross-platform LAN discovery.
@@ -17,6 +18,11 @@ import java.util.concurrent.ConcurrentHashMap
  * Uses the standard libp2p-mdns service type so that Android peers
  * (using NsdManager) and Rust/WASM peers (using libp2p-mdns) can
  * discover each other on the same local network.
+ *
+ * INTEROP ASSERTION: The service type MUST be exactly "_p2p._udp" to match
+ * the libp2p-mdns default used by iOS and CLI peers. If discovery fails
+ * across platforms despite permissions being granted, verify that all peers
+ * advertise this exact service type string.
  *
  * Service type: _p2p._udp. (libp2p default; Android NsdManager appends .local. automatically)
  */
@@ -63,6 +69,10 @@ class MdnsServiceDiscovery(
     @Volatile private var isRunning = false
     @Volatile private var isRegistered = false
     @Volatile private var isDiscovering = false
+    // Tracks if start() failed due to missing permissions or SecurityException.
+    // Callers can query this to distinguish "no peers found" from "discovery dead".
+    @Volatile var lastFailureReason: String? = null
+        private set
 
     // Track discovered peers so we can remove them on service lost
     private val discoveredPeers = ConcurrentHashMap<String, NsdServiceInfo>()
@@ -81,6 +91,9 @@ class MdnsServiceDiscovery(
     // Handler for retrying operations
     private val handler = Handler(Looper.getMainLooper())
 
+    // Interop assertion constant: must match libp2p-mdns default exactly.
+    companion object { const val EXPECTED_SERVICE_TYPE = "_p2p._udp" }
+
     // --- Named callback methods wired from NsdManager listeners ---
 
     /**
@@ -89,6 +102,7 @@ class MdnsServiceDiscovery(
      */
     fun onDiscoveryStarted(regType: String) {
         isDiscovering = true
+        lastFailureReason = null
         discoveryRetryCount = 0
         Timber.i("mDNS discovery started for type: $regType (running=$isRunning)")
     }
@@ -170,6 +184,7 @@ class MdnsServiceDiscovery(
      */
     fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
         isRegistered = true
+        lastFailureReason = null
         registrationRetryCount = 0
         Timber.i("mDNS service registered: ${serviceInfo.serviceName}")
     }
@@ -187,6 +202,7 @@ class MdnsServiceDiscovery(
             resolvedInfo.host?.hostAddress
         }
         Timber.d("mDNS service resolved: ${resolvedInfo.serviceName} at ${hostAddress ?: "unknown"}:${resolvedInfo.port}")
+        Timber.i("mDNS peer-found: name=${resolvedInfo.serviceName} addr=$hostAddress port=${resolvedInfo.port}")
 
         // Skip loopback addresses (127.0.0.1) — these are the device discovering
         // itself and are useless for LAN communication.
@@ -270,6 +286,7 @@ class MdnsServiceDiscovery(
      */
     fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
         isDiscovering = false
+        lastFailureReason = "DISCOVERY_START_FAILED:$errorCode"
         discoveryRetryCount++
         Timber.e("mDNS discovery start failed: type=$serviceType errorCode=$errorCode (retry=$discoveryRetryCount/$maxRetries)")
 
@@ -305,6 +322,7 @@ class MdnsServiceDiscovery(
      */
     fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
         isDiscovering = false
+        lastFailureReason = "DISCOVERY_STOP_FAILED:$errorCode"
         Timber.e("mDNS discovery stop failed: type=$serviceType errorCode=$errorCode")
 
         // Reset discovering state so we can retry if needed
@@ -323,6 +341,7 @@ class MdnsServiceDiscovery(
      */
     fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
         isRegistered = false
+        lastFailureReason = "REGISTRATION_FAILED:$errorCode"
         registrationRetryCount++
         Timber.e("mDNS service registration failed: ${serviceInfo.serviceName} errorCode=$errorCode (retry=$registrationRetryCount/$maxRetries)")
 
@@ -398,6 +417,18 @@ class MdnsServiceDiscovery(
      * Start mDNS service discovery and advertisement.
      */
     fun start() {
+        // PERMISSION GATING: Do not attempt discovery if required permissions are missing.
+        // This prevents silent timeouts and SecurityExceptions on API 34+.
+        if (!Permissions.hasMdnsPermissions(context)) {
+            val msg = "mDNS start aborted: missing required permissions (NEARBY_WIFI_DEVICES/LOCATION)"
+            Timber.w(msg)
+            lastFailureReason = "PERMISSION_DENIED"
+            return
+        }
+
+        // Clear previous failure state on new start attempt
+        lastFailureReason = null
+
         if (isRunning) {
             Timber.w("mDNS service discovery already running")
             return
@@ -455,14 +486,24 @@ class MdnsServiceDiscovery(
             // Register our service
             registerService()
 
-            // Start discovering other services
+            // Start discovering other services (idempotent guard inside)
             startDiscovery()
 
             Timber.i("mDNS service discovery started")
         } catch (e: SecurityException) {
-            Timber.e(e, "Security exception starting mDNS service discovery")
+            // SECURITYEXCEPTION HARDENING (API 34+): Catch and track instead of silent death.
+            // On API 34+, NsdManager can throw SecurityException if NEARBY_WIFI_DEVICES
+            // permission state changed between check and registration.
+            val msg = "SecurityException during mDNS start: ${e.message}. " +
+                "Verify NEARBY_WIFI_DEVICES permission and Wi-Fi state."
+            Timber.e(e, msg)
+            lastFailureReason = "SECURITY_EXCEPTION:${e.message}"
+            isRunning = false
+            // Schedule a single retry after delay to allow permission/state propagation
+            handler.postDelayed({ if (!isRunning) start() }, 2000L)
         } catch (e: Exception) {
             Timber.e(e, "Failed to start mDNS service discovery")
+            lastFailureReason = "START_EXCEPTION:${e.javaClass.simpleName}"
         }
     }
 
@@ -519,6 +560,11 @@ class MdnsServiceDiscovery(
      * Register our mDNS service for discovery by other devices.
      */
     private fun registerService() {
+        // REGISTRATION RECOVERY: Guard against duplicate registrations
+        if (isRegistered) {
+            Timber.d("mDNS registerService skipped: already registered")
+            return
+        }
         val localId = getLocalPeerId?.invoke()
         val serviceInfo = NsdServiceInfo().apply {
             serviceName = if (!localId.isNullOrBlank()) localId else this@MdnsServiceDiscovery.serviceName
@@ -555,13 +601,28 @@ class MdnsServiceDiscovery(
             }
         }
 
-        nsdManager?.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, registrationListener)
+        try {
+            nsdManager?.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, registrationListener)
+        } catch (e: SecurityException) {
+            // SECURITYEXCEPTION HARDENING: API 34+ may throw here on permission revocation
+            Timber.e(e, "SecurityException in registerService: ${e.message}")
+            lastFailureReason = "REGISTER_SECURITY_EXCEPTION:${e.message}"
+            registrationListener = null
+        } catch (e: IllegalStateException) {
+            Timber.e(e, "IllegalStateException in registerService (stale listener?): ${e.message}")
+            lastFailureReason = "REGISTER_ILLEGAL_STATE:${e.message}"
+        }
     }
 
     /**
      * Start discovering other mDNS services.
      */
     private fun startDiscovery() {
+        // REGISTRATION RECOVERY: Guard against duplicate discovery sessions
+        if (isDiscovering) {
+            Timber.d("mDNS startDiscovery skipped: already discovering")
+            return
+        }
         discoveryListener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(regType: String) {
                 this@MdnsServiceDiscovery.onDiscoveryStarted(regType)
@@ -588,7 +649,17 @@ class MdnsServiceDiscovery(
             }
         }
 
-        nsdManager?.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+        try {
+            nsdManager?.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+        } catch (e: SecurityException) {
+            // SECURITYEXCEPTION HARDENING: API 34+ may throw here on permission revocation
+            Timber.e(e, "SecurityException in discoverServices: ${e.message}")
+            lastFailureReason = "DISCOVER_SECURITY_EXCEPTION:${e.message}"
+            discoveryListener = null
+        } catch (e: IllegalStateException) {
+            Timber.e(e, "IllegalStateException in discoverServices (stale listener?): ${e.message}")
+            lastFailureReason = "DISCOVER_ILLEGAL_STATE:${e.message}"
+        }
     }
 
     /**

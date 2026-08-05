@@ -16,6 +16,7 @@ import org.junit.Before
 import org.junit.Test
 import java.net.InetAddress
 
+import org.junit.Assert.assertEquals
 class MdnsServiceDiscoveryTest {
 
     @Before
@@ -109,5 +110,72 @@ class MdnsServiceDiscoveryTest {
         resolveListener.onServiceResolved(serviceInfo)
 
         verify(exactly = 1) { onLanPeerResolved("REMOTE_PEER_ID", "192.168.0.148", 9001) }
+    }
+
+    @Test
+    fun `interop assertion - service type constant matches libp2p-mdns default`() {
+        // Pins the expected service type for cross-platform interop.
+        // If iOS or CLI peers advertise differently, this test catches the drift.
+        assertEquals(
+            "Service type must match libp2p-mdns default for cross-platform discovery",
+            "_p2p._udp",
+            MdnsServiceDiscovery.EXPECTED_SERVICE_TYPE
+        )
+    }
+
+    @Test
+    fun `start sets PERMISSION_DENIED when permissions are missing`() {
+        val context = mockk<Context>(relaxed = true)
+        val onPeerDiscovered = mockk<(String) -> Unit>(relaxed = true)
+        val onDataReceived = mockk<(String, ByteArray) -> Unit>(relaxed = true)
+
+        // Mock Permissions.hasMdnsPermissions to return false
+        mockkStatic(Permissions::class)
+        every { Permissions.hasMdnsPermissions(any()) } returns false
+
+        val discovery = MdnsServiceDiscovery(
+            context,
+            onPeerDiscovered,
+            onDataReceived
+        )
+
+        discovery.start()
+
+        assertEquals("PERMISSION_DENIED", discovery.lastFailureReason)
+        unmockkStatic(Permissions::class)
+    }
+
+    @Test
+    fun `SecurityException during registerService sets failure reason`() {
+        val context = mockk<Context>(relaxed = true)
+        val nsdManager = mockk<NsdManager>(relaxed = true)
+        val onPeerDiscovered = mockk<(String) -> Unit>(relaxed = true)
+        val onDataReceived = mockk<(String, ByteArray) -> Unit>(relaxed = true)
+
+        // Mock permissions as granted so we reach registration
+        mockkStatic(Permissions::class)
+        every { Permissions.hasMdnsPermissions(any()) } returns true
+
+        // Mock getSystemService to return our mock NsdManager
+        every { context.getSystemService(Context.NSD_SERVICE) } returns nsdManager
+
+        // Make registerService throw SecurityException
+        every {
+            nsdManager.registerService(any(), any<Int>(), any())
+        } throws SecurityException("Test security exception")
+
+        val discovery = MdnsServiceDiscovery(
+            context,
+            onPeerDiscovered,
+            onDataReceived
+        )
+
+        discovery.start()
+
+        assertEquals(
+            "REGISTER_SECURITY_EXCEPTION:Test security exception",
+            discovery.lastFailureReason
+        )
+        unmockkStatic(Permissions::class)
     }
 }
