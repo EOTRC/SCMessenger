@@ -20,6 +20,17 @@ Last updated: 2026-08-05 (Qwen Code takeover live; PR #136 unblock)
 - qwenpaid lane: key rotated 2026-08-04 to the operator's current coding-plan
   key, verified live (dispatch + footer parse + ledger). The 2026-07-28
   qwenpaid-first routing directive below REMAINS in force.
+- FIELD FINDINGS 2026-08-05 (operator live test, post-APK-install):
+  (a) bidirectional Android<->iOS messaging CONFIRMED on Pixel 6a + iPhone;
+  (b) ledger visibility gap -- iOS sees 4 nodes + 1 headless, Android sees
+  only Christy: HANDOFF/todo/LEDGER_SHARING_ANDROID_NODE_VISIBILITY_
+  2026-08-05.md; (c) message flow halted mid-session until iOS restart;
+  suspected BLE-only carriage, LAN/WiFi transport unverified:
+  HANDOFF/todo/TRANSPORT_BLE_LAN_HICCUP_VERIFICATION_2026-08-05.md.
+- OPERATOR DIRECTIVE 2026-08-05 (process, standing for this wave): next steps
+  land via PR -- NOT direct-to-main pushes; the PR must show green CI before
+  merge. No regressions; only safely advance. (Does not revoke AGENTS.md
+  rule 5(b) branch-push authority; merges move behind the PR gate.)
 - Claude Code sessions: LOCKOUT after the Sonnet-via-OpenRouter cost incident
   (root cause patched, spend confirmed flat). Unlock procedure:
   `HANDOFF/todo/CLAUDE_CODE_SONNET_LOCKOUT_2026-08-04.md`.
