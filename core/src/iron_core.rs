@@ -3210,10 +3210,9 @@ impl IronCore {
         // identity_id_from_public_key_hex always hashes to the correct
         // identity_id. This is unambiguous (no double-hash risk on an
         // identity_id-valued sender_id) and immune to plaintext-tampering.
-        let canonical_peer_id = crate::identity::keys::identity_id_from_public_key_hex(
-            &hex::encode(&sender_pubkey),
-        )
-        .unwrap_or_else(|| message.sender_id.clone());
+        let canonical_peer_id =
+            crate::identity::keys::identity_id_from_public_key_hex(&hex::encode(&sender_pubkey))
+                .unwrap_or_else(|| message.sender_id.clone());
 
         // Also check device-specific blocks using the sender's last known device ID
         // Try the contact under both identifier flavors; first hit wins.
