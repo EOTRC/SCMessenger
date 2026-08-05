@@ -1,7 +1,7 @@
 # AGENTS.md — Universal Agent Contract (all models, all tools)
 
 Status: Active
-Last updated: 2026-07-06
+Last updated: 2026-08-05
 
 This is the canonical, model-agnostic rules contract for ANY agent working in
 this repository: Claude Code sessions, Claude Cowork/cloud sandboxes, Gemini
@@ -42,10 +42,20 @@ the same relay behavior.
    `build/` outputs) or secrets/keys. (Hook-enforced.)
 4. `iOS/` uppercase-I in all paths; no `.py` files in the repo root
    (use `scripts/`). (Hook-enforced.)
-5. NEVER `git push` (exception: the MAC LANE capability class may push its
-   own `gpt/*` branches — see Capability classes below). Local commits
-   only otherwise, and only if your capability class permits committing at
-   all (see below).
+5. NEVER `git push` — exceptions: (a) the MAC LANE capability class may
+   push its own `gpt/*` branches; (b) the ORCHESTRATOR — the session the
+   operator starts via /orchestrate or any explicit request to
+   orchestrate/delegate, regardless of which model drives it — may and
+   SHOULD commit and push verified work: branch updates that trigger CI,
+   and merges to main (operator directive 2026-08-05, standing). Pushing
+   is the sanctioned way to invoke CI; a push that skipped the applicable
+   gates is still a rules violation. This authority does NOT transfer with
+   delegation: workers dispatched by the orchestrator (REMOTE SANDBOX,
+   FOREIGN WORKER, lake subagents) have no commit/push rights unless the
+   orchestrator explicitly grants them for a specific task, and the
+   orchestrator stays accountable for the gate. No capability class may
+   force-push to main. Everyone else: local commits only, and only if
+   your capability class permits committing at all (see below).
 6. Never edit UniFFI-generated bindings (`uniffi.api` Kotlin package,
    `core/target/generated-sources/`) — regenerate instead.
 7. Storage access only through `core/src/store/`; `IronCore` is the single
@@ -62,10 +72,13 @@ the same relay behavior.
 
 ## Capability classes — know which one you are
 
-### FULL (Claude Code on the Windows host, toolchain available)
+### FULL (Claude Code or Qwen Code on the Windows host, toolchain available)
 May run build gates, move HANDOFF files, and commit per `CLAUDE.md`'s
-finalize-checklist rules. The Windows host is the ONLY environment whose build
-results are authoritative.
+finalize-checklist rules (Qwen Code sessions use the `finalize-checklist`
+skill). When this session is the active orchestrator it additionally holds
+the rule-5(b) commit + push authority; the workers it delegates to do not.
+The Windows host is the ONLY environment whose build results are
+authoritative.
 
 ### REMOTE SANDBOX (Claude Cowork / cloud containers)
 Your container may have a Linux toolchain; container-green `cargo
