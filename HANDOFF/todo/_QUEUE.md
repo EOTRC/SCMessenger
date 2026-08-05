@@ -1,7 +1,28 @@
 # _QUEUE -- Dispatch Order for the Full v1.0.0 Backlog
 
 Status: Active
-Last updated: 2026-07-28 (orchestrator takeover; v0.4.0 completion wave)
+Last updated: 2026-08-05 (Qwen Code takeover live; PR #136 unblock)
+
+## 2026-08-05 ORCHESTRATOR STATUS -- QWEN CODE TAKEOVER LIVE (authoritative)
+
+- Orchestrator: Qwen Code session on the Windows host (qwen3.8-max).
+  AGENTS.md rule 5(b): the active /orchestrate session holds push authority
+  (operator directive 2026-08-04). CI-on-push is the full gate; scoped local
+  tests run first so CI cycles are not burned on known-broken pushes.
+- Entry point: `.qwen/commands/orchestrate.md`. Merge/unify plan for ALL open
+  PRs: `HANDOFF/plans/PR_MERGE_UNIFY_PLAN_2026-08-04.md`.
+- PR #136 (critical path): block gate + identity fixes complete, four suites
+  green locally (20/20), branch pushed (e082bd30), CI pending. Phase 0b
+  adversarial review dispatched to qwenpaid and filed:
+  `HANDOFF/review/PHASE0B_MSGREQ_GATE_REVIEW_QWENPAID_2026-08-04.md`.
+  Findings P1/P3/P4 are OPEN follow-ups before the v0.4.0 tag:
+  `HANDOFF/todo/IDENTIFIER_GATE_FOLLOWUPS_2026-08-04.md`.
+- qwenpaid lane: key rotated 2026-08-04 to the operator's current coding-plan
+  key, verified live (dispatch + footer parse + ledger). The 2026-07-28
+  qwenpaid-first routing directive below REMAINS in force.
+- Claude Code sessions: LOCKOUT after the Sonnet-via-OpenRouter cost incident
+  (root cause patched, spend confirmed flat). Unlock procedure:
+  `HANDOFF/todo/CLAUDE_CODE_SONNET_LOCKOUT_2026-08-04.md`.
 
 ## 2026-07-28 ORCHESTRATOR TAKEOVER -- v0.4.0 COMPLETION WAVE (authoritative)
 
