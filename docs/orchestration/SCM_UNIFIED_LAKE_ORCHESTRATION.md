@@ -70,6 +70,18 @@ Quota numbers are **runtime-learned state, not hardcoded truth** — free tiers 
       },
       "notes": "Single key = many models; best failover lake. MORPH tier only for single-file <500-line apply/verify."
     },
+    "openrouter_direct": {
+      "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+      "key_env": ["OPENROUTER_DIRECT_API_KEY", "OpenRouter_Paid_Key"],
+      "key_file": "~/.config/scmorc/openrouter_direct.env",
+      "quota_type": "paid_daily_cap",
+      "quota_seed": "USD 1/day spend cap (operator directive 2026-08-04)",
+      "tiers": {
+        "FLASH": ["deepseek/deepseek-v4-flash-0731"],
+        "CODER": ["deepseek/deepseek-v4-flash-0731"]
+      },
+      "notes": "Backup/as-needed lane for clearly scoped tasks; never primary CODER. Model deepseek/deepseek-v4-flash-0731 (probe-verified 2026-08-04); the -latest alias is NOT a valid OpenRouter model ID (HTTP 400). Separate key from openrouter.env and openrouter_fusion.env; NOT restricted to :free models."
+    },
     "gemini": {
       "endpoint": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
       "key_env": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
@@ -162,8 +174,8 @@ HARD RULES:
 
 | Tier | Ladder |
 |---|---|
-| FLASH | groq → qwen → openrouter → gemini → ollama |
-| CODER | qwen → groq → openrouter → gemini → ollama |
+| FLASH | groq → qwen → openrouter → openrouter_direct → gemini → ollama |
+| CODER | qwenpaid → qwen → groq → openrouter → openrouter_direct → gemini → ollama |
 | THINK | qwen → gemini → openrouter (deepseek-r1:free) → groq |
 | MAX | qwen (qwen3-max) → gemini (2.5-pro) → openrouter paid ceiling-guarded |
 | MORPH (apply/verify single-file) | openrouter morph-v3-fast only, $0.001 cap |

@@ -75,6 +75,7 @@ registry, the ranked free-tier and tokens/$ comparison, and the rotation strateg
 | qwenpaid    | Alibaba paid plan | PRIMARY for all dispatches (operator 2026-07-28)      | MAX (qwen3.8-max-preview) |
 | qwen        | DashScope/Alibaba | Rust/Kotlin implementation, deep CODER/THINK capacity | FLASH/CODER/THINK/MAX |
 | groq        | Groq Cloud        | Fast FLASH micro-tasks; small TPM, micro-chunk        | FLASH/CODER        |
+| openrouter_direct | OpenRouter (dedicated key) | Backup lane for clearly scoped tasks; DeepSeek V4 Flash, USD 1/day cap | FLASH/CODER |
 | openrouter  | OpenRouter        | Free-model spillover; 1,000 req/day (via $10 topup)   | FLASH/CODER        |
 | gemini      | Google AI Studio  | Large-context review, whole-file analysis (key-gated) | FLASH/CODER/THINK  |
 | ollama      | Ollama free tier  | Small overflow (a few tasks/week); air-gap fallback   | FLASH/CODER        |
@@ -123,7 +124,11 @@ orchestration by reading the queue and ledger.
 
 ## 2.1 Cross-Lane Dispatch Ladder
 
-For any task, try lanes in this order (first available with quota wins):
+For any task, try lanes in this order (first available with quota wins).
+Where this prose order and `scripts/lake_route.py`'s `TIER_LADDERS`
+disagree, the code is authoritative -- the dial (Section 2.2 step 3) always
+follows the code, and the router skips lakes with no key file or active
+cooldown automatically:
 
 1. **Groq FLASH** (`delegate_task.py --provider groq --model llama-3.1-8b-instant`):
    mechanical tasks, docs, config. Fastest inference. Micro-chunk to <=6K

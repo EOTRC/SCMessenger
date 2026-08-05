@@ -11,6 +11,7 @@ instruction-following model.
 1. Read `docs/ORCHESTRATION.md` in full. The parts you must internalise:
    - Section 0 Operating Contract (the five absolute rules).
    - Section 2.1 dispatch ladder + Section 2.2 the loop.
+   - Section 3 worker contract (the footer format step 6 parses).
    - Section 4 security gates and Section 5 backends.
    - Section 9 lessons (each was paid for in a bad commit or a burned quota).
 2. Read `docs/orchestration/SCM_UNIFIED_LAKE_ORCHESTRATION.md` for lake endpoints, quotas, and

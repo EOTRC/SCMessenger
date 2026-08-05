@@ -79,7 +79,7 @@ Verified in an isolated scratch copy of the registry (never the live
   available free lane. Confirms the fix is properly scoped.
 
 **Persistence warning found during the final sanity pass, not before:**
-`tmp/` is gitignored (`.gitignore` lines 5 and 93; confirmed with
+`tmp/` is gitignored (`.gitignore` lines 6 and 94; confirmed with
 `git check-ignore`). `scripts/lake_route.py`'s `TIER_LADDERS` fix is a
 normal tracked-file change and will commit and persist normally. The
 `tmp/lakes/registry.json` half of the fix will NOT -- it is local to
