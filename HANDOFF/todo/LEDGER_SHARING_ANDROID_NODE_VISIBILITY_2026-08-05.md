@@ -1,6 +1,8 @@
 # Ledger Sharing -- Android Node Missing Fleet Nodes iOS Sees
 
-Status: OPEN
+Status: OPEN -- root cause ranked by audit; awaiting operator decision on
+disclosure policy (security trade-off, AGENTS.md rule 9)
+Audit: HANDOFF/review/LEDGER_VISIBILITY_AUDIT_QWENPAID_2026-08-05.md
 Last updated: 2026-08-05
 Priority: HIGH (field-observed parity gap)
 Class: AUDIT-GATE (core/src/{routing,transport} + app sync path; security
