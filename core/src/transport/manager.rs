@@ -129,6 +129,12 @@ const RECONNECT_MAX_FAILURES: u32 = 10;
 /// all peers reconnecting simultaneously after app wake, overwhelming the OS)
 const RECONNECT_MAX_CONCURRENT: usize = 3;
 
+/// Number of consecutive ticks a peer must stay past the staleness window
+/// before it is pruned and synthetically disconnected. Guards against
+/// pruning idle-but-healthy links that see traffic between ticks (review F2,
+/// TRANSPORT_FAILOVER_AUDIT_QWENPAID_2026-08-05).
+const STALE_CONFIRM_TICKS: u32 = 3;
+
 /// Minimum interval between successive reconnection dials (stagger)
 const RECONNECT_STAGGER_INTERVAL: Duration = Duration::from_millis(200);
 
@@ -198,7 +204,12 @@ pub enum SendResult {
 
 /// Manages multiple transports and provides intelligent transport selection
 pub struct TransportManager {
-    /// Transport state per transport type
+    /// Transport state per transport type.
+    ///
+    /// LOCK ORDER (never invert): transports -> peer_transports ->
+    /// peer_last_seen -> target_peers -> reconnection_queue. `tick()` takes
+    /// these in order and replays synthetic events only with NO locks held
+    /// (review F1, TRANSPORT_FAILOVER_AUDIT_QWENPAID_2026-08-05).
     transports: Arc<RwLock<HashMap<TransportType, TransportState>>>,
 
     /// Maps peer IDs to available transports
@@ -215,6 +226,10 @@ pub struct TransportManager {
 
     /// Peers awaiting reconnection with backoff state
     reconnection_queue: Arc<RwLock<HashMap<[u8; 32], ReconnectionState>>>,
+
+    /// Peers currently past the staleness window, with the count of
+    /// consecutive ticks they have stayed stale (review F2 grace counter).
+    stale_candidates: Arc<RwLock<HashMap<[u8; 32], u32>>>,
 
     /// Optional health monitor for stale connection cleanup
     health_monitor: Option<Arc<TransportHealthMonitor>>,
@@ -245,6 +260,7 @@ impl TransportManager {
             peer_last_seen: Arc::new(RwLock::new(HashMap::new())),
             target_peers: Arc::new(RwLock::new(HashMap::new())),
             reconnection_queue: Arc::new(RwLock::new(HashMap::new())),
+            stale_candidates: Arc::new(RwLock::new(HashMap::new())),
             health_monitor: None,
             address_observer: Arc::new(RwLock::new(AddressObserver::new())),
             multi_hop_recall,
@@ -339,9 +355,24 @@ impl TransportManager {
                 last_seen.insert(peer_id, SystemTime::now());
             }
             TransportEvent::ConnectionEstablished { peer_id, transport } => {
-                let mut transports = self.transports.write();
-                if let Some(state) = transports.get_mut(&transport) {
-                    state.connected_peers.insert(peer_id);
+                {
+                    let mut transports = self.transports.write();
+                    if let Some(state) = transports.get_mut(&transport) {
+                        state.connected_peers.insert(peer_id);
+                    }
+                }
+                // Review F4: restore the optimal transport after reconnect
+                // instead of staying pinned to the deescalated fallback.
+                if let Some(ref engine) = self.escalation_engine {
+                    if engine.should_escalate(peer_id) {
+                        if let Ok(better) = engine.escalate(peer_id) {
+                            debug!(
+                                "Re-escalated peer {:x?} to {} after reconnect",
+                                &peer_id[..8],
+                                better
+                            );
+                        }
+                    }
                 }
                 debug!(
                     "Connection established to {:x?} via {}",
@@ -605,14 +636,16 @@ impl TransportManager {
         let now = SystemTime::now();
         let stale_threshold = Duration::from_secs(300);
 
-        // Phase A: identify stale peers and the transports they still occupy.
+        // Phase A: identify peers past the staleness window, and require
+        // STALE_CONFIRM_TICKS consecutive stale ticks before acting (review
+        // F2: an idle-but-healthy link that sees traffic between ticks
+        // resets naturally via the last_seen refresh on DataReceived).
         // NOTE: the health monitor tracks libp2p PeerIds while this manager is
         // keyed by 32-byte identity ids; bridging the two is follow-up work
         // (HANDOFF/todo/TRANSPORT_BLE_LAN_HICCUP_VERIFICATION_2026-08-05.md).
         // Time-based staleness is the Phase-1 trigger.
-        let stale_peers: Vec<([u8; 32], Vec<TransportType>)> = {
+        let time_stale: HashSet<[u8; 32]> = {
             let last_seen = self.peer_last_seen.read();
-            let peer_transports = self.peer_transports.read();
             last_seen
                 .iter()
                 .filter(|(_, seen_at)| {
@@ -620,7 +653,33 @@ impl TransportManager {
                         .map(|elapsed| elapsed > stale_threshold)
                         .unwrap_or(false)
                 })
-                .map(|(peer_id, _)| {
+                .map(|(peer_id, _)| *peer_id)
+                .collect()
+        };
+
+        let confirmed: Vec<[u8; 32]> = {
+            let mut stale_candidates = self.stale_candidates.write();
+            // Peers that saw traffic again drop out of the candidate set.
+            stale_candidates.retain(|peer_id, _| time_stale.contains(peer_id));
+            for peer_id in &time_stale {
+                *stale_candidates.entry(*peer_id).or_insert(0) += 1;
+            }
+            let confirmed: Vec<[u8; 32]> = stale_candidates
+                .iter()
+                .filter(|(_, count)| **count >= STALE_CONFIRM_TICKS)
+                .map(|(peer_id, _)| *peer_id)
+                .collect();
+            for peer_id in &confirmed {
+                stale_candidates.remove(peer_id);
+            }
+            confirmed
+        };
+
+        let stale_peers: Vec<([u8; 32], Vec<TransportType>)> = {
+            let peer_transports = self.peer_transports.read();
+            confirmed
+                .iter()
+                .map(|peer_id| {
                     let transports = peer_transports
                         .get(peer_id)
                         .map(|ts| ts.iter().copied().collect::<Vec<_>>())
@@ -651,9 +710,9 @@ impl TransportManager {
         // Phase C: replay synthetic disconnects with NO locks held.
         // handle_event takes its own locks and re-queues target peers for
         // reconnection, identical to a platform-reported disconnect.
-        for (peer_id, transport_list) in stale_peers {
+        for (peer_id, transport_list) in &stale_peers {
             if let Some(ref engine) = self.escalation_engine {
-                if engine.deescalate(peer_id).is_err() {
+                if engine.deescalate(*peer_id).is_err() {
                     debug!(
                         "Deescalation skipped for stale peer {:x?}: untracked or no fallback",
                         &peer_id[..8]
@@ -667,9 +726,24 @@ impl TransportManager {
                     t
                 );
                 self.handle_event(TransportEvent::PeerDisconnected {
-                    peer_id,
-                    transport: t,
+                    peer_id: *peer_id,
+                    transport: *t,
                 });
+            }
+        }
+
+        // Review F3: stagger reconnects inserted by this prune batch so an
+        // N-peer silence window does not turn into an N-peer dial burst on
+        // the first ready tick.
+        if !stale_peers.is_empty() {
+            let mut queue = self.reconnection_queue.write();
+            let mut idx = 0u32;
+            for (peer_id, _) in &stale_peers {
+                if let Some(state) = queue.get_mut(peer_id) {
+                    state.next_attempt_at =
+                        SystemTime::now() + RECONNECT_STAGGER_INTERVAL * (idx + 1);
+                    idx += 1;
+                }
             }
         }
 
@@ -1033,6 +1107,13 @@ mod tests {
         last_seen.insert(peer_id, SystemTime::now() - Duration::from_secs(301));
     }
 
+    /// Tick until the STALE_CONFIRM_TICKS grace counter confirms the prune.
+    fn confirm_stale(manager: &TransportManager) {
+        for _ in 0..STALE_CONFIRM_TICKS {
+            manager.tick();
+        }
+    }
+
     #[test]
     fn test_tick_stale_prune_clears_connected_peers() {
         let manager = TransportManager::new();
@@ -1055,7 +1136,7 @@ mod tests {
         assert_eq!(manager.peers_on_transport(TransportType::BLE).len(), 1);
 
         force_stale(&manager, peer_id);
-        manager.tick();
+        confirm_stale(&manager);
 
         // Zombie cleanup: no trace of the peer in any state map.
         assert!(!manager.is_peer_connected(peer_id));
@@ -1089,7 +1170,7 @@ mod tests {
         assert_eq!(manager.reconnection_queue_len(), 0);
 
         force_stale(&manager, peer_id);
-        manager.tick();
+        confirm_stale(&manager);
 
         assert_eq!(manager.reconnection_queue_len(), 1);
     }
@@ -1123,7 +1204,7 @@ mod tests {
         });
 
         force_stale(&manager, peer_id);
-        manager.tick();
+        confirm_stale(&manager);
 
         assert!(!manager.is_peer_connected(peer_id));
         let after = engine
@@ -1139,6 +1220,48 @@ mod tests {
             // Already on the lowest tier: deescalate is a no-op.
             assert_eq!(after, before);
         }
+    }
+
+    #[test]
+    fn test_tick_stale_prune_concurrent_with_real_disconnect() {
+        // Review F6: a real PeerDisconnected racing the confirming tick must
+        // yield exactly one reconnection-queue entry and no panic, whichever
+        // side wins the race.
+        let manager = Arc::new(TransportManager::new());
+        let peer_id = create_peer_id(4);
+
+        manager.add_target_peer(peer_id, vec![1]);
+        let caps = TransportCapabilities::for_transport(TransportType::BLE);
+        manager.register_transport(TransportType::BLE, caps);
+        manager.handle_event(TransportEvent::PeerDiscovered {
+            peer_id,
+            transport: TransportType::BLE,
+            addr: vec![1],
+        });
+        manager.handle_event(TransportEvent::ConnectionEstablished {
+            peer_id,
+            transport: TransportType::BLE,
+        });
+
+        force_stale(&manager, peer_id);
+        // Two warm-up ticks: grace counter reaches 2, no prune yet.
+        manager.tick();
+        manager.tick();
+        assert_eq!(manager.reconnection_queue_len(), 0);
+
+        let racer = manager.clone();
+        let handle = std::thread::spawn(move || {
+            racer.handle_event(TransportEvent::PeerDisconnected {
+                peer_id,
+                transport: TransportType::BLE,
+            });
+        });
+        manager.tick();
+        handle.join().expect("racer thread");
+
+        // Vacant-entry guard + single prune => exactly one queue entry.
+        assert_eq!(manager.reconnection_queue_len(), 1);
+        assert!(!manager.is_peer_connected(peer_id));
     }
 
     #[test]
@@ -1401,7 +1524,7 @@ mod tests {
             );
         }
 
-        manager.tick();
+        confirm_stale(&manager);
 
         assert_eq!(manager.connected_peers().len(), 0);
     }
