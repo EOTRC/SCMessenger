@@ -2,5 +2,6 @@
 docker/Dockerfile* text eol=lf
 *.swift text eol=lf
 *.sh text eol=lf
+*.py text eol=lf
 log-visualizer/package.json whitespace=cr-at-eol
 log-visualizer/package-lock.json whitespace=cr-at-eol

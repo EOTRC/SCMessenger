@@ -4,8 +4,9 @@ pub mod keys;
 mod store;
 
 pub use keys::{
-    identify_key_type, is_valid_identity_id, is_valid_public_key, sign_bundle, verify_bundle,
-    IdentityKeys, KeyPair, PublicKeyBundle, IDENTITY_ID_PREFIX, PUBLIC_KEY_PREFIX,
+    identify_key_type, identity_id_from_public_key_hex, is_valid_identity_id, is_valid_public_key,
+    sign_bundle, verify_bundle, IdentityKeys, KeyPair, PublicKeyBundle, IDENTITY_ID_PREFIX,
+    PUBLIC_KEY_PREFIX,
 };
 pub use store::{DeviceMetadata, IdentityStore};
 
@@ -270,7 +271,12 @@ mod tests {
 
     #[test]
     fn test_identity_persistence() {
+        use std::thread;
         use tempfile::tempdir;
+        use web_time::Duration;
+
+        const MAX_REOPEN_ATTEMPTS: u64 = 10;
+        const REOPEN_BACKOFF_BASE_MS: u64 = 25;
 
         let dir = tempdir().unwrap();
         let path = dir
@@ -290,7 +296,22 @@ mod tests {
 
         drop(manager1);
 
-        let backend2 = Arc::new(crate::store::backend::SledStorage::new(&path).unwrap());
+        let backend2 = Arc::new(
+            (0..MAX_REOPEN_ATTEMPTS)
+                .find_map(
+                    |attempt| match crate::store::backend::SledStorage::new(&path) {
+                        Ok(storage) => Some(storage),
+                        Err(_) if attempt + 1 < MAX_REOPEN_ATTEMPTS => {
+                            thread::sleep(Duration::from_millis(
+                                REOPEN_BACKOFF_BASE_MS * (attempt + 1),
+                            ));
+                            None
+                        }
+                        Err(err) => panic!("failed to reopen sled identity store: {err}"),
+                    },
+                )
+                .unwrap(),
+        );
         let mut manager2 = IdentityManager::with_backend(backend2).unwrap();
         manager2.initialize().unwrap();
         let id2 = manager2.identity_id().unwrap();
