@@ -31,6 +31,10 @@ Last updated: 2026-08-05 (Qwen Code takeover live; PR #136 unblock)
   land via PR -- NOT direct-to-main pushes; the PR must show green CI before
   merge. No regressions; only safely advance. (Does not revoke AGENTS.md
   rule 5(b) branch-push authority; merges move behind the PR gate.)
+- CLARIFICATION 2026-08-05 (operator-confirmed): the PR-first gate applies to
+  FUNCTIONAL changes. Orchestrator state files -- HANDOFF/ tickets, queue,
+  kickoff, audits, reviews, dispatch packets, plans -- may commit and push
+  directly to main; they carry no build/runtime risk.
 - APP SHARING REQUEST 2026-08-05: iOS parity for Android's APK sharing
   (system share + QR ephemeral HTTP host), then cross-hosting (iOS hosts
   Android APK; Android hosts iOS install link). Sequenced iOS<->iOS parity
