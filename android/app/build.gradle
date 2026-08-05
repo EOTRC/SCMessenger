@@ -46,7 +46,8 @@ gradle.taskGraph.whenReady { graph ->
     // Gate only tasks that can actually assemble, package, publish, or install
     // a release artifact.
     def releaseRequested = graph.allTasks.any {
-        it.name ==~ /(?i)(assemble|bundle|package|publish|install).*release.*/
+        it.name ==~ /(?i)(assemble|bundle|package|publish|install)(Debug|Release)$/
+            && it.name.toLowerCase().endsWith('release')
     }
     if (releaseRequested && !releaseSigningReady) {
         throw new GradleException("Release signing is required. Configure a real release keystore; debug signing is never valid for release artifacts.")
