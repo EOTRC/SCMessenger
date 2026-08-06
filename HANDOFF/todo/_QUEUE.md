@@ -44,6 +44,17 @@ Last updated: 2026-08-05 (Qwen Code takeover live; PR #136 unblock)
 - Claude Code sessions: LOCKOUT after the Sonnet-via-OpenRouter cost incident
   (root cause patched, spend confirmed flat). Unlock procedure:
   `HANDOFF/todo/CLAUDE_CODE_SONNET_LOCKOUT_2026-08-04.md`.
+- POST-PR-138 ROLLOUT + PLAN 2026-08-05: PR #138 merged at 6b2573fa (main).
+  Five-node rollout in flight: Windows CLI rebuilt at 6b2573fa; Android APK
+  from CI installed in place (identity preserved); AWS always-on node
+  teardown+rebuild gated on Docker Publish (no SSH key exists, in-place
+  blocked); iOS/macOS GO packet filed at
+  `HANDOFF/gpt/GPT_GO_IOS_MACOS_POST_PR138_2026-08-05.md` (in-place update
+  test, no wipes). Release path per operator request:
+  `HANDOFF/plans/V040_V050_FIVE_NODE_GATE_PLAN_2026-08-05.md` -- the
+  five-node fleet test is now the v0.4.0 release gate; v0.5.0 gate = farm
+  sim six scenarios + five-node regression. Live relay address is kept ONLY
+  in `HANDOFF/gpt/AWS_RELAY_CURRENT_ADDRESS.md` (ephemeral-IP policy).
 
 ## 2026-07-28 ORCHESTRATOR TAKEOVER -- v0.4.0 COMPLETION WAVE (authoritative)
 
