@@ -1,17 +1,22 @@
 // android/app/src/test/java/com/scmessenger/android/transport/MdnsServiceDiscoveryTest.kt
 package com.scmessenger.android.transport
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.os.Looper
+import androidx.core.content.ContextCompat
+import com.scmessenger.android.utils.Permissions
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import io.mockk.verify
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Test
 import java.net.InetAddress
@@ -109,5 +114,77 @@ class MdnsServiceDiscoveryTest {
         resolveListener.onServiceResolved(serviceInfo)
 
         verify(exactly = 1) { onLanPeerResolved("REMOTE_PEER_ID", "192.168.0.148", 9001) }
+    }
+
+    @Test
+    fun `interop assertion - service type constant matches libp2p-mdns default`() {
+        // Pins the expected service type for cross-platform interop.
+        // If iOS or CLI peers advertise differently, this test catches the drift.
+        assertEquals(
+            "Service type must match libp2p-mdns default for cross-platform discovery",
+            "_p2p._udp",
+            MdnsServiceDiscovery.EXPECTED_SERVICE_TYPE
+        )
+    }
+
+    @Test
+    fun `start sets PERMISSION_DENIED when permissions are missing`() {
+        val context = mockk<Context>(relaxed = true)
+        val onPeerDiscovered = mockk<(String) -> Unit>(relaxed = true)
+        val onDataReceived = mockk<(String, ByteArray) -> Unit>(relaxed = true)
+
+        // Mock permissions as denied via ContextCompat (more reliable than
+        // mockkStatic on Kotlin object Permissions)
+        mockkStatic(ContextCompat::class)
+        every {
+            ContextCompat.checkSelfPermission(any(), any())
+        } returns PackageManager.PERMISSION_DENIED
+
+        val discovery = MdnsServiceDiscovery(
+            context,
+            onPeerDiscovered,
+            onDataReceived
+        )
+
+        discovery.start()
+
+        assertEquals("PERMISSION_DENIED", discovery.lastFailureReason)
+        unmockkStatic(ContextCompat::class)
+    }
+
+    @Test
+    fun `SecurityException during registerService sets failure reason`() {
+        val context = mockk<Context>(relaxed = true)
+        val nsdManager = mockk<NsdManager>(relaxed = true)
+        val onPeerDiscovered = mockk<(String) -> Unit>(relaxed = true)
+        val onDataReceived = mockk<(String, ByteArray) -> Unit>(relaxed = true)
+
+        // Mock permissions as granted via ContextCompat so we reach registration
+        mockkStatic(ContextCompat::class)
+        every {
+            ContextCompat.checkSelfPermission(any(), any())
+        } returns PackageManager.PERMISSION_GRANTED
+
+        // Mock getSystemService to return our mock NsdManager
+        every { context.getSystemService(Context.NSD_SERVICE) } returns nsdManager
+
+        // Make registerService throw SecurityException
+        every {
+            nsdManager.registerService(any(), any<Int>(), any())
+        } throws SecurityException("Test security exception")
+
+        val discovery = MdnsServiceDiscovery(
+            context,
+            onPeerDiscovered,
+            onDataReceived
+        )
+
+        discovery.start()
+
+        assertEquals(
+            "REGISTER_SECURITY_EXCEPTION:Test security exception",
+            discovery.lastFailureReason
+        )
+        unmockkStatic(ContextCompat::class)
     }
 }
