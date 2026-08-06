@@ -1,17 +1,18 @@
 // android/app/src/test/java/com/scmessenger/android/transport/MdnsServiceDiscoveryTest.kt
 package com.scmessenger.android.transport
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.os.Looper
+import androidx.core.content.ContextCompat
 import com.scmessenger.android.utils.Permissions
 import io.mockk.every
 import io.mockk.mockk
-import io.mockk.mockkObject
 import io.mockk.mockkStatic
-import io.mockk.unmockkObject
 import io.mockk.unmockkStatic
 import io.mockk.verify
 import org.junit.After
@@ -132,9 +133,12 @@ class MdnsServiceDiscoveryTest {
         val onPeerDiscovered = mockk<(String) -> Unit>(relaxed = true)
         val onDataReceived = mockk<(String, ByteArray) -> Unit>(relaxed = true)
 
-        // Mock Permissions.hasMdnsPermissions to return false
-        mockkObject(Permissions::class)
-        every { Permissions.hasMdnsPermissions(any()) } returns false
+        // Mock permissions as denied via ContextCompat (more reliable than
+        // mockkStatic on Kotlin object Permissions)
+        mockkStatic(ContextCompat::class)
+        every {
+            ContextCompat.checkSelfPermission(any(), any())
+        } returns PackageManager.PERMISSION_DENIED
 
         val discovery = MdnsServiceDiscovery(
             context,
@@ -145,7 +149,7 @@ class MdnsServiceDiscoveryTest {
         discovery.start()
 
         assertEquals("PERMISSION_DENIED", discovery.lastFailureReason)
-        unmockkObject(Permissions::class)
+        unmockkStatic(ContextCompat::class)
     }
 
     @Test
@@ -155,9 +159,11 @@ class MdnsServiceDiscoveryTest {
         val onPeerDiscovered = mockk<(String) -> Unit>(relaxed = true)
         val onDataReceived = mockk<(String, ByteArray) -> Unit>(relaxed = true)
 
-        // Mock permissions as granted so we reach registration
-        mockkObject(Permissions::class)
-        every { Permissions.hasMdnsPermissions(any()) } returns true
+        // Mock permissions as granted via ContextCompat so we reach registration
+        mockkStatic(ContextCompat::class)
+        every {
+            ContextCompat.checkSelfPermission(any(), any())
+        } returns PackageManager.PERMISSION_GRANTED
 
         // Mock getSystemService to return our mock NsdManager
         every { context.getSystemService(Context.NSD_SERVICE) } returns nsdManager
@@ -179,6 +185,6 @@ class MdnsServiceDiscoveryTest {
             "REGISTER_SECURITY_EXCEPTION:Test security exception",
             discovery.lastFailureReason
         )
-        unmockkObject(Permissions::class)
+        unmockkStatic(ContextCompat::class)
     }
 }
