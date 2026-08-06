@@ -9,7 +9,9 @@ import android.os.Looper
 import com.scmessenger.android.utils.Permissions
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkObject
 import io.mockk.mockkStatic
+import io.mockk.unmockkObject
 import io.mockk.unmockkStatic
 import io.mockk.verify
 import org.junit.After
@@ -131,7 +133,7 @@ class MdnsServiceDiscoveryTest {
         val onDataReceived = mockk<(String, ByteArray) -> Unit>(relaxed = true)
 
         // Mock Permissions.hasMdnsPermissions to return false
-        mockkStatic(Permissions::class)
+        mockkObject(Permissions::class)
         every { Permissions.hasMdnsPermissions(any()) } returns false
 
         val discovery = MdnsServiceDiscovery(
@@ -143,7 +145,7 @@ class MdnsServiceDiscoveryTest {
         discovery.start()
 
         assertEquals("PERMISSION_DENIED", discovery.lastFailureReason)
-        unmockkStatic(Permissions::class)
+        unmockkObject(Permissions::class)
     }
 
     @Test
@@ -154,7 +156,7 @@ class MdnsServiceDiscoveryTest {
         val onDataReceived = mockk<(String, ByteArray) -> Unit>(relaxed = true)
 
         // Mock permissions as granted so we reach registration
-        mockkStatic(Permissions::class)
+        mockkObject(Permissions::class)
         every { Permissions.hasMdnsPermissions(any()) } returns true
 
         // Mock getSystemService to return our mock NsdManager
@@ -177,6 +179,6 @@ class MdnsServiceDiscoveryTest {
             "REGISTER_SECURITY_EXCEPTION:Test security exception",
             discovery.lastFailureReason
         )
-        unmockkStatic(Permissions::class)
+        unmockkObject(Permissions::class)
     }
 }
