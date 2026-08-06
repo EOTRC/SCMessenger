@@ -132,7 +132,15 @@ impl EscalationEngine {
         Ok(target)
     }
 
-    /// Deescalate to a fallback transport
+    /// Deescalate to a fallback transport.
+    /// Returns the new fallback transport if successful, or None if already
+    /// at the lowest tier.
+    ///
+    /// NOTE (review F7, TRANSPORT_FAILOVER_AUDIT_QWENPAID_2026-08-05): the
+    /// fallback chosen is the BEST worse transport (closest tier below
+    /// current), i.e. graceful one-step degradation. If that tier is also
+    /// silently dead, Phase-2 health integration must drive multi-step
+    /// deescalation.
     pub fn deescalate(&self, peer_id: [u8; 32]) -> Result<Option<TransportType>, EscalationError> {
         let mut states = self.states.write();
         let state = states
