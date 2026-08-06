@@ -6,17 +6,18 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.os.Looper
+import com.scmessenger.android.utils.Permissions
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import io.mockk.verify
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Test
 import java.net.InetAddress
 
-import org.junit.Assert.assertEquals
 class MdnsServiceDiscoveryTest {
 
     @Before
