@@ -7,10 +7,11 @@ other doc, ticket, or config.
 
 ## Current (updated 2026-08-05, post PR-138 rollout rebuild)
 
-- Public IP: PENDING-REBUILD (instance rebuild in progress; check back)
-- Bootstrap multiaddr: /ip4/<IP above>/tcp/9001
-- Health check: http://<IP above>:9876/health -> {"status":"healthy"}
-- Instance tag: Name=scm-always-on-node (account 101533648751, us-east-1)
+- Public IP: 54.226.67.101 (verified healthy: 200 {"status":"healthy"})
+- Bootstrap multiaddr: /ip4/54.226.67.101/tcp/9001
+- Health check: http://54.226.67.101:9876/health
+- Instance: i-006b14491d421bd0d, tag Name=scm-always-on-node
+  (account 101533648751, us-east-1, t3.micro, AMI ami-0bdc7d025135d7b49)
 - Image: testbotz/scmessenger:latest at commit 6b2573fa (PR 136+137+138)
 
 ## Previous (STALE -- do not use)
