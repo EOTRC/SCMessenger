@@ -1008,7 +1008,10 @@ mod tests {
         let keys = IdentityKeys::generate();
         let public_hex = keys.public_key_hex();
         let derived = identity_id_from_public_key_hex(&public_hex);
-        assert!(derived.is_some(), "a valid Ed25519 public key must derive an id");
+        assert!(
+            derived.is_some(),
+            "a valid Ed25519 public key must derive an id"
+        );
 
         // T2 (identifier-gate follow-up): the derivation must be gated on a
         // valid Ed25519 curve point, so a public key is accepted but a
