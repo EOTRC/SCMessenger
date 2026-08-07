@@ -11,7 +11,7 @@
 
 #![allow(clippy::empty_line_after_outer_attr)]
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::sync::Arc;
 
 use crate::abuse::auto_block::{AutoBlockConfig, AutoBlockEngine};
@@ -170,6 +170,10 @@ pub struct IronCore {
 
     /// Running state flag.
     running: Arc<RwLock<bool>>,
+
+    /// Serializes complete start/stop transitions without changing the
+    /// documented running/drift lock ordering.
+    lifecycle_transition: Arc<Mutex<()>>,
 
     // -----------------------------------------------------------------------
     // Routing engine (mycorrhizal mesh routing)
@@ -366,6 +370,7 @@ impl IronCore {
             #[cfg(not(target_arch = "wasm32"))]
             ledger_manager: crate::store::LedgerManager::ephemeral(),
             running: Arc::new(RwLock::new(false)),
+            lifecycle_transition: Arc::new(Mutex::new(())),
             routing_engine: Arc::new(RwLock::new(None)),
             cover_traffic_generator: Arc::new(RwLock::new(None)),
             timing_jitter: Arc::new(RwLock::new(None)),
@@ -457,6 +462,7 @@ impl IronCore {
             #[cfg(not(target_arch = "wasm32"))]
             ledger_manager: hydrated_ledger_manager(p),
             running: Arc::new(RwLock::new(false)),
+            lifecycle_transition: Arc::new(Mutex::new(())),
             routing_engine: Arc::new(RwLock::new(None)),
             cover_traffic_generator: Arc::new(RwLock::new(None)),
             timing_jitter: Arc::new(RwLock::new(None)),
@@ -581,6 +587,7 @@ impl IronCore {
             #[cfg(not(target_arch = "wasm32"))]
             ledger_manager: hydrated_ledger_manager(p),
             running: Arc::new(RwLock::new(false)),
+            lifecycle_transition: Arc::new(Mutex::new(())),
             routing_engine: Arc::new(RwLock::new(None)),
             cover_traffic_generator: Arc::new(RwLock::new(None)),
             timing_jitter: Arc::new(RwLock::new(None)),
@@ -607,6 +614,7 @@ impl IronCore {
 
     /// Start the core. Must be called before any messaging operations.
     pub fn start(&self) -> Result<(), IronCoreError> {
+        let _transition = self.lifecycle_transition.lock();
         // LOCK ORDERING (deadlock fix): `running` must be RELEASED before any
         // drift lock is taken. `stop()` acquires drift_active (via
         // drift_deactivate) and only then `running`. Holding `running` across
@@ -634,6 +642,7 @@ impl IronCore {
 
     /// Stop the core gracefully.
     pub fn stop(&self) {
+        let _transition = self.lifecycle_transition.lock();
         self.drift_deactivate();
         *self.running.write() = false;
         tracing::info!("IronCore stopped");
@@ -4603,6 +4612,68 @@ mod tests {
         let core = IronCore::with_storage("\0invalid/path<>|".to_string());
         let _ = core.contacts_manager();
         let _ = core.history_manager();
+    }
+
+    #[test]
+    fn lifecycle_concurrent_start_stop_keeps_running_and_drift_consistent() {
+        let core = Arc::new(IronCore::new());
+        let mut workers = Vec::new();
+
+        for index in 0..16 {
+            let core = Arc::clone(&core);
+            workers.push(std::thread::spawn(move || {
+                for _ in 0..50 {
+                    if index % 2 == 0 {
+                        let _ = core.start();
+                    } else {
+                        core.stop();
+                    }
+                }
+            }));
+        }
+
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        assert_eq!(core.is_running(), *core.drift_active.read());
+    }
+
+    #[test]
+    fn lifecycle_repeated_stop_is_harmless() {
+        let core = IronCore::new();
+
+        core.stop();
+        core.stop();
+
+        assert!(!core.is_running());
+        assert!(!*core.drift_active.read());
+    }
+
+    #[test]
+    fn lifecycle_only_one_start_succeeds_from_stopped_state() {
+        let core = Arc::new(IronCore::new());
+        let barrier = Arc::new(std::sync::Barrier::new(16));
+        let mut workers = Vec::new();
+
+        for _ in 0..16 {
+            let core = Arc::clone(&core);
+            let barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                core.start().is_ok()
+            }));
+        }
+
+        let successes = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .filter(|success| *success)
+            .count();
+
+        assert_eq!(successes, 1);
+        assert!(core.is_running());
+        assert!(*core.drift_active.read());
     }
 
     #[test]
