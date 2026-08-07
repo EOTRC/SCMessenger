@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Worldwide Triplepass Code Audit Engine (Function-Level Extraction)
 
-Interfaces with LM Studio headless service (google/gemma-4-e4b) to run a 
+Interfaces with LM Studio headless service (google/gemma-4-e4b) to run a
 function-by-function 3-scope audit across high-value core targets.
 
 Scope 1: High-Friction Core Function Audit (Panic risks, unhandled errors, stubs, locks)
