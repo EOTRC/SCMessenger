@@ -162,6 +162,36 @@ type WsSenderList = Arc<Mutex<Vec<WsSender>>>;
 
 use warp::Filter;
 
+/// Resolve a message's sender to a canonical Ed25519 public key, or None if
+/// the sender identifier is UNRESOLVABLE.
+///
+/// T3/P4 (identifier-gate follow-up): the pending-requests listing must FAIL
+/// CLOSED on resolution failure. A sender whose identifier cannot be resolved
+/// to a real Ed25519 public key -- via the authenticated envelope key
+/// (`sender_public_key_hex`, the canonical source) or a valid key-valued
+/// `sender_id` (legacy pre-field messages) -- cannot be proven known-or-blocked,
+/// so it must be suppressed from the listing rather than shown as a clean
+/// request. This pure helper centralizes the resolvability decision so it is
+/// unit-testable without a live core.
+fn resolve_sender_public_key(
+    sender_public_key_hex: &Option<String>,
+    sender_id: &str,
+) -> Option<String> {
+    sender_public_key_hex
+        .clone()
+        .filter(|k| scmessenger_core::identity::keys::is_valid_public_key(k))
+        .or_else(|| {
+            scmessenger_core::identity::keys::is_valid_public_key(sender_id)
+                .then(|| sender_id.to_string())
+        })
+}
+
+/// True iff the sender identifier resolves to a valid Ed25519 public key (see
+/// [`resolve_sender_public_key`]).
+fn sender_is_resolvable(sender_public_key_hex: &Option<String>, sender_id: &str) -> bool {
+    resolve_sender_public_key(sender_public_key_hex, sender_id).is_some()
+}
+
 /// Start the warp HTTP + WebSocket server on `127.0.0.1:<port>`.
 ///
 /// Returns a broadcast sender for pushing server events to connected clients
@@ -1367,10 +1397,24 @@ pub async fn handle_jsonrpc_request(
                 let mut by_sender: HashMap<String, Vec<&scmessenger_core::store::ReceivedMessage>> =
                     HashMap::new();
                 for msg in &inbox_messages {
+                    // T3/P4 (identifier-gate follow-up): FAIL CLOSED on an
+                    // unresolvable sender identifier. A message whose sender
+                    // cannot be resolved to a real Ed25519 public key -- whether
+                    // via the authenticated envelope key (sender_public_key_hex,
+                    // the canonical source) or a valid key-valued sender_id --
+                    // cannot be proven known-or-blocked, so showing it as a clean
+                    // request would be a fail-open listing. Suppress it instead;
+                    // the authoritative drop/hide already happens at core ingress.
+                    let resolvable_public_key =
+                        resolve_sender_public_key(&msg.sender_public_key_hex, &msg.sender_id);
                     // Match on either flavor. The blocked check matters as much
                     // as the contact check: a peer blocked under one flavor must
                     // stay blocked when their message arrives under the other.
-                    let alt_id = derived_identity_id(&msg.sender_id);
+                    let alt_id = derived_identity_id(&msg.sender_id).or_else(|| {
+                        resolvable_public_key
+                            .as_deref()
+                            .and_then(derived_identity_id)
+                    });
                     let is_known = contact_peer_ids.contains(&msg.sender_id)
                         || alt_id
                             .as_ref()
@@ -1379,7 +1423,10 @@ pub async fn handle_jsonrpc_request(
                         || alt_id
                             .as_ref()
                             .is_some_and(|a| blocked_peer_ids.contains(a));
-                    if !is_known && !is_blocked {
+                    // Fail closed: if we cannot resolve the sender to a valid
+                    // Ed25519 public key, we cannot say it is unknown-but-valid
+                    // (a legitimate new-requester case); suppress it.
+                    if resolvable_public_key.is_some() && !is_known && !is_blocked {
                         by_sender
                             .entry(msg.sender_id.clone())
                             .or_default()
@@ -1742,3 +1789,62 @@ pub async fn handle_jsonrpc_request(
 }
 
 // =====================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_sender_public_key, sender_is_resolvable};
+
+    /// A valid Ed25519 public key (generated; 64 hex chars).
+    fn valid_key() -> String {
+        // Deterministic: a real generated key is always a valid curve point.
+        let keys = scmessenger_core::identity::IdentityKeys::generate();
+        keys.public_key_hex()
+    }
+
+    #[test]
+    fn resolvable_from_authenticated_envelope_key() {
+        let key = valid_key();
+        assert!(sender_is_resolvable(
+            &Some(key.clone()),
+            "garbage-sender-id"
+        ));
+        assert_eq!(
+            resolve_sender_public_key(&Some(key.clone()), "garbage-sender-id"),
+            Some(key)
+        );
+    }
+
+    #[test]
+    fn resolvable_from_valid_key_valued_sender_id() {
+        let key = valid_key();
+        // No authenticated envelope key (legacy pre-field message) but the
+        // sender_id itself is a valid public key -> resolvable.
+        assert!(sender_is_resolvable(&None, &key));
+        assert_eq!(resolve_sender_public_key(&None, &key), Some(key));
+    }
+
+    #[test]
+    fn unresolvable_when_neither_flavor_is_a_valid_curve_point() {
+        // 0x7f*32 is 64 hex chars but NOT a valid Ed25519 curve point (probed
+        // against ed25519-dalek), and the authenticated envelope key is absent.
+        let bogus = "7f".repeat(32);
+        assert!(!sender_is_resolvable(&None, &bogus));
+        assert_eq!(resolve_sender_public_key(&None, &bogus), None);
+        // A short/garbage sender_id is likewise unresolvable.
+        assert!(!sender_is_resolvable(&None, "not-a-key"));
+        assert_eq!(resolve_sender_public_key(&None, "not-a-key"), None);
+    }
+
+    #[test]
+    fn invalid_envelope_key_does_not_win_over_valid_sender_id() {
+        // An envelope key that is not a valid curve point must not shadow a
+        // valid key-valued sender_id: resolvability falls through to the
+        // sender_id flavor.
+        let key = valid_key();
+        assert!(sender_is_resolvable(&Some("7f".repeat(32)), &key));
+        assert_eq!(
+            resolve_sender_public_key(&Some("7f".repeat(32)), &key),
+            Some(key)
+        );
+    }
+}
