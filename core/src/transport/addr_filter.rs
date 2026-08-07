@@ -445,6 +445,102 @@ pub fn is_disclosable_multiaddr(multiaddr: &str) -> bool {
     }
 }
 
+/// Returns true if `multiaddr` may be disclosed as a knob that only peers on
+/// the same RFC1918 / local network as us can reach.
+///
+/// RFC1918 and CGNAT addresses are only disclosable when at least one of our
+/// own addresses lands in the same private class (same /8, /16 or /24 block),
+/// because a private address a remote node could never route to is worse than
+/// useless in a ledger -- it leaks topology. Public IPv4, global IPv6 and DNS
+/// forms are never disclosable through this predicate.
+pub fn is_disclosable_on_rfc1918_network(multiaddr: &str, my_addrs: &[String]) -> bool {
+    let Ok(addr) = multiaddr.parse::<Multiaddr>() else { return false; };
+
+    for proto in addr.iter() {
+        match proto {
+            Protocol::P2pCircuit => return true,
+            Protocol::Ip4(ip) => {
+                if ip.is_private() || is_cgnat(&ip) {
+                    return has_matching_private_class(&ip, my_addrs);
+                }
+                return false; // Public IPv4 — never via exchange
+            }
+            Protocol::Ip6(ip) => {
+                if let Some(v4) = embedded_ipv4(&ip) {
+                    if v4.is_private() || is_cgnat(&v4) {
+                        return has_matching_private_class(&v4, my_addrs);
+                    }
+                    return false;
+                }
+                let seg0 = ip.segments()[0];
+                if (seg0 & 0xfe00) == 0xfc00 { // ULA
+                    return my_addrs.iter().any(|a| {
+                        extract_ipv6(a).is_some_and(|my_ip| {
+                            (my_ip.segments()[0] & 0xfe00) == 0xfc00
+                        })
+                    });
+                }
+                return false; // Global IPv6 — never
+            }
+            Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_) | Protocol::Dnsaddr(_) => {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
+/// Returns true if `ip` is in the same RFC1918 class as at least one of `my_addrs`.
+fn has_matching_private_class(ip: &Ipv4Addr, my_addrs: &[String]) -> bool {
+    my_addrs.iter().any(|a| {
+        extract_ipv4(a).is_some_and(|my_ip| {
+            rfc1918_class(&my_ip) == rfc1918_class(ip) && rfc1918_class(ip).is_some()
+        })
+    })
+}
+
+/// Classify RFC1918 or CGNAT range.
+fn rfc1918_class(ip: &Ipv4Addr) -> Option<u8> {
+    let o = ip.octets();
+    if o[0] == 10 { Some(0) }
+    else if o[0] == 172 && (16..=31).contains(&o[1]) { Some(1) }
+    else if o[0] == 192 && o[1] == 168 { Some(2) }
+    else if o[0] == 100 && (64..=127).contains(&o[1]) { Some(3) } // CGNAT
+    else { None }
+}
+
+fn is_cgnat(ip: &Ipv4Addr) -> bool {
+    let o = ip.octets();
+    o[0] == 100 && (64..=127).contains(&o[1])
+}
+
+/// Extract IPv6 from a multiaddr string.
+fn extract_ipv6(multiaddr: &str) -> Option<std::net::Ipv6Addr> {
+    let parts: Vec<&str> = multiaddr.split('/').collect();
+    for i in 0..parts.len() {
+        if parts[i] == "ip6" && i + 1 < parts.len() {
+            if let Ok(ip) = parts[i + 1].parse::<std::net::Ipv6Addr>() {
+                return Some(ip);
+            }
+        }
+    }
+    None
+}
+
+/// Extract IPv4 from a multiaddr string.
+fn extract_ipv4(multiaddr: &str) -> Option<Ipv4Addr> {
+    let parts: Vec<&str> = multiaddr.split('/').collect();
+    for i in 0..parts.len() {
+        if parts[i] == "ip4" && i + 1 < parts.len() {
+            if let Ok(ip) = parts[i + 1].parse::<Ipv4Addr>() {
+                return Some(ip);
+            }
+        }
+    }
+    None
+}
+
 /// Returns true iff `addr` may be WRITTEN INTO A LEDGER as an address this node
 /// actually reached.
 ///
@@ -1231,5 +1327,32 @@ mod tests {
             &"/ip6/::1/tcp/9001".parse::<Multiaddr>().unwrap(),
             REMOTE
         ));
+    }
+
+    #[test]
+    fn rfc1918_disclosable_when_local_network_matches() {
+        let local_addrs = vec!["/ip4/192.168.1.50/tcp/9001".to_string()];
+        assert!(is_disclosable_on_rfc1918_network(
+            "/ip4/192.168.1.100/tcp/9001",
+            &local_addrs
+        ), "same /24 should be disclosable");
+    }
+
+    #[test]
+    fn rfc1918_not_disclosable_when_different_private_class() {
+        let local_addrs = vec!["/ip4/10.0.0.5/tcp/9001".to_string()];
+        assert!(!is_disclosable_on_rfc1918_network(
+            "/ip4/192.168.1.100/tcp/9001",
+            &local_addrs
+        ), "different RFC1918 class should NOT be disclosable");
+    }
+
+    #[test]
+    fn public_ipv4_never_disclosable_on_network() {
+        let local_addrs = vec!["/ip4/192.168.1.50/tcp/9001".to_string()];
+        assert!(!is_disclosable_on_rfc1918_network(
+            "/ip4/203.0.113.45/tcp/9001",
+            &local_addrs
+        ), "public IPv4 must never be disclosed via network check");
     }
 }
