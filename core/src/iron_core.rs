@@ -1247,15 +1247,18 @@ impl IronCore {
     }
 
     /// Compute a jitter delay for relay timing obfuscation (returns ms).
-    pub fn relay_jitter_delay(&self, _severity: String) -> u64 {
-        // Base jitter: 50-200ms for Normal, 100-500ms for High, 0-50ms for Low
+    pub fn relay_jitter_delay(&self, severity: String) -> u64 {
         use std::time::{SystemTime, UNIX_EPOCH};
         let seed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
-        // Simple deterministic-ish jitter: 50-150ms
-        50 + (seed % 100)
+        let (minimum, span) = match severity.trim().to_ascii_lowercase().as_str() {
+            "low" => (0, 51),
+            "high" => (100, 401),
+            _ => (50, 151),
+        };
+        minimum + (seed % span)
     }
 
     // -----------------------------------------------------------------------
@@ -4600,6 +4603,38 @@ mod tests {
         let core = IronCore::with_storage("\0invalid/path<>|".to_string());
         let _ = core.contacts_manager();
         let _ = core.history_manager();
+    }
+
+    #[test]
+    fn relay_jitter_delay_respects_low_bounds() {
+        let core = IronCore::new();
+        for _ in 0..100 {
+            assert!(core.relay_jitter_delay("  LOW  ".to_string()) <= 50);
+        }
+    }
+
+    #[test]
+    fn relay_jitter_delay_respects_normal_bounds() {
+        let core = IronCore::new();
+        for _ in 0..100 {
+            assert!((50..=200).contains(&core.relay_jitter_delay("NoRmAl".to_string())));
+        }
+    }
+
+    #[test]
+    fn relay_jitter_delay_respects_high_bounds() {
+        let core = IronCore::new();
+        for _ in 0..100 {
+            assert!((100..=500).contains(&core.relay_jitter_delay(" high ".to_string())));
+        }
+    }
+
+    #[test]
+    fn relay_jitter_delay_defaults_unknown_to_normal_bounds() {
+        let core = IronCore::new();
+        for _ in 0..100 {
+            assert!((50..=200).contains(&core.relay_jitter_delay("unrecognized".to_string())));
+        }
     }
 
     #[test]
