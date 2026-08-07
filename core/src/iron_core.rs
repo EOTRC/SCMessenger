@@ -896,13 +896,9 @@ impl IronCore {
         if self.privacy_config().onion_routing_enabled {
             let relays = self.swarm_get_best_relays(3);
             if !relays.is_empty() {
-                if let Ok(relays_json) = serde_json::to_string(&relays) {
-                    if let Ok(onion_bytes) =
-                        self.prepare_onion_message(envelope_data.clone(), relays_json)
-                    {
-                        envelope_data = onion_bytes;
-                    }
-                }
+                let relays_json =
+                    serde_json::to_string(&relays).map_err(|_| IronCoreError::Internal)?;
+                envelope_data = self.prepare_onion_message(envelope_data, relays_json)?;
             }
         }
 
@@ -2501,10 +2497,18 @@ impl IronCore {
         if let Some(engine) = self.routing_engine.write().as_mut() {
             // Record message activity for the peer, which feeds the adaptive TTL.
             engine.record_message_activity(&peer_id_hex);
-            // Update local cell with reachable hints if the peer already exists.
-            for hint in hints {
-                if hint.len() == 4 {
-                    let _ = hint; // Hints are tracked via the routing engine's activity log
+            if let Ok(peer_id_bytes) = hex::decode(&peer_id_hex) {
+                if let Ok(peer_id) = <[u8; 32]>::try_from(peer_id_bytes.as_slice()) {
+                    let parsed_hints: Vec<[u8; 4]> = hints
+                        .into_iter()
+                        .filter_map(|hint| <[u8; 4]>::try_from(hint.as_slice()).ok())
+                        .collect();
+                    // LocalCell intentionally updates only peers already known to
+                    // the local topology; an announcement cannot create a peer.
+                    engine
+                        .base_engine_mut()
+                        .local_cell_mut()
+                        .update_peer_hints(&peer_id, parsed_hints);
                 }
             }
         }
@@ -2527,10 +2531,20 @@ impl IronCore {
 
     /// Update reliability score for a peer based on success/failure.
     pub fn routing_update_reliability(&self, peer_id_hex: String, success: bool) {
-        if success {
-            self.routing_peer_seen(peer_id_hex.clone(), String::new());
-        } else if let Some(engine) = self.routing_engine.write().as_mut() {
-            engine.record_unreachable_peer(&peer_id_hex);
+        if let Some(engine) = self.routing_engine.write().as_mut() {
+            if let Ok(peer_id_bytes) = hex::decode(&peer_id_hex) {
+                if let Ok(peer_id) = <[u8; 32]>::try_from(peer_id_bytes.as_slice()) {
+                    engine
+                        .base_engine_mut()
+                        .local_cell_mut()
+                        .update_reliability(&peer_id, success);
+                }
+            }
+            if success {
+                engine.record_message_activity(&peer_id_hex);
+            } else {
+                engine.record_unreachable_peer(&peer_id_hex);
+            }
         }
     }
 
@@ -2887,16 +2901,19 @@ impl IronCore {
                         ) {
                             Ok(crate::transport::manager::SendResult::Queued(transport_type)) => {
                                 tracing::info!(
-                                    event = "outbox_delivery_success",
+                                    event = "outbox_transport_queued",
                                     message_id = %msg_id,
                                     peer_id = %peer_id,
                                     transport = ?transport_type,
-                                    "Message queued to transport"
+                                    "Message queued to transport; awaiting delivery receipt"
                                 );
                                 succeeded += 1;
-                                msg.state = crate::store::outbox::MessageState::Sent;
-                                // Message was sent successfully; remove from outbox
-                                self.outbox.write().remove(&msg_id);
+                                msg.state = crate::store::outbox::MessageState::Enqueued;
+                                msg.next_retry_at = None;
+                                // Transport queuing is not delivery confirmation. Keep the
+                                // message in the outbox until an application-level receipt
+                                // calls mark_message_sent.
+                                let _ = self.outbox.write().enqueue(msg);
                             }
                             Err(e) => {
                                 msg.attempts = current_attempt;
@@ -2947,7 +2964,7 @@ impl IronCore {
                         peer_id = %peer_id,
                         succeeded = succeeded,
                         failed = failed,
-                        "Outbox flush complete: {} sent, {} scheduled for retry",
+                        "Outbox flush complete: {} queued for transport, {} scheduled for retry",
                         succeeded,
                         failed
                     );
@@ -3821,13 +3838,12 @@ impl IronCore {
         };
         let guard = self.routing_engine.read();
         if let Some(ref engine) = *guard {
-            engine.base_engine().local_cell().peer_count() > 0
-                && engine
-                    .base_engine()
-                    .local_cell()
-                    .peers_for_hint(&[0u8; 4])
-                    .iter()
-                    .any(|p| p.transports.contains(&tt))
+            engine
+                .base_engine()
+                .local_cell()
+                .active_peers()
+                .iter()
+                .any(|p| p.transports.contains(&tt))
         } else {
             false
         }
@@ -3999,18 +4015,8 @@ impl IronCore {
     /// Links the global abuse reputation system to relay forwarding decisions.
     /// Creates a new Arc reference to the shared abuse manager.
     pub fn drift_set_reputation_manager(&self) {
-        if let Some(ref mut _engine) = *self.drift_engine.write() {
-            // The abuse_manager is Arc<RwLock<EnhancedAbuseReputationManager>>.
-            // We create a new Arc<EnhancedAbuseReputationManager> by cloning the
-            // inner manager through a read lock. This is safe because the inner
-            // manager does not derive Clone, so we must reconstruct.
-            // However, since EnhancedAbuseReputationManager is not Clone, we
-            // instead provide a shared reference pattern. The relay engine's
-            // set_reputation_manager expects Arc<EnhancedAbuseReputationManager>,
-            // so we create a fresh instance and share it.
-            // For now, this is a no-op wiring point until the abuse manager
-            // can be shared via Arc directly.
-            tracing::debug!("drift_set_reputation_manager called (wiring entry point)");
+        if let Some(engine) = self.drift_engine.write().as_mut() {
+            engine.set_shared_reputation_manager(self.abuse_manager.clone());
         }
     }
 
@@ -4737,5 +4743,172 @@ mod tests {
         // plaintext message by prepare_message_internal.
         // This test documents the expected behavior; full validation requires
         // checking the encoded message (which is in the integration tests).
+    }
+
+    #[test]
+    fn queued_transport_send_remains_in_outbox_until_receipt() {
+        let core = IronCore::new();
+        core.grant_consent();
+        core.initialize_identity().unwrap();
+        let recipient = core.get_identity_info().public_key_hex.unwrap();
+        let recipient_bytes: [u8; 32] = hex::decode(&recipient).unwrap().try_into().unwrap();
+
+        let prepared = core
+            .prepare_message(
+                recipient.clone(),
+                "queued".to_string(),
+                crate::MessageType::Text,
+                None,
+            )
+            .unwrap();
+        assert!(core.outbox_contains_for_recipient(&recipient, &prepared.message_id));
+
+        let transport = crate::transport::abstraction::TransportType::BLE;
+        let manager = core.transport_manager.read();
+        manager.register_transport(
+            transport,
+            crate::transport::abstraction::TransportCapabilities::for_transport(transport),
+        );
+        manager.handle_event(
+            crate::transport::abstraction::TransportEvent::PeerDiscovered {
+                peer_id: recipient_bytes,
+                transport,
+                addr: vec![],
+            },
+        );
+        manager.handle_event(
+            crate::transport::abstraction::TransportEvent::ConnectionEstablished {
+                peer_id: recipient_bytes,
+                transport,
+            },
+        );
+        drop(manager);
+
+        core.handle_peer_connection_event(&recipient, true);
+
+        assert!(
+            core.outbox_contains_for_recipient(&recipient, &prepared.message_id),
+            "transport queueing must not be treated as delivery"
+        );
+        assert_eq!(core.transport_manager.read().pending_sends().len(), 1);
+        assert!(core.mark_message_sent(prepared.message_id));
+    }
+
+    #[test]
+    fn routing_hint_update_populates_local_cell() {
+        let core = IronCore::new();
+        *core.routing_engine.write() = Some(OptimizedRoutingEngine::new([0u8; 32], [0u8; 4]));
+        let peer = [7u8; 32];
+        let hint = [1u8, 2u8, 3u8, 4u8];
+        {
+            let mut engine = core.routing_engine.write();
+            engine
+                .as_mut()
+                .unwrap()
+                .base_engine_mut()
+                .local_cell_mut()
+                .peer_seen(peer, crate::routing::TransportType::BLE);
+        }
+
+        core.routing_update_peer_hints(hex::encode(peer), vec![hint.to_vec()]);
+
+        let engine = core.routing_engine.read();
+        let stored = engine
+            .as_ref()
+            .unwrap()
+            .base_engine()
+            .local_cell()
+            .get_peer(&peer)
+            .unwrap();
+        assert_eq!(stored.reachable_hints, vec![hint]);
+    }
+
+    #[test]
+    fn reliability_success_updates_local_score_and_capability_uses_active_peers() {
+        let core = IronCore::new();
+        *core.routing_engine.write() = Some(OptimizedRoutingEngine::new([0u8; 32], [0u8; 4]));
+        let peer = [8u8; 32];
+        {
+            let mut engine = core.routing_engine.write();
+            engine
+                .as_mut()
+                .unwrap()
+                .base_engine_mut()
+                .local_cell_mut()
+                .peer_seen(peer, crate::routing::TransportType::BLE);
+        }
+
+        let before = core
+            .routing_engine
+            .read()
+            .as_ref()
+            .unwrap()
+            .base_engine()
+            .local_cell()
+            .get_peer(&peer)
+            .unwrap()
+            .reliability_score;
+        core.routing_update_reliability(hex::encode(peer), true);
+        let after = core
+            .routing_engine
+            .read()
+            .as_ref()
+            .unwrap()
+            .base_engine()
+            .local_cell()
+            .get_peer(&peer)
+            .unwrap()
+            .reliability_score;
+
+        assert!(after > before);
+        assert!(core.get_forwarding_capability("ble"));
+        assert!(!core.get_forwarding_capability("tcp"));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn onion_enabled_send_fails_closed_when_relay_wrapping_fails() {
+        let core = IronCore::new();
+        core.grant_consent();
+        core.initialize_identity().unwrap();
+        let recipient = core.get_identity_info().public_key_hex.unwrap();
+        *core.privacy_config.write() = crate::privacy::PrivacyConfig {
+            onion_routing_enabled: true,
+            ..Default::default()
+        };
+        let bootstrap =
+            crate::relay::BootstrapManager::new("local".to_string(), vec![0u8; 32], vec![])
+                .with_seed_peers(vec![crate::relay::SeedPeer::new(
+                    "not-a-public-key".to_string(),
+                    String::new(),
+                    "invalid-relay".to_string(),
+                )]);
+        *core.bootstrap_manager.write() = Some(bootstrap);
+
+        let result = core.prepare_message(
+            recipient,
+            "must not fall back".to_string(),
+            crate::MessageType::Text,
+            None,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(core.outbox_count(), 0);
+    }
+
+    #[test]
+    fn drift_reputation_hook_wires_shared_manager() {
+        let core = IronCore::new();
+        core.grant_consent();
+        core.initialize_identity().unwrap();
+
+        core.drift_set_reputation_manager();
+
+        assert!(core
+            .drift_engine
+            .read()
+            .as_ref()
+            .unwrap()
+            .reputation_manager_is_configured());
     }
 }
