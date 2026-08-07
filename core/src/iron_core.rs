@@ -676,8 +676,13 @@ impl IronCore {
         // Initialize drift engine now that we have a public key
         if let Some(keys) = identity.keys() {
             let pk_bytes = keys.signing_key.verifying_key().to_bytes();
-            let mut engine = self.drift_engine.write();
-            *engine = Some(RelayEngine::new(&pk_bytes, RelayConfig::default()));
+            {
+                let mut engine = self.drift_engine.write();
+                *engine = Some(RelayEngine::new(&pk_bytes, RelayConfig::default()));
+            }
+            // The relay engine owns no reputation state; link it to IronCore's
+            // shared manager after releasing the engine lock to avoid re-entry.
+            self.drift_set_reputation_manager();
 
             // Initialize routing engine with identity-derived peer id and hint.
             // If the swarm has already seeded the engine (via start_swarm_with_config),
@@ -4897,12 +4902,10 @@ mod tests {
     }
 
     #[test]
-    fn drift_reputation_hook_wires_shared_manager() {
+    fn initialize_identity_wires_shared_reputation_manager() {
         let core = IronCore::new();
         core.grant_consent();
         core.initialize_identity().unwrap();
-
-        core.drift_set_reputation_manager();
 
         assert!(core
             .drift_engine
