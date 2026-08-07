@@ -87,7 +87,7 @@ No emoji in code or comments; pre-commit hook passed (commits landed).
 | `exchange_response_entries_caps_filters_and_drops_topics` (adversarial) | PASS |
 | addr_filter suite (incl. 3 new RFC1918 predicate tests) | 30/30 PASS |
 | Integration test crates `--no-run` (compile) | PASS (networking-gated tests ignored) |
-| Workspace regression | RUNNING — see sign-off note |
+| Workspace regression (full-parallel) | INCONCLUSIVE — Windows paging-file limit `os error 1455` (environment OOM, not code). Re-running with `-j 2`. |
 
 ---
 
