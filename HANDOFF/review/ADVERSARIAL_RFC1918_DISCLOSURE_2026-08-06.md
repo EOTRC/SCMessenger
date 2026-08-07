@@ -87,7 +87,7 @@ No emoji in code or comments; pre-commit hook passed (commits landed).
 | `exchange_response_entries_caps_filters_and_drops_topics` (adversarial) | PASS |
 | addr_filter suite (incl. 3 new RFC1918 predicate tests) | 30/30 PASS |
 | Integration test crates `--no-run` (compile) | PASS (networking-gated tests ignored) |
-| Workspace regression (full-parallel) | INCONCLUSIVE — Windows paging-file limit `os error 1455` (environment OOM, not code). Re-running with `-j 2`. |
+| **Workspace regression** (`cargo test --workspace -j 12 --no-fail-fast`) | **PASS — exit 0, zero failures across core/cli/desktop_bridge/mobile/wasm + doc-tests** |
 
 ---
 
@@ -106,13 +106,12 @@ No emoji in code or comments; pre-commit hook passed (commits landed).
 
 ## 6. Reviewer Sign-off
 
-**Verdict: APPROVE (pending full-workspace regression).**
+**Verdict: APPROVE.**
 
-This change satisfies the AGENTS.md Rule 8 adversarial-review gate for `core/src/transport/`. The disclosure relaxation is correctly scoped, non-transitive, bounded, and preserves default-deny for strangers. It implements operator decision D1 and unblocks the G4 five-node-gate convergence criterion.
+Full-workspace regression passed (`cargo test --workspace -j 12 --no-fail-fast` exit 0, zero failures). This change satisfies the AGENTS.md Rule 8 adversarial-review gate for `core/src/transport/`. The disclosure relaxation is correctly scoped, non-transitive, bounded, and preserves default-deny for strangers. It implements operator decision D1 and unblocks the G4 five-node-gate convergence criterion.
 
 **Required before final merge to main:**
-1. Full-workspace regression green (in progress).
-2. Five-node gate G4 field verification (real iOS/Android/Windows/headless fleet) — the definitive proof of cross-subnet convergence.
+1. Five-node gate G4 field verification (real iOS/Android/Windows/headless fleet) — the definitive proof of cross-subnet convergence.
 
 ---
 RESULT: DONE
