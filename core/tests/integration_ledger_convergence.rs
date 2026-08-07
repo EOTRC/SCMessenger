@@ -310,7 +310,7 @@ async fn test_ledger_exchange_response_is_reciprocated_from_core() {
     // and the response door are the same door (re-review NEW-2).
     let outbound = core2
         .ledger_manager
-        .exchange_response_entries(64, &peer_id1.to_string());
+        .exchange_response_entries(64, &peer_id1.to_string(), &[]);
     assert!(
         outbound.iter().any(|e| e.multiaddr == NODE2_ONLY_ADDR),
         "node 2 should be offering its own seeded entry; got {:?}",

@@ -3980,6 +3980,15 @@ pub async fn start_swarm_with_config(
                                             //     RFC1918 check, so every LAN neighbour we had
                                             //     dialed -- subnet, host:port and peer id --
                                             //     was disclosed to internet peers.
+                                            // FusionLite (RFC1918 disclosure): pass this node's own
+                                            // listener addresses so the exchange can disclose entries
+                                            // on the same private class (and route foreign-subnet
+                                            // RFC1918 entries to verified contacts).
+                                            let my_listener_addrs: Vec<String> = swarm
+                                                .listeners()
+                                                .chain(swarm.external_addresses())
+                                                .map(|a| a.to_string())
+                                                .collect();
                                             response_peers = core_handle
                                                 .as_ref()
                                                 .and_then(|w| w.upgrade())
@@ -3987,6 +3996,7 @@ pub async fn start_swarm_with_config(
                                                     core.ledger_manager.exchange_response_entries(
                                                         LEDGER_EXCHANGE_MAX_RESPONSE_PEERS,
                                                         &requester,
+                                                        &my_listener_addrs,
                                                     )
                                                 })
                                                 .unwrap_or_default();
@@ -5678,6 +5688,15 @@ pub async fn start_swarm_with_config(
                                 // response path deliberately blanks. A request is just
                                 // as much a disclosure as a response.
                                 if !ledger_exchanged_peers.contains(&peer_id) {
+                                    // FusionLite (RFC1918 disclosure): pass this node's own
+                                    // listener addresses so the request carries same-class
+                                    // private entries (and foreign-subnet RFC1918 entries to
+                                    // verified contacts).
+                                    let my_listener_addrs: Vec<String> = swarm
+                                        .listeners()
+                                        .chain(swarm.external_addresses())
+                                        .map(|a| a.to_string())
+                                        .collect();
                                     let entries: Vec<SharedPeerEntry> = core_handle
                                         .as_ref()
                                         .and_then(|w| w.upgrade())
@@ -5685,6 +5704,7 @@ pub async fn start_swarm_with_config(
                                             core.ledger_manager.exchange_response_entries(
                                                 LEDGER_EXCHANGE_MAX_RESPONSE_PEERS,
                                                 &peer_id.to_string(),
+                                                &my_listener_addrs,
                                             )
                                         })
                                         .unwrap_or_default();
