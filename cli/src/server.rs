@@ -196,12 +196,17 @@ fn sender_is_resolvable(sender_public_key_hex: &Option<String>, sender_id: &str)
 /// Authenticated public keys take precedence; legacy identity IDs are a safe
 /// fallback only when they have the expected identity-ID format.
 fn message_request_key(sender_public_key_hex: &Option<String>, sender_id: &str) -> Option<String> {
-    resolve_sender_public_key(sender_public_key_hex, sender_id)
-        .and_then(|key| scmessenger_core::identity::keys::identity_id_from_public_key_hex(&key))
-        .or_else(|| {
-            scmessenger_core::identity::keys::is_valid_identity_id(sender_id)
-                .then(|| sender_id.to_string())
-        })
+    if let Some(key) = sender_public_key_hex
+        .as_deref()
+        .filter(|key| scmessenger_core::identity::keys::is_valid_public_key(key))
+    {
+        return scmessenger_core::identity::keys::identity_id_from_public_key_hex(key);
+    }
+
+    // Without an authenticated envelope key, a legacy public key and a
+    // legacy identity_id are intentionally kept in their wire form. Both are
+    // 64-hex identifiers and cannot be distinguished safely from plaintext.
+    scmessenger_core::identity::keys::is_valid_identity_id(sender_id).then(|| sender_id.to_string())
 }
 
 /// Start the warp HTTP + WebSocket server on `127.0.0.1:<port>`.
@@ -1537,21 +1542,51 @@ pub async fn handle_jsonrpc_request(
         // in GetPendingMessageRequests keeps them from reappearing.
         ClientIntent::RejectMessageRequest { request_id } => {
             if let Some(ref core) = ctx.core {
-                match core.block_peer(
-                    request_id.clone(),
-                    None,
-                    Some("message_request_rejected".to_string()),
-                ) {
-                    Ok(()) => {
-                        let mut m = Map::new();
-                        m.insert("rejected".to_string(), true.into());
-                        rpc_result(id, Value::Object(m))
+                // The request_id is the canonical key (identity_id). Find the
+                // corresponding message to get its authenticated public key, so
+                // we block by public key and the dual-flavor write also covers
+                // the identity_id alias.
+                let canonical_req_id = request_id.clone();
+                let public_key_hex = core
+                    .peek_received_messages()
+                    .into_iter()
+                    .filter(|m| {
+                        message_request_key(&m.sender_public_key_hex, &m.sender_id).as_deref()
+                            == Some(&canonical_req_id)
+                    })
+                    .filter_map(|m| m.sender_public_key_hex)
+                    .next_back();
+
+                match public_key_hex {
+                    Some(public_key) => {
+                        match core.block_peer(
+                            public_key,
+                            None,
+                            Some("message_request_rejected".to_string()),
+                        ) {
+                            Ok(()) => {
+                                let mut m = Map::new();
+                                m.insert("rejected".to_string(), true.into());
+                                rpc_result(id, Value::Object(m))
+                            }
+                            Err(e) => rpc_error(
+                                id,
+                                JsonRpcErrorBody {
+                                    code: -32000,
+                                    message: format!("Failed to reject message request: {:?}", e),
+                                    data: None,
+                                },
+                            ),
+                        }
                     }
-                    Err(e) => rpc_error(
+                    None => rpc_error(
                         id,
                         JsonRpcErrorBody {
-                            code: -32000,
-                            message: format!("Failed to reject message request: {:?}", e),
+                            code: -32002,
+                            message: format!(
+                                "No pending message request found from {}",
+                                request_id
+                            ),
                             data: None,
                         },
                     ),
