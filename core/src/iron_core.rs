@@ -1401,6 +1401,17 @@ impl IronCore {
         self.inbox.read().all_messages()
     }
 
+    /// Get the canonical peer ID (identity_id) for a given identifier.
+    /// If the identifier is a valid Ed25519 public key, returns its derived
+    /// identity_id. Otherwise returns the identifier unchanged.
+    /// Used to map pending-request peerIds to the canonical format used by
+    /// the blocked list (which deduplicates to identity_id).
+    pub fn get_canonical_peer_id(&self, peer_id: &str) -> Option<String> {
+        crate::identity::keys::identity_id_from_public_key_hex(peer_id)
+            .filter(|derived| derived != peer_id)
+            .or(Some(peer_id.to_string()))
+    }
+
     // -----------------------------------------------------------------------
     // Store managers (returned to WASM for bridging)
     // -----------------------------------------------------------------------
@@ -3200,25 +3211,10 @@ impl IronCore {
             IronCoreError::Internal
         })?;
 
-        // Build the candidate identifier set: the sender_id as-is (which after
-        // identity canonicalization is the sender's public key) plus, when it
-        // is a valid 32-byte hex key, the derived identity_id (blake3 hash).
-        // Blocks are stored under the identifier the caller passed to
-        // block_peer()/block_and_delete_peer() -- historically the identity_id
-        // -- so we must check both flavors to avoid missing blocks.
-        let mut sender_candidates = vec![message.sender_id.clone()];
-        if let Some(derived_id) =
-            crate::identity::keys::identity_id_from_public_key_hex(&message.sender_id)
-        {
-            if derived_id != message.sender_id {
-                sender_candidates.push(derived_id);
-            }
-        }
-
         // DERIVE THE CANONICAL STORAGE PEER ID. History/inbox/audit are keyed
         // and queried by IDENTITY_ID (block_peer stores by identity_id; history
         // recent/conversation query by identity_id EXACT match on peer_id), but
-        // the wire sender_id is now a public key after identity canonicalization.
+        // the plaintext sender_id is not trusted for ingress authorization.
         // We derive the canonical identity_id from the AUTHENTICATED envelope
         // public key (sender_pubkey, verified during receive / ratchet
         // decryption), not from the unauthenticated plaintext sender_id field:
@@ -3226,20 +3222,36 @@ impl IronCore {
         // identity_id_from_public_key_hex always hashes to the correct
         // identity_id. This is unambiguous (no double-hash risk on an
         // identity_id-valued sender_id) and immune to plaintext-tampering.
+        let sender_public_key_hex = hex::encode(&sender_pubkey);
         let canonical_peer_id =
-            crate::identity::keys::identity_id_from_public_key_hex(&hex::encode(&sender_pubkey))
-                .unwrap_or_else(|| message.sender_id.clone());
+            crate::identity::keys::identity_id_from_public_key_hex(&sender_public_key_hex)
+                .ok_or(IronCoreError::CryptoError)?;
 
         // Also check device-specific blocks using the sender's last known device ID
-        // Try the contact under both identifier flavors; first hit wins.
-        let sender_device_id = sender_candidates.iter().find_map(|candidate| {
-            self.contact_manager
-                .read()
-                .get(candidate.clone())
-                .ok()
-                .flatten()
-                .and_then(|c| c.last_known_device_id)
-        });
+        // Try the authenticated public key and its canonical identity_id; first
+        // hit wins. A contact read error must fail closed rather than becoming
+        // an apparent unblocked sender.
+        let sender_device_id = {
+            let contacts = self.contact_manager.read();
+            let mut device_id = None;
+            for identifier in [&sender_public_key_hex, &canonical_peer_id] {
+                match contacts.get(identifier.to_string()) {
+                    Ok(Some(contact)) => {
+                        device_id = contact.last_known_device_id;
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            "[WARN] contact lookup failed for inbound sender; dropping message (fail-closed): {}",
+                            e
+                        );
+                        return Err(e);
+                    }
+                }
+            }
+            device_id
+        };
 
         // Check blocked status (peer-level and device-specific).
         // SINGLE LOCK SNAPSHOT: acquire the blocked_manager read lock ONCE and
@@ -3255,7 +3267,7 @@ impl IronCore {
             // public-key and identity_id flavors under one policy. On a
             // block-store read error we cannot prove the sender is safe, so
             // drop at ingress instead of processing the payload.
-            match blocked_guard.is_blocked_and_deleted_resolved(&message.sender_id) {
+            match blocked_guard.is_blocked_and_deleted_resolved(&sender_public_key_hex) {
                 Ok(true) => return Err(IronCoreError::Blocked),
                 Ok(false) => {}
                 Err(e) => {
@@ -3274,7 +3286,7 @@ impl IronCore {
             // is unblocked, so hide it; the message is still retained, not dropped,
             // so nothing is lost if the store recovers.
             match blocked_guard
-                .is_blocked_resolved(&message.sender_id, sender_device_id.as_deref())
+                .is_blocked_resolved(&sender_public_key_hex, sender_device_id.as_deref())
             {
                 Ok(blocked) => blocked,
                 Err(e) => {

@@ -294,7 +294,7 @@ impl BlockedManager {
     /// device-specific blocks for that peer, and clears the device registry.
     /// If `device_id` is `Some(...)`, only removes that specific device block.
     pub fn unblock(&self, peer_id: String, device_id: Option<String>) -> Result<(), IronCoreError> {
-        let identifiers = self.resolved_identifiers(&peer_id);
+        let identifiers = self.identifiers_for_unblock(&peer_id)?;
 
         match device_id {
             Some(did) => {
@@ -322,6 +322,53 @@ impl BlockedManager {
             }
         }
         Ok(())
+    }
+
+    /// Resolve both identifier flavors for an unblock request.
+    ///
+    /// The forward public-key -> identity_id mapping is derivable, but the
+    /// reverse mapping is only available when a public-key block or registry
+    /// row is still present. Legacy identity_id-only rows remain identity-only.
+    fn identifiers_for_unblock(&self, peer_id: &str) -> Result<Vec<String>, IronCoreError> {
+        let mut identifiers = self.resolved_identifiers(peer_id);
+
+        let blocked_entries = self
+            .backend
+            .scan_prefix(BLOCKED_PREFIX.as_bytes())
+            .map_err(|_| IronCoreError::StorageError)?;
+        for (_, value) in blocked_entries {
+            let blocked: BlockedIdentity =
+                serde_json::from_slice(&value).map_err(|_| IronCoreError::Internal)?;
+            if identity_id_from_public_key_hex(&blocked.peer_id).as_deref() == Some(peer_id)
+                && !identifiers
+                    .iter()
+                    .any(|identifier| identifier == &blocked.peer_id)
+            {
+                identifiers.push(blocked.peer_id);
+            }
+        }
+
+        let registries = self
+            .backend
+            .scan_prefix(DEVICE_REGISTRY_PREFIX.as_bytes())
+            .map_err(|_| IronCoreError::StorageError)?;
+        for (key, _) in registries {
+            let Some(public_key) = key
+                .strip_prefix(DEVICE_REGISTRY_PREFIX.as_bytes())
+                .and_then(|key| std::str::from_utf8(key).ok())
+            else {
+                continue;
+            };
+            if identity_id_from_public_key_hex(public_key).as_deref() == Some(peer_id)
+                && !identifiers
+                    .iter()
+                    .any(|identifier| identifier == public_key)
+            {
+                identifiers.push(public_key.to_string());
+            }
+        }
+
+        Ok(identifiers)
     }
 
     /// Check if a peer ID is blocked.
@@ -1016,6 +1063,41 @@ mod tests {
             !manager.is_blocked(&derived_id, None).unwrap(),
             "derived identity_id entry must be removed after unblock"
         );
+    }
+
+    #[test]
+    fn unblock_canonical_identity_id_removes_public_key_devices_and_registry() {
+        let backend = Arc::new(MemoryStorage::new());
+        let manager = BlockedManager::new(backend.clone());
+
+        let (pk_hex, identity_id) = generate_test_keypair();
+        let device_a = "device-a";
+        let device_b = "device-b";
+
+        manager.register_device_id(&pk_hex, device_a).unwrap();
+        manager.register_device_id(&pk_hex, device_b).unwrap();
+        manager.block(BlockedIdentity::new(pk_hex.clone())).unwrap();
+
+        let listed = manager.list().unwrap();
+        assert!(!listed.is_empty());
+        assert!(listed.iter().all(|blocked| blocked.peer_id == identity_id));
+
+        manager.unblock(identity_id.clone(), None).unwrap();
+
+        assert!(!manager.is_blocked(&pk_hex, None).unwrap());
+        assert!(!manager.is_blocked(&identity_id, None).unwrap());
+        assert!(!manager.is_blocked(&pk_hex, Some(device_a)).unwrap());
+        assert!(!manager.is_blocked(&pk_hex, Some(device_b)).unwrap());
+        assert!(manager.get_known_devices(&pk_hex).unwrap().is_empty());
+        assert!(manager.get_known_devices(&identity_id).unwrap().is_empty());
+        assert!(backend
+            .scan_prefix(BLOCKED_PREFIX.as_bytes())
+            .unwrap()
+            .is_empty());
+        assert!(backend
+            .scan_prefix(DEVICE_REGISTRY_PREFIX.as_bytes())
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
