@@ -192,6 +192,23 @@ fn sender_is_resolvable(sender_public_key_hex: &Option<String>, sender_id: &str)
     resolve_sender_public_key(sender_public_key_hex, sender_id).is_some()
 }
 
+/// Stable request key shared by pending-list and accept lookups.
+/// Authenticated public keys take precedence; legacy identity IDs are a safe
+/// fallback only when they have the expected identity-ID format.
+fn message_request_key(sender_public_key_hex: &Option<String>, sender_id: &str) -> Option<String> {
+    if let Some(key) = sender_public_key_hex
+        .as_deref()
+        .filter(|key| scmessenger_core::identity::keys::is_valid_public_key(key))
+    {
+        return scmessenger_core::identity::keys::identity_id_from_public_key_hex(key);
+    }
+
+    // Without an authenticated envelope key, a legacy public key and a
+    // legacy identity_id are intentionally kept in their wire form. Both are
+    // 64-hex identifiers and cannot be distinguished safely from plaintext.
+    scmessenger_core::identity::keys::is_valid_identity_id(sender_id).then(|| sender_id.to_string())
+}
+
 /// Start the warp HTTP + WebSocket server on `127.0.0.1:<port>`.
 ///
 /// Returns a broadcast sender for pushing server events to connected clients
@@ -776,7 +793,7 @@ pub async fn handle_jsonrpc_request(
         // ── Blocking ──
         ClientIntent::BlockPeer { peer_id, reason } => {
             if let Some(ref core) = ctx.core {
-                match core.block_peer(peer_id, reason, None) {
+                match core.block_peer(peer_id, None, reason) {
                     Ok(()) => {
                         let mut m = Map::new();
                         m.insert("blocked".to_string(), true.into());
@@ -1370,12 +1387,6 @@ pub async fn handle_jsonrpc_request(
         // doesn't make requests vanish before the user acts on them.
         ClientIntent::GetPendingMessageRequests {} => {
             if let Some(ref core) = ctx.core {
-                // Derives the identity_id a public key implies, via core's
-                // single source of truth for that hash. Yields None for
-                // anything that is not a 32-byte hex key, since an identity_id
-                // cannot be reversed back into a public key.
-                use scmessenger_core::identity::keys::identity_id_from_public_key_hex as derived_identity_id;
-
                 let contacts = core.contacts_store_manager().list().unwrap_or_default();
                 // Hold BOTH identifier flavors for every contact: a contact may
                 // be stored keyed by identity_id while an inbound message's
@@ -1386,13 +1397,6 @@ pub async fn handle_jsonrpc_request(
                     contact_peer_ids.insert(c.peer_id);
                     contact_peer_ids.insert(c.public_key);
                 }
-                let blocked_peer_ids: std::collections::HashSet<String> = core
-                    .list_blocked_peers()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|b| b.peer_id)
-                    .collect();
-
                 let inbox_messages = core.peek_received_messages();
                 let mut by_sender: HashMap<String, Vec<&scmessenger_core::store::ReceivedMessage>> =
                     HashMap::new();
@@ -1407,30 +1411,28 @@ pub async fn handle_jsonrpc_request(
                     // the authoritative drop/hide already happens at core ingress.
                     let resolvable_public_key =
                         resolve_sender_public_key(&msg.sender_public_key_hex, &msg.sender_id);
-                    // Match on either flavor. The blocked check matters as much
-                    // as the contact check: a peer blocked under one flavor must
-                    // stay blocked when their message arrives under the other.
-                    let alt_id = derived_identity_id(&msg.sender_id).or_else(|| {
-                        resolvable_public_key
-                            .as_deref()
-                            .and_then(derived_identity_id)
-                    });
-                    let is_known = contact_peer_ids.contains(&msg.sender_id)
-                        || alt_id
+                    let Some(request_key) =
+                        message_request_key(&msg.sender_public_key_hex, &msg.sender_id)
+                    else {
+                        continue;
+                    };
+                    let is_known = contact_peer_ids.contains(&request_key)
+                        || resolvable_public_key
                             .as_ref()
-                            .is_some_and(|a| contact_peer_ids.contains(a));
-                    let is_blocked = blocked_peer_ids.contains(&msg.sender_id)
-                        || alt_id
-                            .as_ref()
-                            .is_some_and(|a| blocked_peer_ids.contains(a));
+                            .is_some_and(|key| contact_peer_ids.contains(key));
+                    // T4: resolve block status through the core manager's
+                    // single dual-flavor policy rather than maintaining a
+                    // second CLI-side expansion of public key and identity_id.
+                    // A lookup error fails closed so a blocked sender is not
+                    // exposed as a pending request.
+                    let is_blocked = core
+                        .is_peer_blocked(request_key.clone(), None)
+                        .unwrap_or(true);
                     // Fail closed: if we cannot resolve the sender to a valid
                     // Ed25519 public key, we cannot say it is unknown-but-valid
                     // (a legitimate new-requester case); suppress it.
-                    if resolvable_public_key.is_some() && !is_known && !is_blocked {
-                        by_sender
-                            .entry(msg.sender_id.clone())
-                            .or_default()
-                            .push(msg);
+                    if !is_known && !is_blocked {
+                        by_sender.entry(request_key).or_default().push(msg);
                     }
                 }
 
@@ -1471,16 +1473,25 @@ pub async fn handle_jsonrpc_request(
                 )
             }
         }
-        // Accept = add the sender as a contact, using the Ed25519 public key
+        /// Accept = add the sender as a contact, using the Ed25519 public key
         // captured from their message envelope at receive time (cryptographically
         // verified there) rather than an unauthenticated discovery broadcast.
         ClientIntent::AcceptMessageRequest { request_id } => {
             if let Some(ref core) = ctx.core {
+                // The request_id from the pending list IS the canonical request key
+                // (output of message_request_key). Use it directly to match stored
+                // messages without re-canonicalizing.
+                let canonical_req_id = request_id.clone();
                 let public_key_hex = core
                     .peek_received_messages()
                     .into_iter()
-                    .filter(|m| m.sender_id == request_id)
-                    .filter_map(|m| m.sender_public_key_hex)
+                    .filter(|m| {
+                        message_request_key(&m.sender_public_key_hex, &m.sender_id).as_deref()
+                            == Some(&canonical_req_id)
+                    })
+                    .filter_map(|m| {
+                        resolve_sender_public_key(&m.sender_public_key_hex, &m.sender_id)
+                    })
                     .next_back();
 
                 match public_key_hex {
@@ -1531,21 +1542,51 @@ pub async fn handle_jsonrpc_request(
         // in GetPendingMessageRequests keeps them from reappearing.
         ClientIntent::RejectMessageRequest { request_id } => {
             if let Some(ref core) = ctx.core {
-                match core.block_peer(
-                    request_id.clone(),
-                    None,
-                    Some("message_request_rejected".to_string()),
-                ) {
-                    Ok(()) => {
-                        let mut m = Map::new();
-                        m.insert("rejected".to_string(), true.into());
-                        rpc_result(id, Value::Object(m))
+                // The request_id is the canonical key (identity_id). Find the
+                // corresponding message to get its authenticated public key, so
+                // we block by public key and the dual-flavor write also covers
+                // the identity_id alias.
+                let canonical_req_id = request_id.clone();
+                let public_key_hex = core
+                    .peek_received_messages()
+                    .into_iter()
+                    .filter(|m| {
+                        message_request_key(&m.sender_public_key_hex, &m.sender_id).as_deref()
+                            == Some(&canonical_req_id)
+                    })
+                    .filter_map(|m| m.sender_public_key_hex)
+                    .next_back();
+
+                match public_key_hex {
+                    Some(public_key) => {
+                        match core.block_peer(
+                            public_key,
+                            None,
+                            Some("message_request_rejected".to_string()),
+                        ) {
+                            Ok(()) => {
+                                let mut m = Map::new();
+                                m.insert("rejected".to_string(), true.into());
+                                rpc_result(id, Value::Object(m))
+                            }
+                            Err(e) => rpc_error(
+                                id,
+                                JsonRpcErrorBody {
+                                    code: -32000,
+                                    message: format!("Failed to reject message request: {:?}", e),
+                                    data: None,
+                                },
+                            ),
+                        }
                     }
-                    Err(e) => rpc_error(
+                    None => rpc_error(
                         id,
                         JsonRpcErrorBody {
-                            code: -32000,
-                            message: format!("Failed to reject message request: {:?}", e),
+                            code: -32002,
+                            message: format!(
+                                "No pending message request found from {}",
+                                request_id
+                            ),
                             data: None,
                         },
                     ),
@@ -1792,7 +1833,7 @@ pub async fn handle_jsonrpc_request(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_sender_public_key, sender_is_resolvable};
+    use super::{message_request_key, resolve_sender_public_key, sender_is_resolvable};
 
     /// A valid Ed25519 public key (generated; 64 hex chars).
     fn valid_key() -> String {
@@ -1846,5 +1887,19 @@ mod tests {
             resolve_sender_public_key(&Some("7f".repeat(32)), &key),
             Some(key)
         );
+    }
+
+    #[test]
+    fn request_key_prefers_authenticated_key_and_falls_back_to_legacy_identity_id() {
+        let key = valid_key();
+        let identity_id =
+            scmessenger_core::identity::keys::identity_id_from_public_key_hex(&key).unwrap();
+
+        assert_eq!(
+            message_request_key(&Some(key), "legacy-sender-id"),
+            Some(identity_id.clone())
+        );
+        assert_eq!(message_request_key(&None, &identity_id), Some(identity_id));
+        assert_eq!(message_request_key(&None, "not-a-key"), None);
     }
 }
