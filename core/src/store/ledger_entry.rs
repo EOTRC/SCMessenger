@@ -277,7 +277,6 @@ fn embedded_ipv4_of_multiaddr(ip: &std::net::Ipv6Addr) -> Option<std::net::Ipv4A
     crate::transport::addr_filter::embedded_ipv4(ip)
 }
 
-
 fn evict_one_locked(entries: &mut Vec<LedgerEntry>) {
     if entries.len() < MAX_LEDGER_ENTRIES {
         return;
@@ -2236,7 +2235,9 @@ mod tests {
         let my_addrs = vec!["/ip4/192.168.1.50/tcp/9001".to_string()];
         let response = mgr.exchange_response_entries(64, &requester, &my_addrs);
         assert!(
-            response.iter().any(|e| e.multiaddr.starts_with("/ip4/192.168.")),
+            response
+                .iter()
+                .any(|e| e.multiaddr.starts_with("/ip4/192.168.")),
             "RFC1918 peer on the same network should be disclosed (FusionLite)"
         );
     }
@@ -2249,7 +2250,9 @@ mod tests {
         let my_addrs = vec!["/ip4/10.0.0.5/tcp/9001".to_string()];
         let response = mgr.exchange_response_entries(64, &requester, &my_addrs);
         assert!(
-            !response.iter().any(|e| e.multiaddr.starts_with("/ip4/192.168.")),
+            !response
+                .iter()
+                .any(|e| e.multiaddr.starts_with("/ip4/192.168.")),
             "RFC1918 peer on a different private class must NOT be disclosed"
         );
     }
@@ -2278,7 +2281,9 @@ mod tests {
         let my_addrs = vec!["/ip4/192.168.1.50/tcp/9001".to_string()];
         let response = mgr.exchange_response_entries(64, &requester, &my_addrs);
         assert!(
-            response.iter().any(|e| e.multiaddr.starts_with("/ip4/203.0.113.")),
+            response
+                .iter()
+                .any(|e| e.multiaddr.starts_with("/ip4/203.0.113.")),
             "a globally routable (public) peer must remain disclosed -- the same-network \
              gate only governs RFC1918/CGNAT/ULA, and must not suppress global disclosure"
         );
@@ -2297,7 +2302,9 @@ mod tests {
         // can open the door.
         let response = mgr.exchange_response_entries(64, &requester, &[]);
         assert!(
-            response.iter().any(|e| e.multiaddr.starts_with("/ip4/192.168.")),
+            response
+                .iter()
+                .any(|e| e.multiaddr.starts_with("/ip4/192.168.")),
             "a verified contact should receive a foreign RFC1918 peer via contact chaining"
         );
     }
@@ -2310,12 +2317,12 @@ mod tests {
         mgr.record_connection("/ip4/192.168.1.100/tcp/9001".to_string(), peer());
         let response = mgr.exchange_response_entries(64, &requester, &[]);
         assert!(
-            !response.iter().any(|e| e.multiaddr.starts_with("/ip4/192.168.")),
+            !response
+                .iter()
+                .any(|e| e.multiaddr.starts_with("/ip4/192.168.")),
             "a stranger must NOT receive foreign RFC1918 peers"
         );
     }
-
-
 
     #[test]
     fn import_seed_entries_rejects_dns_forms() {

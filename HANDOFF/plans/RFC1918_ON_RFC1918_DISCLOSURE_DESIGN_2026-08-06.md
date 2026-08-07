@@ -25,7 +25,7 @@ The predicate: **"Would disclosing this address help the recipient reach this pe
 ```rust
 pub fn is_disclosable_on_rfc1918_network(multiaddr: &str, my_addrs: &[String]) -> bool {
     let Ok(addr) = multiaddr.parse::<Multiaddr>() else { return false; };
-    
+
     for proto in addr.iter() {
         match proto {
             Protocol::P2pCircuit => return true,  // Relay addresses always OK
@@ -106,7 +106,7 @@ pub fn exchange_response_entries(
 ) -> Vec<SharedPeerEntry> {
     let entries = self.entries.lock();
     let is_verified_contact = self.is_verified_contact(requester_peer_id);
-    
+
     entries
         .iter()
         .filter(|e| e.success_count > 0 && e.failure_count < LEDGER_DEAD_FAILURE_THRESHOLD)
@@ -140,7 +140,7 @@ TrustChain State:
 C's ledger exchange response to A includes B's entries IF:
   - B is a verified contact of C (success_count > 0)
   - AND B's address is RFC1918 or globally routable
-  
+
 C's ledger exchange response to A EXCLUDES B's entries IF:
   - B's address is a public IPv4 (protected)
   - B is not a verified contact of C
@@ -162,7 +162,7 @@ Each node independently decides based on ITS view of the requester:
 A asks C for entries:
   A.view[C] = VerifiedContact  → A is verified to C
   C.view[A] = VerifiedContact  → C considers A verified
-  
+
 B asks C for entries:
   C.view[B] = VerifiedContact  → C considers B verified
 

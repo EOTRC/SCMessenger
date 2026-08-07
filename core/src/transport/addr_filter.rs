@@ -454,7 +454,9 @@ pub fn is_disclosable_multiaddr(multiaddr: &str) -> bool {
 /// useless in a ledger -- it leaks topology. Public IPv4, global IPv6 and DNS
 /// forms are never disclosable through this predicate.
 pub fn is_disclosable_on_rfc1918_network(multiaddr: &str, my_addrs: &[String]) -> bool {
-    let Ok(addr) = multiaddr.parse::<Multiaddr>() else { return false; };
+    let Ok(addr) = multiaddr.parse::<Multiaddr>() else {
+        return false;
+    };
 
     for proto in addr.iter() {
         match proto {
@@ -473,11 +475,11 @@ pub fn is_disclosable_on_rfc1918_network(multiaddr: &str, my_addrs: &[String]) -
                     return false;
                 }
                 let seg0 = ip.segments()[0];
-                if (seg0 & 0xfe00) == 0xfc00 { // ULA
+                if (seg0 & 0xfe00) == 0xfc00 {
+                    // ULA
                     return my_addrs.iter().any(|a| {
-                        extract_ipv6(a).is_some_and(|my_ip| {
-                            (my_ip.segments()[0] & 0xfe00) == 0xfc00
-                        })
+                        extract_ipv6(a)
+                            .is_some_and(|my_ip| (my_ip.segments()[0] & 0xfe00) == 0xfc00)
                     });
                 }
                 return false; // Global IPv6 — never
@@ -503,11 +505,19 @@ fn has_matching_private_class(ip: &Ipv4Addr, my_addrs: &[String]) -> bool {
 /// Classify RFC1918 or CGNAT range.
 fn rfc1918_class(ip: &Ipv4Addr) -> Option<u8> {
     let o = ip.octets();
-    if o[0] == 10 { Some(0) }
-    else if o[0] == 172 && (16..=31).contains(&o[1]) { Some(1) }
-    else if o[0] == 192 && o[1] == 168 { Some(2) }
-    else if o[0] == 100 && (64..=127).contains(&o[1]) { Some(3) } // CGNAT
-    else { None }
+    if o[0] == 10 {
+        Some(0)
+    } else if o[0] == 172 && (16..=31).contains(&o[1]) {
+        Some(1)
+    } else if o[0] == 192 && o[1] == 168 {
+        Some(2)
+    } else if o[0] == 100 && (64..=127).contains(&o[1]) {
+        Some(3)
+    }
+    // CGNAT
+    else {
+        None
+    }
 }
 
 fn is_cgnat(ip: &Ipv4Addr) -> bool {
@@ -1332,27 +1342,27 @@ mod tests {
     #[test]
     fn rfc1918_disclosable_when_local_network_matches() {
         let local_addrs = vec!["/ip4/192.168.1.50/tcp/9001".to_string()];
-        assert!(is_disclosable_on_rfc1918_network(
-            "/ip4/192.168.1.100/tcp/9001",
-            &local_addrs
-        ), "same /24 should be disclosable");
+        assert!(
+            is_disclosable_on_rfc1918_network("/ip4/192.168.1.100/tcp/9001", &local_addrs),
+            "same /24 should be disclosable"
+        );
     }
 
     #[test]
     fn rfc1918_not_disclosable_when_different_private_class() {
         let local_addrs = vec!["/ip4/10.0.0.5/tcp/9001".to_string()];
-        assert!(!is_disclosable_on_rfc1918_network(
-            "/ip4/192.168.1.100/tcp/9001",
-            &local_addrs
-        ), "different RFC1918 class should NOT be disclosable");
+        assert!(
+            !is_disclosable_on_rfc1918_network("/ip4/192.168.1.100/tcp/9001", &local_addrs),
+            "different RFC1918 class should NOT be disclosable"
+        );
     }
 
     #[test]
     fn public_ipv4_never_disclosable_on_network() {
         let local_addrs = vec!["/ip4/192.168.1.50/tcp/9001".to_string()];
-        assert!(!is_disclosable_on_rfc1918_network(
-            "/ip4/203.0.113.45/tcp/9001",
-            &local_addrs
-        ), "public IPv4 must never be disclosed via network check");
+        assert!(
+            !is_disclosable_on_rfc1918_network("/ip4/203.0.113.45/tcp/9001", &local_addrs),
+            "public IPv4 must never be disclosed via network check"
+        );
     }
 }

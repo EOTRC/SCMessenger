@@ -538,13 +538,11 @@ fn lan_only_node_discloses_nothing_to_a_stranger() {
     }
     assert_eq!(core.ledger_manager.dialable_addresses().len(), 6);
 
-    let disclosed = core
-        .ledger_manager
-        .exchange_response_entries(
-            64,
-            "12D3KooWSHj3RRbBjD15g6wekV8y3mm57Pobmps2g2WJm6F67Lay",
-            &[],
-        );
+    let disclosed = core.ledger_manager.exchange_response_entries(
+        64,
+        "12D3KooWSHj3RRbBjD15g6wekV8y3mm57Pobmps2g2WJm6F67Lay",
+        &[],
+    );
     assert!(
         disclosed.is_empty(),
         "internal subnets, live host:ports and neighbour peer ids disclosed to a \
