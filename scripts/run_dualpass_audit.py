@@ -216,7 +216,7 @@ def query_lmstudio(prompt: str, model: str = DEFAULT_MODEL, timeout: int = 600) 
             msg = res_json["choices"][0]["message"]
             content = msg.get("content") or ""
             reasoning = msg.get("reasoning_content") or ""
-            
+
             # Combine content and reasoning to ensure complete output recovery
             if content.strip():
                 return content.strip()
