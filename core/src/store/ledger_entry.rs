@@ -1242,7 +1242,10 @@ impl LedgerManager {
         let entries = self.entries.lock();
         entries
             .iter()
-            .filter(|e| e.success_count > 0 && e.failure_count < LEDGER_DEAD_FAILURE_THRESHOLD)
+            .filter(|e| {
+                (e.success_count > 0 || e.public_key.is_some())
+                    && e.failure_count < LEDGER_DEAD_FAILURE_THRESHOLD
+            })
             .filter(|e| e.peer_id.as_deref() != Some(requester_peer_id))
             .filter(|e| {
                 let addr = strip_peer_id_component(&e.multiaddr);

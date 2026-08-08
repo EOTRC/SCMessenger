@@ -3984,11 +3984,14 @@ pub async fn start_swarm_with_config(
                                             // listener addresses so the exchange can disclose entries
                                             // on the same private class (and route foreign-subnet
                                             // RFC1918 entries to verified contacts).
-                                            let my_listener_addrs: Vec<String> = swarm
+                                            let mut my_listener_addrs: Vec<String> = swarm
                                                 .listeners()
                                                 .chain(swarm.external_addresses())
                                                 .map(|a| a.to_string())
                                                 .collect();
+                                            if let Some(conn) = connection_tracker.get_connection(&peer) {
+                                                my_listener_addrs.push(conn.remote_addr.to_string());
+                                            }
                                             response_peers = core_handle
                                                 .as_ref()
                                                 .and_then(|w| w.upgrade())
@@ -5692,11 +5695,14 @@ pub async fn start_swarm_with_config(
                                     // listener addresses so the request carries same-class
                                     // private entries (and foreign-subnet RFC1918 entries to
                                     // verified contacts).
-                                    let my_listener_addrs: Vec<String> = swarm
+                                    let mut my_listener_addrs: Vec<String> = swarm
                                         .listeners()
                                         .chain(swarm.external_addresses())
                                         .map(|a| a.to_string())
                                         .collect();
+                                    if let Some(conn) = connection_tracker.get_connection(&peer_id) {
+                                        my_listener_addrs.push(conn.remote_addr.to_string());
+                                    }
                                     let entries: Vec<SharedPeerEntry> = core_handle
                                         .as_ref()
                                         .and_then(|w| w.upgrade())
