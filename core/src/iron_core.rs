@@ -825,10 +825,7 @@ impl IronCore {
             recipient_id: recipient_id.to_string(),
             message_type: _msg_type,
             payload: content.as_bytes().to_vec(),
-            timestamp: web_time::SystemTime::now()
-                .duration_since(web_time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
+            timestamp: crate::util::unix_time_secs(),
         };
         let message_bytes =
             crate::message::encode_message(&message).map_err(|_| IronCoreError::Internal)?;
@@ -2933,7 +2930,14 @@ impl IronCore {
                                 // Transport queuing is not delivery confirmation. Keep the
                                 // message in the outbox until an application-level receipt
                                 // calls mark_message_sent.
-                                let _ = self.outbox.write().enqueue(msg);
+                                if let Err(e) = self.outbox.write().enqueue(msg) {
+                                    tracing::error!(
+                                        event = "outbox_enqueue_failed",
+                                        message_id = %msg_id,
+                                        error = %e,
+                                        "Failed to re-enqueue message after transport queue"
+                                    );
+                                }
                             }
                             Err(e) => {
                                 msg.attempts = current_attempt;
@@ -2949,7 +2953,14 @@ impl IronCore {
                                         attempt = current_attempt,
                                         "Delivery attempt failed 3 times; marking as Failed in outbox"
                                     );
-                                    let _ = self.outbox.write().enqueue(msg);
+                                    if let Err(e) = self.outbox.write().enqueue(msg) {
+                                        tracing::error!(
+                                            event = "outbox_enqueue_failed",
+                                            message_id = %msg_id,
+                                            error = %e,
+                                            "Failed to re-enqueue message after persistent failure"
+                                        );
+                                    }
                                     failed += 1;
                                 } else {
                                     // Transient failure (< 3 attempts): leave as Enqueued with exponential backoff
@@ -3332,10 +3343,12 @@ impl IronCore {
                     };
                     delegate.on_receipt_received(receipt.message_id, status_str);
                 }
-            } else {
-                tracing::warn!(
-                    "Failed to parse receipt payload from sender {}: malformed JSON",
-                    message.sender_id
+            } else if let Err(e) = crate::message::types::decode_receipt(&message.payload) {
+                tracing::error!(
+                    event = "receipt_parse_failed",
+                    sender_id = %message.sender_id,
+                    error = %e,
+                    "Failed to parse receipt payload from sender: malformed JSON"
                 );
             }
             // Fall through to generic pipeline steps (dedup, metrics, persistence)
@@ -3804,10 +3817,7 @@ impl IronCore {
     ) -> Option<crate::routing::RoutingDecision> {
         let mut guard = self.routing_engine.write();
         if let Some(ref mut engine) = guard.as_mut() {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
+            let now = crate::util::unix_time_ms();
             Some(engine.route_message_optimized(recipient_hint, message_id, priority, now))
         } else {
             None

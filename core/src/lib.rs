@@ -18,6 +18,7 @@ pub mod routing;
 pub mod settings;
 pub mod store;
 pub mod transport;
+pub mod util;
 pub mod wasm_support;
 
 // Re-export critical types from core modules
