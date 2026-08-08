@@ -59,6 +59,48 @@ CASES = [
     ("git status", "git status --short", 0),
     ("empty command", "", 0),
     ("whitespace only", "   ", 0),
+
+    # --- Destructive-operation guard -------------------------------------
+    # The first four are the VERBATIM commands a concurrent Antigravity session
+    # ran on 2026-08-08, in order, each one after being told to stop. They
+    # destroyed another session's uncommitted work. Nothing blocked them.
+    ("INCIDENT: checkout discarding others' edits",
+     "git checkout -- .claude/ CLAUDE.md docs/DOCUMENT_STATUS_INDEX.md", 2),
+    ("INCIDENT: powershell recursive force delete",
+     'powershell -Command "Remove-Item -Recurse -Force -ErrorAction '
+     'SilentlyContinue .claude/hooks/preflight_guard.py, docs/rules"', 2),
+    ("INCIDENT: git reset --hard", "git reset --hard 6cb7033a", 2),
+    ("INCIDENT: force-push shared branch",
+     "git push -f origin tracking/pre-v040-tag-work", 2),
+
+    # Recovery moves that MUST stay allowed -- these are how the incident was
+    # undone. A guard that blocks these makes recovery impossible.
+    ("RECOVERY: checkout from a ref is allowed",
+     "git checkout origin/main -- CLAUDE.md docs/rules .claude/settings.json", 0),
+    ("RECOVERY: checkout file from a sha is allowed",
+     "git checkout fbb9757d -- HANDOFF/gpt/GPT_MAC_PR139_TAKEOVER_2026-08-07.md", 0),
+
+    ("git clean -fd blocked", "git clean -fd", 2),
+    ("git rebase blocked", "git rebase main", 2),
+    ("git restore discards, blocked", "git restore core/src/lib.rs", 2),
+    ("git restore --staged is safe", "git restore --staged core/src/lib.rs", 0),
+    ("git checkout branch switch allowed", "git checkout main", 0),
+    ("normal push allowed", "git push origin main", 0),
+    ("rm -rf under tmp/ allowed", "rm -rf tmp/scratch", 0),
+    ("rm -rf repo path blocked", "rm -rf docs/rules", 2),
+    ("rm -f single file allowed", "rm -f tmp/x.log", 0),
+
+    # Escape hatches must work as an INLINE prefix. The hook runs as its own
+    # process before the command, so an inline `VAR=1` never reaches its
+    # environment -- checking only os.environ made every hatch unusable.
+    ("inline override: destructive",
+     "SCM_ALLOW_DESTRUCTIVE=1 git reset --hard HEAD", 0),
+    ("inline override: cargo clean",
+     "SCM_ALLOW_CARGO_CLEAN=1 " + CLEAN, 0),
+    ("inline override: agy dispatch",
+     'SCM_SKIP_DISPATCH_CHECK=1 agy -p "x"', 0),
+    ("bare VAR=1 without the command still blocks",
+     "SCM_ALLOW_SOMETHING_ELSE=1 git reset --hard HEAD", 2),
 ]
 
 

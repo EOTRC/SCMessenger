@@ -31,6 +31,37 @@ always-on trigger lives in `CLAUDE.md`; this file holds the protocol.
 - Subshell execution within bash commands is blocked unless explicitly
   allowlisted.
 
+### Enforcement (added 2026-08-08)
+
+These rules were documentation only until a concurrent Antigravity session ran
+`git checkout -- <paths>`, `Remove-Item -Recurse -Force`, `git reset --hard`
+and `git push -f` in sequence -- each one AFTER being told to stop -- and
+destroyed another session's uncommitted work. Two layers now enforce them:
+
+| Layer | Scope | Blocks |
+|---|---|---|
+| `.githooks/pre-push` -> `scripts/prepush_check.py` | **every tool** (hooksPath is configured) | non-fast-forward push, remote branch deletion |
+| `.claude/hooks/preflight_guard.py` (PreToolUse) | Claude Code only | `reset --hard`, `checkout -- <paths>`, `restore`, `clean -f`, `rebase`, force-push, recursive force-delete outside `tmp/`/`target/` |
+
+**Know the limits.** The PreToolUse guard does NOT run in Antigravity, Codex,
+Copilot, or `agy`. Only git hooks and CI reach those. There is no hook for
+`git checkout`, `git reset`, or `rm` at all -- for non-Claude harnesses the
+only control is `AGENTS.md` rules 11 and 12, which is documentation. Treat any
+concurrent non-Claude agent with repo write access as capable of destroying
+uncommitted work, and push early.
+
+**Recovery, in order:** `origin/<branch>` -> `git reflog` (discarded commits
+survive) -> `git fsck --lost-found`. Restore FORWARD from a ref with
+`git checkout <ref> -- <path>`; never "undo" by discarding more state.
+Untracked files deleted with `rm -rf` are recoverable from none of these.
+
+**Concurrent agents get their own tree.** `git worktree add <path>` costs
+seconds and removes this entire failure class. Do not reshape a shared checkout
+to suit one task.
+
+Overrides are operator decisions: `SCM_ALLOW_DESTRUCTIVE=1`,
+`SCM_ALLOW_FORCE_PUSH=1`.
+
 ## Supply Chain
 
 - NEVER commit secrets, API keys, or tokens. Verify with `git diff --cached`

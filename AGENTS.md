@@ -54,7 +54,10 @@ the same relay behavior.
    FOREIGN WORKER, lake subagents) have no commit/push rights unless the
    orchestrator explicitly grants them for a specific task, and the
    orchestrator stays accountable for the gate. No capability class may
-   force-push to main. Everyone else: local commits only, and only if
+   force-push a SHARED branch -- that means `main` and the head branch of any
+   open pull request, not just main. (Hook-enforced: `.githooks/pre-push`
+   rejects any non-fast-forward push or remote branch deletion, from any
+   tool.) Everyone else: local commits only, and only if
    your capability class permits committing at all (see below).
 6. Never edit UniFFI-generated bindings (`uniffi.api` Kotlin package,
    `core/target/generated-sources/`) — regenerate instead.
@@ -69,6 +72,28 @@ the same relay behavior.
    breaks, release timing/versioning.
 10. Backlog order is `HANDOFF/todo/_QUEUE.md`; sequencing authority is
     `HANDOFF/V1_0_0_EXECUTION_PLAN.md` (operator-settled — do not relitigate).
+11. THIS CHECKOUT IS SHARED. Other agents and the operator work in it at the
+    same time. Touch ONLY the files your task requires. Specifically:
+    - NEVER revert, delete, stash, or commit a file you did not create or were
+      not assigned, even to "tidy up". Uncommitted changes you do not
+      recognise are someone else's in-progress work, and discarding them is
+      unrecoverable — no commit, no reflog, nothing.
+    - A clean `git status` is NOT a goal. Leaving unrelated modifications in
+      place is CORRECT behaviour, not a defect to fix. Do not "restore
+      untargeted files".
+    - `git commit -a` and `git commit -a --amend` stage every modified tracked
+      file regardless of who changed it. Stage explicit paths instead.
+    - If you need an isolated tree, make one: `git worktree add <path>`. Do not
+      reshape the shared checkout to suit your task.
+    - When told you touched something you should not have, STOP and report.
+      Do not attempt an undo that destroys more state — that is how a small
+      mistake becomes an unrecoverable one.
+12. Destructive operations require explicit operator approval, every time:
+    `git reset --hard`, `git checkout -- <paths>`, `git restore <paths>`,
+    `git clean -f`, `git rebase`, force-push, and recursive force-deletes
+    (`rm -rf`, `Remove-Item -Recurse -Force`) outside `tmp/` and `target/`.
+    To recover a file, restore it FORWARD from a ref
+    (`git checkout <ref> -- <path>`) rather than discarding working state.
 
 ## Capability classes — know which one you are
 

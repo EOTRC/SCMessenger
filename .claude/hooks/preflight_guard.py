@@ -15,6 +15,12 @@ Guards:
                           delegate_task.py without --mode silently truncates.
   3. build deconflict  -- concurrent build tools corrupt target/ in ways that
                           read as source errors.
+  4. destructive ops   -- `reset --hard`, `checkout -- <paths>`, `restore`,
+                          `clean -f`, `rebase`, force-push, and recursive
+                          force-deletes outside tmp//target/. security.md
+                          already required operator approval for these; on
+                          2026-08-08 a concurrent agent ran four of them in
+                          sequence and destroyed another session's work.
 
 MATCHING: commands are tokenized with shlex and split into shell segments, and a
 guard only fires when the trigger sits at a COMMAND POSITION. Substring matching
@@ -31,11 +37,14 @@ Fails OPEN -- any internal error allows the command through, because a broken
 hook must never wedge the session. If shlex cannot parse the command, falls back
 to conservative substring matching (blocks more, never less).
 
-Escape hatches (deliberate, per-guard; shell state does not persist between
-tool calls, so each use is inline and visible):
+Escape hatches (deliberate, per-guard). Honoured both from the environment and
+as an inline `VAR=1 <command>` prefix -- see override(); checking only
+os.environ silently made every hatch unusable, since this hook runs as its own
+process before the command does.
   SCM_ALLOW_CARGO_CLEAN=1   skip guard 1
   SCM_SKIP_DISPATCH_CHECK=1 skip guard 2
   SCM_SKIP_DECONFLICT=1     skip guard 3
+  SCM_ALLOW_DESTRUCTIVE=1   skip guard 4
 """
 
 import json
@@ -47,7 +56,11 @@ import sys
 
 _MAX_DEPTH = 3
 _SEPARATORS = {"&&", "||", ";", "|", "&", "\n"}
-_SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "pwsh", "powershell"}
+_SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "pwsh", "powershell", "cmd"}
+
+# Paths where recursive deletion is sanctioned (AGENTS.md rule 2: temp files go
+# in repo-local tmp/). Everything else needs an operator decision.
+_DELETE_OK_PREFIXES = ("tmp/", "./tmp/", "target/", "./target/")
 
 # Commands that read rather than execute. A segment led by one of these is
 # skipped -- but ONLY that segment, never the rest of the line.
@@ -112,6 +125,19 @@ def block(message):
     sys.exit(2)
 
 
+def override(name, raw=""):
+    """True if escape hatch `name` is set, in the environment OR inline.
+
+    The inline form matters and is easy to get wrong. This hook runs as its own
+    process BEFORE the command does, so `SCM_ALLOW_DESTRUCTIVE=1 git push ...`
+    sets the variable for git, never for the hook -- checking only os.environ
+    made every documented escape hatch unusable. Verified by test.
+    """
+    if os.environ.get(name) == "1":
+        return True
+    return re.search(r"(^|\s)%s=1(\s|$)" % re.escape(name), raw) is not None
+
+
 def basename(token):
     """Strip directory and .exe so ./scripts/cargo.exe -> cargo."""
     name = re.split(r"[\\/]", token)[-1]
@@ -166,10 +192,13 @@ def segments(command, depth=0):
         if not seg:
             continue
         expanded.append(seg)
-        # Recurse into shell -c payloads: bash -c "cargo clean".
+        # Recurse into shell payloads: `bash -c "..."`, and PowerShell's
+        # `-Command "..."`. PowerShell matters specifically: the 2026-08-08
+        # incident used `powershell -Command "Remove-Item -Recurse -Force ..."`,
+        # which hides the destructive verb one level down.
         if basename(seg[0]) in _SHELLS:
             for i, tok in enumerate(seg[1:], start=1):
-                if tok == "-c" and i + 1 < len(seg):
+                if tok.lower() in ("-c", "-command", "/c") and i + 1 < len(seg):
                     nested = segments(seg[i + 1], depth + 1)
                     if nested:
                         expanded.extend(nested)
@@ -205,7 +234,7 @@ def is_delegate(seg):
 
 
 def guard_cargo_clean(segs, raw):
-    if os.environ.get("SCM_ALLOW_CARGO_CLEAN") == "1":
+    if override("SCM_ALLOW_CARGO_CLEAN", raw):
         return
     hit = _RAW_CARGO_CLEAN.search(raw) if segs is None else any(
         is_cargo_clean(s) for s in segs
@@ -234,7 +263,7 @@ def guard_cargo_clean(segs, raw):
 
 
 def guard_dispatch(segs, raw):
-    if os.environ.get("SCM_SKIP_DISPATCH_CHECK") == "1":
+    if override("SCM_SKIP_DISPATCH_CHECK", raw):
         return
 
     if segs is None:
@@ -305,7 +334,7 @@ def running_build_processes():
 
 
 def guard_deconflict(segs, raw):
-    if os.environ.get("SCM_SKIP_DECONFLICT") == "1":
+    if override("SCM_SKIP_DECONFLICT", raw):
         return
     hit = _RAW_BUILD.search(raw) if segs is None else any(
         is_cargo_build(s) for s in segs
@@ -332,6 +361,153 @@ def guard_deconflict(segs, raw):
     )
 
 
+def discards_working_tree(seg):
+    """True for `git checkout -- <paths>`, `git checkout .`, bare `git restore`.
+
+    Deliberately ALLOWS `git checkout <ref> -- <paths>`, which restores FROM a
+    commit and is the standard recovery move -- it is how the 2026-08-08
+    incident was undone.
+    """
+    if basename(seg[0]) != "git":
+        return False
+    if "checkout" in seg:
+        rest = seg[seg.index("checkout") + 1:]
+        rest = [t for t in rest if t == "--" or not t.startswith("-")]
+        if rest and rest[0] in ("--", "."):
+            return True
+    if "restore" in seg and "--staged" not in seg:
+        if not any(t == "-s" or t.startswith("--source") for t in seg):
+            return True
+    return False
+
+
+def _sanctioned_delete_path(path):
+    norm = path.replace("\\", "/").rstrip(",").strip("'\"")
+    low = norm.lower()
+    if "appdata/local/temp" in low or low.startswith("/tmp/"):
+        return True  # scratchpad / system temp, outside the repo
+    stripped = norm[2:] if norm.startswith("./") else norm
+    return stripped.startswith(_DELETE_OK_PREFIXES) or stripped.startswith(
+        ("tmp/", "target/")
+    )
+
+
+def recursive_force_delete(seg):
+    """Return risky paths for a recursive+force delete, else None."""
+    name = basename(seg[0])
+    paths, recursive, force = [], False, False
+    if name == "rm":
+        for t in seg[1:]:
+            if t == "--recursive":
+                recursive = True
+            elif t == "--force":
+                force = True
+            elif t.startswith("-") and not t.startswith("--"):
+                if "r" in t[1:].lower():
+                    recursive = True
+                if "f" in t[1:]:
+                    force = True
+            elif not t.startswith("-"):
+                paths.append(t)
+    elif name in ("remove-item", "ri", "rd", "rmdir"):
+        recursive = name in ("rd", "rmdir")
+        for t in seg[1:]:
+            low = t.lower().rstrip(",")
+            if low.startswith("-recurse"):
+                recursive = True
+            elif low.startswith("-force"):
+                force = True
+            elif not t.startswith("-"):
+                paths.append(t)
+        if name in ("rd", "rmdir"):
+            force = True
+    else:
+        return None
+    if not (recursive and force):
+        return None
+    risky = [p for p in paths if not _sanctioned_delete_path(p)]
+    return risky or None
+
+
+def guard_destructive(segs, raw):
+    """Enforce the destructive-operation rules that security.md already states.
+
+    security.md: "Git operations that modify history (rebase, reset,
+    force-push) require explicit human trust dialog" and "NEVER execute
+    `rm -rf` without explicit human approval". Those were documentation with no
+    enforcement until a concurrent agent ran checkout/Remove-Item/reset --hard/
+    push -f in sequence on 2026-08-08 and destroyed another session's work.
+    """
+    if override("SCM_ALLOW_DESTRUCTIVE", raw) or segs is None:
+        return
+
+    def fail(title, detail):
+        block(
+            "[BLOCKED] " + title + "\n\n" + detail + "\n\n"
+            "This is an OPERATOR decision, not an agent's. If you are undoing\n"
+            "your own mistake, prefer a forward fix: restore from a ref\n"
+            "(`git checkout <ref> -- <path>`) or add a revert commit. Never\n"
+            "discard state you did not create.\n"
+            "\n"
+            "Rules: docs/rules/SECURITY_PROTOCOL.md, AGENTS.md rule 5\n"
+            "Override: SCM_ALLOW_DESTRUCTIVE=1"
+        )
+
+    for seg in segs:
+        if basename(seg[0]) == "git":
+            if "reset" in seg and "--hard" in seg:
+                fail(
+                    "`git reset --hard` discards uncommitted work.",
+                    "Another agent may have uncommitted changes in this shared\n"
+                    "checkout. A hard reset destroys them with no undo, and it\n"
+                    "does NOT spare untracked files if paired with a delete.",
+                )
+            if "rebase" in seg:
+                fail(
+                    "`git rebase` rewrites history.",
+                    "security.md requires an explicit human trust dialog for\n"
+                    "history-modifying git operations.",
+                )
+            if "push" in seg and any(
+                t == "-f" or t.startswith("--force") for t in seg
+            ):
+                fail(
+                    "Force-push refused.",
+                    "Force-pushing a shared branch -- including the head of an\n"
+                    "open pull request -- discards commits other people pushed.\n"
+                    "The pre-push hook blocks this for every tool; this is the\n"
+                    "earlier, clearer stop.",
+                )
+            if "clean" in seg and any(
+                t.startswith("-") and "f" in t.lower() for t in seg[1:]
+            ):
+                fail(
+                    "`git clean -f` deletes untracked files.",
+                    "Untracked files are often another agent's in-progress work\n"
+                    "that no commit or reflog can recover.",
+                )
+            if discards_working_tree(seg):
+                fail(
+                    "This discards uncommitted working-tree changes.",
+                    "`git checkout -- <paths>` / `git restore <paths>` throw away\n"
+                    "edits with no undo, including edits made by another session\n"
+                    "sharing this checkout.\n"
+                    "\n"
+                    "To RESTORE a file from a commit instead (allowed):\n"
+                    "  git checkout <ref> -- <path>",
+                )
+        risky = recursive_force_delete(seg)
+        if risky:
+            fail(
+                "Recursive force-delete outside sanctioned paths: "
+                + ", ".join(risky[:4]),
+                "security.md: never `rm -rf` without explicit human approval.\n"
+                "Recursive deletes are permitted under `tmp/`, `target/`, and\n"
+                "the session scratchpad only. Untracked files deleted this way\n"
+                "are NOT recoverable from git.",
+            )
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -352,6 +528,7 @@ def main():
         segs = actionable(raw)  # None => unparseable, use raw fallbacks
         if segs is not None and not segs:
             sys.exit(0)  # inspection-only command line
+        guard_destructive(segs, raw)
         guard_cargo_clean(segs, raw)
         guard_dispatch(segs, raw)
         guard_deconflict(segs, raw)
