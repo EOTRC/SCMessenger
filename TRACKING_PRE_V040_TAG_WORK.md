@@ -6,15 +6,19 @@
 
 ---
 
-## Status Overview
+## Status Overview (updated 2026-08-07)
 
-All main branch workflows are **GREEN** at commit `a53dc099` (PRs #136, #137, #138 merged).
-Five-node fleet rollout in progress:
-- [OK] Windows CLI: rebuilt at main tip (6b2573fa)
-- [OK] Android: fresh APK installed in-place on Pixel 6a
-- [IN PROGRESS] AWS: rebuilt, new IP `54.226.67.101` (Docker Publish green)
-- [IN PROGRESS] iOS/macOS: GPT lane GO packet dispatched, in-place update test
-- [OK] iOS Build & Test: green on main
+PR #139 is open and mergeable at head `5b8b8e7b`, with all 31 CI checks green
+(including iOS Build & Simulator Test, macOS Native Tests, all four Android
+ABIs, WASM, FFI Surface Contract, and Kotlin/Swift bindings).
+The Windows implementation lane has completed T1/T2/T3/T4 and passed the
+targeted formatter, blocked-manager, and CLI message-request gates.
+Five-node rollout and field evidence remain in progress:
+- [OK] Windows Rust/CLI implementation and targeted gates
+- [OK] Android<->iOS bidirectional messaging evidence from the prior rollout
+- [IN PROGRESS] AWS relay rebuild/address propagation and custody evidence
+- [IN PROGRESS] iOS/macOS MAC LANE update and runtime evidence
+- [PENDING] full five-node G1-G6 gate, twice reproducibly
 
 ---
 
@@ -28,10 +32,10 @@ Five-node fleet rollout in progress:
 
 | Task | Priority | Description |
 |------|----------|-------------|
-| **T1 (P1)** | HIGH | Mixed-fleet block bypass: block stored under public key + inbound sender_id as identity_id (old build) misses both candidates. Fix: store BOTH identifier flavors at block-write time or add reverse index. Requires design note + adversarial review (core store change). |
-| **T2 (P3)** | MEDIUM | `identity_id_from_public_key_hex` must return `None` unless input passes `is_valid_public_key` (Ed25519 curve point). Mechanical change in `core/src/identity/keys.rs`. |
-| **T3 (P4)** | HIGH | `GetPendingMessageRequests` shows request when sender cannot be proven known-or-blocked. Change filter so UNRESOLVABLE sender is suppressed or flagged. CLI-only (`cli/src/server.rs`). |
-| **T4 (P5)** | MEDIUM | Centralize flavor resolution into `BlockedManager.is_blocked_resolved` for single policy. Refactor after T1 lands. |
+| **T1 (P1)** | HIGH | **DONE in `57c5d6a4`** — dual-flavor physical block rows, symmetric unblock/list handling, regression tests, and authenticated ingress resolution. Dedicated post-fix adversarial evidence remains part of the release gate. |
+| **T2 (P3)** | MEDIUM | **DONE in `57c5d6a4`** — `identity_id_from_public_key_hex` requires a valid Ed25519 curve point. |
+| **T3 (P4)** | HIGH | **DONE in `57c5d6a4`** — unresolved senders are suppressed from pending requests (fail closed). |
+| **T4 (P5)** | MEDIUM | **DONE in `57c5d6a4`** — callers use `BlockedManager.is_blocked_resolved` as the central flavor-resolution policy. |
 
 ---
 
@@ -49,9 +53,12 @@ Five-node fleet rollout in progress:
 3. **Possible:** Identity canonicalization drops entries during ingest.
 4. **UI Mismatch:** Android may read from Contacts store vs Ledger store.
 
-**Fix Direction (from design doc):** Gate RFC1918/topic disclosure on `LedgerEntry::AnnotateIdentity` trust level (`TrustLevel::Trusted`) in `exchange_response_entries()`. Default-deny preserved. Mixed-version compatible via sender-side filtering.
+**Fix Direction:** RFC1918-on-RFC1918 disclosure plus contact chaining is
+implemented in `exchange_response_entries()` under the resolved D1 policy.
+Default-deny for strangers is preserved; mixed-version compatibility remains
+sender-side filtered.
 
-**Blocked On:** **Operator decision on disclosure policy** (AGENTS.md rule 9 - security trade-off).
+**Status:** **IMPLEMENTED in `57c5d6a4`; pending G4 field verification.**
 
 ---
 
@@ -85,7 +92,7 @@ Five-node fleet rollout in progress:
 | **G1** | Pairwise bidirectional: every reachable pair exchanges messages both directions with receipts | Pending |
 | **G2** | Transport coverage: LAN, BLE, internet relay (with custody proof) all deliver | Pending |
 | **G3** | Delivery truth: statuses reflect receipts E2E, no false failures, outbox flushes on reconnect | Pending |
-| **G4** | Fleet convergence: every node lists full fleet within bounded window; restart re-converges without re-pair | **Blocked on ledger Phase 2 decision** |
+| **G4** | Fleet convergence: every node lists full fleet within bounded window; restart re-converges without re-pair | **D1 implemented; pending field verification** |
 | **G5** | Liveness: disrupt network → peers auto-reconnect without app restart (fleet proof of PR #137) | Pending |
 | **G6** | Provenance: all five nodes report same git stamp | Pending |
 
@@ -103,7 +110,7 @@ Five-node fleet rollout in progress:
 
 | # | Decision | Blocks |
 |---|----------|--------|
-| **D1** | Ledger Phase 2 disclosure policy (trust-scoped LAN disclosure design) | G4 fleet convergence criterion |
+| **D1** | ~~Ledger Phase 2 disclosure policy~~ — **RESOLVED 2026-08-06; implemented in `57c5d6a4`** | G4 field verification |
 | **D2** | v0.4.0 tag flavor (alpha.N vs stable) after gate passes twice | release artifacts |
 | **D3** | Accept AWS IP drift (EIP denied by IAM) or widen policy / DDNS | unattended reconnect to cloud node |
 
@@ -130,25 +137,26 @@ Five-node fleet rollout in progress:
 - `HANDOFF/gpt/AWS_RELAY_CURRENT_ADDRESS.md` — current AWS IP: `54.226.67.101`
 - `HANDOFF/gpt/GPT_GO_IOS_MACOS_POST_PR138_2026-08-05.md` — iOS/macOS in-place update packet
 - `HANDOFF/plans/V040_V050_FIVE_NODE_GATE_PLAN_2026-08-05.md` — gate criteria
-- `HANDOFF/gpt/IOS_MACOS_POST138_READY_2026-08-05.md` — GPT report (when filed)
+- `HANDOFF/gpt/GPT_MAC_PR139_TAKEOVER_2026-08-07.md` — current MAC LANE packet
+- `HANDOFF/gpt/IOS_MACOS_PR139_STATUS_2026-08-07.md` — GPT-MAC result (when filed)
 
 ---
 
 ## Dispatch Order (per _QUEUE.md)
 
-1. **Identifier-gate T1 (P1)** — design note + implementation (qwenpaid, adversarial review)
-2. **Identifier-gate T2 (P3)** — mechanical fix `keys.rs` (qwenpaid, diff mode)
-3. **Identifier-gate T3 (P4)** — CLI filter fix `server.rs` (qwenpaid, diff mode)
-4. **Ledger Phase 2** — **BLOCKED ON OPERATOR D1** — implement trust-scoped LAN disclosure
-5. **Transport BLE/LAN verification** — field test with transport evidence capture
-6. **Five-node gate execution** — twice, with recorded evidence
+1. **Identifier-gate T1-T4** — **IMPLEMENTED in `57c5d6a4`; Windows targeted gates pass**
+2. **Ledger Phase 2** — **D1 IMPLEMENTED in `57c5d6a4`; G4 field verification pending**
+3. **MAC LANE update** — build/install and runtime evidence from GPT-MAC
+4. **Transport BLE/LAN verification** — field test with transport evidence capture
+5. **Five-node gate execution** — twice, with recorded evidence
 
 ---
 
 ## Notes for Next Session
 
-- All main CI green; no PRs open except dependabot (7 vulns, 3 high)
-- Android fresh install successful; iOS/macOS in GPT lane
-- Windows node at main tip; AWS node rebuilt with new IP
-- Next actionable: wait for operator decision D1, then dispatch T1/T2/T3 via qwenpaid
-- Five-node gate runs after T1-T3 + ledger Phase 2 land
+- No unresolved GitHub review threads are present on PR #139.
+- T1-T4 and the PR’s ledger implementation are landed at `57c5d6a4`.
+- Windows targeted gates pass; full workspace/CI status and field evidence must
+  still be recorded against the exact release candidate.
+- GPT-MAC has a self-contained packet; its result file is still absent.
+- G1-G6 must be executed twice before any operator-controlled tag decision.
