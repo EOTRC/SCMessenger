@@ -1802,6 +1802,15 @@ public protocol IronCoreProtocol: AnyObject, Sendable {
      */
     func getBlockedPeerDevices(peerId: String) throws  -> [String]
 
+    /**
+     * Get the canonical peer ID (identity_id) for a given identifier.
+     * If the identifier is a valid Ed25519 public key, returns its derived
+     * identity_id. Otherwise returns the identifier unchanged.
+     * Used to map pending-request peerIds to the canonical format used by
+     * the blocked list (which deduplicates to identity_id).
+     */
+    func getCanonicalPeerId(peerId: String)  -> String?
+
     func getDeviceId()  -> String?
 
     func getDiskStats()  -> DiskStats
@@ -2747,6 +2756,22 @@ open func getAutoAdjustEngine() -> AutoAdjustEngine  {
 open func getBlockedPeerDevices(peerId: String)throws  -> [String]  {
     return try  FfiConverterSequenceString.lift(try rustCallWithError(FfiConverterTypeIronCoreError_lift) {
     uniffi_scmessenger_core_fn_method_ironcore_get_blocked_peer_devices(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(peerId),$0
+    )
+})
+}
+
+    /**
+     * Get the canonical peer ID (identity_id) for a given identifier.
+     * If the identifier is a valid Ed25519 public key, returns its derived
+     * identity_id. Otherwise returns the identifier unchanged.
+     * Used to map pending-request peerIds to the canonical format used by
+     * the blocked list (which deduplicates to identity_id).
+     */
+open func getCanonicalPeerId(peerId: String) -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+    uniffi_scmessenger_core_fn_method_ironcore_get_canonical_peer_id(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(peerId),$0
     )
@@ -11079,6 +11104,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_scmessenger_core_checksum_method_ironcore_get_blocked_peer_devices() != 13718) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_scmessenger_core_checksum_method_ironcore_get_canonical_peer_id() != 11097) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_scmessenger_core_checksum_method_ironcore_get_device_id() != 42390) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -11220,7 +11248,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_scmessenger_core_checksum_method_ironcore_register_blocked_device() != 50151) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_scmessenger_core_checksum_method_ironcore_relay_jitter_delay() != 48813) {
+    if (uniffi_scmessenger_core_checksum_method_ironcore_relay_jitter_delay() != 50290) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_scmessenger_core_checksum_method_ironcore_resolve_identity() != 64565) {
