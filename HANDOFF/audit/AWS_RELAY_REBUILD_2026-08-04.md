@@ -139,6 +139,24 @@ $ aws ec2 describe-images --owners amazon --region us-east-1 \
 ami-08bc385c9fc5afc94
 ```
 
+> **[WARNING] Do NOT reuse the `:latest` tag below to deploy a CANDIDATE build.**
+> Added 2026-08-09. The user-data script recorded here is an accurate record of
+> the 2026-08-04 rebuild and is left unaltered, but `docker-publish.yml` applies
+> `latest` only via `enable={{is_default_branch}}`. A dispatch from any non-default
+> branch (e.g. `tracking/pre-v040-tag-work`) publishes a **branch tag and a sha
+> tag** and leaves `latest` pointing at the last `main` build. Following this
+> script verbatim for a release candidate silently deploys the wrong commit while
+> the node comes up healthy and serves a `/version` -- the same
+> silent-wrong-provenance failure this rebuild was meant to resolve.
+>
+> For a candidate: take the **image digest** from the `docker-publish.yml` run,
+> `docker pull testbotz/scmessenger@sha256:<digest>`, run that digest, then verify
+> `GET /version` reports the expected commit **before** recording the node as
+> conformant. Treat that check as a gate, not a formality. See
+> `docs/rules/BUILD_AND_CI.md` ("Checks that fail as plausible emptiness").
+>
+> `:latest` remains correct for deploying whatever is current on `main`.
+
 User-data used (written to a temp file in the repo root as
 `userdata_scm_relay.txt`, deleted immediately after the launch call
 completed - matches the existing `provision-farm-sim.sh` pattern of using a

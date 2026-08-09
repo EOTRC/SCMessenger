@@ -48,9 +48,44 @@ skill):
 Compile gate: `cargo test --workspace --no-run` must pass before any task is
 considered complete.
 
+## Checks that fail as *plausible emptiness*
+
+The pipe trap below is one instance of a recurring class: **a check that did not
+run looks identical to a check that found nothing.** Every one of these has
+produced a wrong conclusion in this repo. When a command returns no output,
+confirm it *executed* before concluding the thing is absent.
+
 **Never read `$?` after a pipe.** A pipeline's exit status is the LAST
 command's, so `cargo fmt --check | head; echo $?` always reports 0 and the gate
-cannot fail. Capture the status of the command itself.
+cannot fail. Capture the status of the command itself. Piping a gate through
+`tail` for readability silently disarms it -- re-run unpiped to get a real exit
+code.
+
+**`git show <rev>:<path>` mangles dotted paths under Git Bash.** MSYS path
+conversion rewrites `<rev>:.github/workflows/x.yml` into
+`<rev>;.github\workflows\x.yml`; git then errors with `fatal: ambiguous
+argument`. With stderr redirected this reads as an empty or truncated file.
+Paths under `core/src/` usually survive, which makes the failure look random.
+Prefix with `MSYS_NO_PATHCONV=1`, and sanity-check that the output looks like
+file content.
+
+**`tasklist /FO CSV /NH` returns nothing under Git Bash.** It mangles `/FO` into
+`C:/Program Files/Git/FO`, tasklist errors, and you get a false "process not
+running". Use plain `tasklist | grep -i <name>`.
+
+**A `:latest` container tag is not a version.** `docker-publish.yml` applies
+`latest` only via `enable={{is_default_branch}}`, so a dispatch from any branch
+publishes branch and sha tags and leaves `latest` pointing at the last `main`
+build. Pulling `:latest` to deploy a candidate silently ships the wrong commit
+while the node reports healthy. **Deploy by immutable digest**, then gate on the
+node's `/version` reporting the expected commit -- treat that as a gate, not a
+formality.
+
+**Multi-model helper output can be empty while reporting success.** Reasoning
+models spend the completion budget on hidden reasoning tokens and return
+`finish_reason="length"` with `content=""`. `scripts/fusion_lite.py` now caps
+reasoning effort and falls back to the reasoning trace, but check the character
+count of what came back rather than trusting the exit status.
 
 ## Disk Space Preflight (Windows & macOS)
 
