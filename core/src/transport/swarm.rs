@@ -4093,12 +4093,14 @@ pub async fn start_swarm_with_config(
                                             //     RFC1918 check, so every LAN neighbour we had
                                             //     dialed -- subnet, host:port and peer id --
                                             //     was disclosed to internet peers.
-                                            // FusionLite (RFC1918 disclosure): pass this node's own
-                                            // listener addresses so the exchange can disclose entries
-                                            // only with observed same-subnet evidence.
+                                            // FusionLite (RFC1918 disclosure): pass only this node's
+                                            // actual listener addresses so the exchange can disclose
+                                            // entries only with observed same-subnet evidence. Do not
+                                            // include swarm.external_addresses(): those include
+                                            // peer-supplied reflection/identify observations and are
+                                            // dialability hints, not authenticated local-subnet proof.
                                             let my_listener_addrs: Vec<String> = swarm
                                                 .listeners()
-                                                .chain(swarm.external_addresses())
                                                 .map(|a| a.to_string())
                                                 .collect();
                                             let requester_addr = connection_tracker
