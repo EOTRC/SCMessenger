@@ -362,6 +362,64 @@ pub fn build_mdns_advertised_addrs(all_listeners: &[Multiaddr]) -> Vec<Multiaddr
         .collect()
 }
 
+/// Turn one trusted mDNS discovery result into a direct dial target.
+///
+/// mDNS supplies the peer identity separately from the socket address.  The
+/// normal libp2p dial path needs the `/p2p/<peer>` component when the caller
+/// wants to pin the handshake to that discovered identity.  Keep this helper
+/// deliberately strict: mDNS is a LAN discovery mechanism, so circuit,
+/// websocket, DNS and self-targeted addresses must not become automatic dials.
+#[cfg(not(target_arch = "wasm32"))]
+fn build_mdns_dial_addr(
+    local_peer_id: PeerId,
+    peer_id: PeerId,
+    addr: &Multiaddr,
+) -> Option<Multiaddr> {
+    use libp2p::multiaddr::Protocol;
+
+    if local_peer_id == peer_id
+        || addr.iter().any(|protocol| {
+            matches!(
+                protocol,
+                Protocol::P2pCircuit | Protocol::Ws(_) | Protocol::Wss(_)
+            )
+        })
+    {
+        return None;
+    }
+
+    let mut embedded_peer = None;
+    for protocol in addr.iter() {
+        if let Protocol::P2p(peer) = protocol {
+            // A direct mDNS target has at most one peer component.  Reject
+            // malformed multi-peer paths instead of silently pinning to the
+            // first component we happen to encounter.
+            if embedded_peer.replace(peer).is_some() {
+                return None;
+            }
+        }
+    }
+    if embedded_peer.is_some_and(|embedded| embedded != peer_id) {
+        return None;
+    }
+
+    let dial_addr = embedded_peer
+        .map(|_| addr.clone())
+        .unwrap_or_else(|| addr.clone().with(Protocol::P2p(peer_id)));
+
+    if !is_discoverable_multiaddr(&dial_addr)
+        || !crate::transport::addr_filter::is_dialable_multiaddr_parsed(
+            &dial_addr,
+            crate::transport::addr_filter::NetworkMode::Local,
+            crate::transport::addr_filter::DnsPolicy::Reject,
+        )
+    {
+        return None;
+    }
+
+    Some(dial_addr)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn build_routable_relay_addrs(
     relay_listen_addrs: &[Multiaddr],
@@ -2891,6 +2949,11 @@ pub async fn start_swarm_with_config(
             let mut reported_peer_info: HashMap<PeerId, (String, Vec<Multiaddr>)> = HashMap::new();
             let mut reported_peer_discoveries: std::collections::HashSet<PeerId> =
                 std::collections::HashSet::new();
+            // mDNS can report several socket addresses for one peer.  Keep one
+            // automatic direct dial in flight per peer so discovery cannot
+            // create the multi-path churn that previously destabilized the
+            // request-response connection bookkeeping.
+            let mut mdns_dial_attempted: HashSet<PeerId> = HashSet::new();
 
             // Mycorrhizal routing: periodic optimization tick (every 30s)
             let mut routing_optimization_interval = tokio::time::interval(Duration::from_secs(30));
@@ -4536,7 +4599,51 @@ pub async fn start_swarm_with_config(
                                 for (peer_id, addr) in peers {
                                     tracing::info!("mDNS discovered peer: {} at {}", peer_id, addr);
                                     if is_discoverable_multiaddr(&addr) {
-                                        swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
+                                        swarm
+                                            .behaviour_mut()
+                                            .kademlia
+                                            .add_address(&peer_id, addr.clone());
+                                    }
+
+                                    // Discovery must be self-initializing: a
+                                    // peer learned from mDNS cannot identify
+                                    // itself or exchange a ledger until we
+                                    // actually open the direct connection.
+                                    // Queue exactly one validated address per
+                                    // peer; failed attempts are removed below
+                                    // so a later discovery event can retry.
+                                    if !swarm.connected_peers().any(|connected| *connected == peer_id)
+                                        && mdns_dial_attempted.insert(peer_id)
+                                    {
+                                        if let Some(dial_addr) = build_mdns_dial_addr(
+                                            local_peer_id,
+                                            peer_id,
+                                            &addr,
+                                        ) {
+                                            match swarm.dial(dial_addr.clone()) {
+                                                Ok(_) => tracing::info!(
+                                                    "mDNS auto-connect queued for {} via {}",
+                                                    peer_id,
+                                                    dial_addr
+                                                ),
+                                                Err(error) => {
+                                                    mdns_dial_attempted.remove(&peer_id);
+                                                    tracing::debug!(
+                                                        "mDNS auto-connect rejected for {} via {}: {}",
+                                                        peer_id,
+                                                        dial_addr,
+                                                        error
+                                                    );
+                                                }
+                                            }
+                                        } else {
+                                            mdns_dial_attempted.remove(&peer_id);
+                                            tracing::debug!(
+                                                "mDNS auto-connect skipped for {}: address {} failed validation",
+                                                peer_id,
+                                                addr
+                                            );
+                                        }
                                     }
 
                                     bootstrap_capability.add_peer(peer_id);
@@ -4558,6 +4665,7 @@ pub async fn start_swarm_with_config(
                                 mdns::Event::Expired(peers)
                             )) => {
                                 for (peer_id, _addr) in peers {
+                                    mdns_dial_attempted.remove(&peer_id);
                                     tracing::info!("mDNS peer expired: {}", peer_id);
                                     let _ = event_tx.send(SwarmEvent2::PeerDisconnected(peer_id)).await;
                                 }
@@ -5071,6 +5179,9 @@ pub async fn start_swarm_with_config(
                             }
                             SwarmEvent::ConnectionClosed { peer_id, .. } => {
                                 tracing::info!("[ERROR] Disconnected from {}", peer_id);
+                                // Allow a later mDNS advertisement to restore
+                                // a peer after its last direct path closes.
+                                mdns_dial_attempted.remove(&peer_id);
                                 connection_tracker.remove_connection(&peer_id);
                                 // Allow re-exchange if they reconnect
                                 ledger_exchanged_peers.remove(&peer_id);
@@ -5164,6 +5275,9 @@ pub async fn start_swarm_with_config(
 
                             // Handle outgoing connection errors gracefully — don't panic
                             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                                if let Some(peer_id) = peer_id.as_ref() {
+                                    mdns_dial_attempted.remove(peer_id);
+                                }
                                 // Downgraded to debug: Kademlia DHT explores many stale addresses
                                 // from the routing table; timeouts here are expected churn, not
                                 // actionable errors. Relay/identity failures surface at info/warn.
@@ -7517,11 +7631,12 @@ use libp2p::{gossipsub, request_response};
 #[cfg(test)]
 mod tests {
     use super::{
-        build_routable_relay_addrs, extract_ed25519_public_key_from_peer_id, peer_is_blocked,
-        should_apply_delivery_convergence_marker, validate_delivery_convergence_marker_shape,
-        verify_registration_message, DeliveryConvergenceMarker, PendingCustodyDispatch,
-        PendingMessage, RelayAbuseGuardrails, RELAY_DUPLICATE_WINDOW_MS,
-        RELAY_PEER_BUCKET_BURST_CAPACITY, RELAY_PEER_BUCKET_REFILL_PER_SEC,
+        build_mdns_dial_addr, build_routable_relay_addrs, extract_ed25519_public_key_from_peer_id,
+        peer_is_blocked, should_apply_delivery_convergence_marker,
+        validate_delivery_convergence_marker_shape, verify_registration_message,
+        DeliveryConvergenceMarker, PendingCustodyDispatch, PendingMessage, RelayAbuseGuardrails,
+        RELAY_DUPLICATE_WINDOW_MS, RELAY_PEER_BUCKET_BURST_CAPACITY,
+        RELAY_PEER_BUCKET_REFILL_PER_SEC,
     };
     use crate::identity::IdentityKeys;
     use crate::store::relay_custody::RelayCustodyStore;
@@ -7795,6 +7910,41 @@ mod tests {
         assert!(filtered[0]
             .to_string()
             .starts_with("/ip4/192.168.0.230/tcp/9101"));
+    }
+
+    #[test]
+    fn mdns_dial_target_pins_discovered_peer_identity() {
+        let local = PeerId::random();
+        let discovered = PeerId::random();
+        let addr: Multiaddr = "/ip4/192.168.0.230/tcp/9101".parse().unwrap();
+
+        let dial_addr = build_mdns_dial_addr(local, discovered, &addr).unwrap();
+        assert_eq!(
+            dial_addr,
+            addr.with(libp2p::multiaddr::Protocol::P2p(discovered))
+        );
+    }
+
+    #[test]
+    fn mdns_dial_target_rejects_self_and_conflicting_peer_id() {
+        let local = PeerId::random();
+        let other = PeerId::random();
+        let addr: Multiaddr = "/ip4/192.168.0.230/tcp/9101".parse().unwrap();
+        assert!(build_mdns_dial_addr(local, local, &addr).is_none());
+
+        let conflicting = addr.with(libp2p::multiaddr::Protocol::P2p(other));
+        assert!(build_mdns_dial_addr(local, PeerId::random(), &conflicting).is_none());
+    }
+
+    #[test]
+    fn mdns_dial_target_rejects_relay_and_non_routable_addresses() {
+        let local = PeerId::random();
+        let discovered = PeerId::random();
+        let relay: Multiaddr = "/ip4/192.168.0.230/tcp/9101/p2p-circuit".parse().unwrap();
+        let loopback: Multiaddr = "/ip4/127.0.0.1/tcp/9101".parse().unwrap();
+
+        assert!(build_mdns_dial_addr(local, discovered, &relay).is_none());
+        assert!(build_mdns_dial_addr(local, discovered, &loopback).is_none());
     }
 
     #[test]
