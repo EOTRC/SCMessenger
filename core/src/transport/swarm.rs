@@ -1666,10 +1666,11 @@ pub enum SwarmCommand {
     /// verbatim, i.e. the exact opposite of every rule the RESPONSE path
     /// enforces. Two doors onto the same protocol, one of them unguarded.
     ///
-    /// The payload is now built inside the handler from
-    /// `LedgerManager::exchange_response_entries`, the same function the
-    /// response arm uses, so both directions of the protocol share one
-    /// predicate and no caller can supply an unfiltered list.
+    /// The payload is now built inside the handler. Inbound requests use the
+    /// connection-bound disclosure predicate; application-triggered outbound
+    /// requests use the public-only variant because request-response chooses
+    /// its connection after the payload is constructed. No caller can supply
+    /// an unfiltered list.
     ShareLedger { peer_id: PeerId },
     /// Get listening addresses
     GetListeners { reply: mpsc::Sender<Vec<Multiaddr>> },
@@ -3830,7 +3831,11 @@ pub async fn start_swarm_with_config(
                             // discovery mechanism where connecting to ONE peer bootstraps
                             // knowledge of the ENTIRE mesh.
                             SwarmEvent::Behaviour(super::behaviour::IronCoreBehaviourEvent::LedgerExchange(
-                                request_response::Event::Message { peer, message, .. }
+                                request_response::Event::Message {
+                                    peer,
+                                    connection_id,
+                                    message,
+                                }
                             )) => {
                                 match message {
                                     request_response::Message::Request { request, channel, .. } => {
@@ -3989,7 +3994,7 @@ pub async fn start_swarm_with_config(
                                                 .map(|a| a.to_string())
                                                 .collect();
                                             let requester_addr = connection_tracker
-                                                .get_connection(&peer)
+                                                .get_connection_by_id(&peer, &connection_id.to_string())
                                                 .map(|conn| conn.remote_addr.to_string());
                                             response_peers = core_handle
                                                 .as_ref()
@@ -4813,9 +4818,14 @@ pub async fn start_swarm_with_config(
                             // all 27 listeners.
                             SwarmEvent::ConnectionClosed {
                                 peer_id,
+                                connection_id,
                                 num_established,
                                 ..
                             } if num_established > 0 => {
+                                connection_tracker.remove_connection_by_id(
+                                    &peer_id,
+                                    &connection_id.to_string(),
+                                );
                                 tracing::debug!(
                                     "Connection to {} closed, {} still established; skipping peer teardown",
                                     peer_id,
@@ -5660,35 +5670,28 @@ pub async fn start_swarm_with_config(
                                 // Send our known peer list to the specified peer.
                                 //
                                 // ONE DISCLOSURE DOOR (re-review NEW-2). The payload is
-                                // built here, from the SAME function the response arm
-                                // uses, rather than being handed in by the application
-                                // layer. The CLI used to supply it via
+                                // built here rather than being handed in by the
+                                // application layer. The CLI used to supply it via
                                 // `ConnectionLedger::to_shared_entries()`, which had no
                                 // cap, no proven-peer filter, no address filter and
                                 // copied `known_topics` verbatim -- the field the
                                 // response path deliberately blanks. A request is just
                                 // as much a disclosure as a response.
                                 if !ledger_exchanged_peers.contains(&peer_id) {
-                                    // FusionLite (RFC1918 disclosure): pass this node's own
-                                    // listener addresses so the request carries private entries
-                                    // only with observed same-subnet evidence.
-                                    let my_listener_addrs: Vec<String> = swarm
-                                        .listeners()
-                                        .chain(swarm.external_addresses())
-                                        .map(|a| a.to_string())
-                                        .collect();
-                                    let requester_addr = connection_tracker
-                                        .get_connection(&peer_id)
-                                        .map(|conn| conn.remote_addr.to_string());
+                                    // This outbound request is built before
+                                    // request-response selects a connection, so
+                                    // it cannot safely carry private entries.
+                                    // Send only globally routable entries here;
+                                    // the peer's response is built in the
+                                    // connection-bound request arm above.
                                     let entries: Vec<SharedPeerEntry> = core_handle
                                         .as_ref()
                                         .and_then(|w| w.upgrade())
                                         .map(|core| {
-                                            core.ledger_manager.exchange_response_entries_for_request(
+                                            core.ledger_manager.exchange_response_entries(
                                                 LEDGER_EXCHANGE_MAX_RESPONSE_PEERS,
                                                 &peer_id.to_string(),
-                                                requester_addr.as_deref(),
-                                                &my_listener_addrs,
+                                                &[],
                                             )
                                         })
                                         .unwrap_or_default();
@@ -6874,9 +6877,14 @@ pub async fn start_swarm_with_config(
                             // rationale and the observed panic signature.
                             SwarmEvent::ConnectionClosed {
                                 peer_id,
+                                connection_id,
                                 num_established,
                                 ..
                             } if num_established > 0 => {
+                                connection_tracker.remove_connection_by_id(
+                                    &peer_id,
+                                    &connection_id.to_string(),
+                                );
                                 tracing::debug!(
                                     "Connection to {} closed, {} still established; skipping peer teardown (WASM)",
                                     peer_id,

@@ -118,14 +118,36 @@ impl BlockedManager {
     ///
     /// A valid Ed25519 public key has a derived identity_id flavor. An
     /// identity_id cannot be reversed into a public key, so identity_id input
-    /// yields only itself.
+    /// yields only itself. An inline Ed25519 libp2p PeerId is expanded to its
+    /// public-key and identity_id aliases so transport ingress enforces blocks
+    /// created by the UI under either canonical identifier.
     pub fn resolved_identifiers(&self, peer_id: &str) -> Vec<String> {
         let (raw_peer_id, flavor) = split_identifier_flavor(peer_id);
         let mut identifiers = vec![raw_peer_id.to_string()];
-        if flavor == IdentifierFlavor::PublicKey {
-            if let Some(derived_id) = identity_id_from_public_key_hex(raw_peer_id) {
-                identifiers.push(derived_id);
+        if flavor != IdentifierFlavor::Legacy {
+            push_unique(&mut identifiers, peer_id.to_string());
+        }
+
+        match flavor {
+            IdentifierFlavor::PublicKey => {
+                if let Some(derived_id) = identity_id_from_public_key_hex(raw_peer_id) {
+                    push_unique(&mut identifiers, derived_id);
+                }
             }
+            IdentifierFlavor::Legacy => {
+                if let Some(public_key) = public_key_hex_from_peer_id(raw_peer_id) {
+                    // Current rows use the unprefixed raw value after
+                    // split_identifier_flavor(); the prefixed alias keeps
+                    // pre-canonicalization rows enforceable until migration.
+                    push_unique(&mut identifiers, public_key.clone());
+                    push_unique(&mut identifiers, format!("pk:{public_key}"));
+                    if let Some(derived_id) = identity_id_from_public_key_hex(&public_key) {
+                        push_unique(&mut identifiers, derived_id.clone());
+                        push_unique(&mut identifiers, format!("id:{derived_id}"));
+                    }
+                }
+            }
+            IdentifierFlavor::IdentityId => {}
         }
         identifiers
     }
@@ -664,6 +686,26 @@ fn split_identifier_flavor(peer_id: &str) -> (&str, IdentifierFlavor) {
     }
 }
 
+fn push_unique(identifiers: &mut Vec<String>, identifier: String) {
+    if !identifiers.iter().any(|existing| existing == &identifier) {
+        identifiers.push(identifier);
+    }
+}
+
+/// Extract an inline Ed25519 public key from a libp2p PeerId. Hashed PeerIds
+/// intentionally return `None`: their public key is not recoverable from the
+/// PeerId and must be resolved from an authenticated contact record instead.
+fn public_key_hex_from_peer_id(peer_id: &str) -> Option<String> {
+    let peer_id = peer_id.parse::<libp2p::PeerId>().ok()?;
+    let multihash = peer_id.as_ref();
+    if multihash.code() != 0 {
+        return None;
+    }
+    let public_key = libp2p::identity::PublicKey::try_decode_protobuf(multihash.digest()).ok()?;
+    let ed25519 = public_key.try_into_ed25519().ok()?;
+    Some(hex::encode(ed25519.to_bytes()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1093,6 +1135,57 @@ mod tests {
         assert!(manager.is_blocked(&derived_id, None).unwrap());
         // The public key is NOT stored (no reverse alias possible), but the
         // ingress gate derives identity_id from inbound pk and will match.
+    }
+
+    #[test]
+    fn inline_peer_id_matches_ui_public_key_block() {
+        let backend = Arc::new(MemoryStorage::new());
+        let manager = BlockedManager::new(backend);
+        let keypair = crate::identity::keys::KeyPair::generate();
+        let public_key = hex::encode(keypair.verifying_key().as_bytes());
+        let peer_id = libp2p::identity::PublicKey::from(
+            libp2p::identity::ed25519::PublicKey::try_from_bytes(
+                &keypair.verifying_key().to_bytes(),
+            )
+            .unwrap(),
+        )
+        .to_peer_id()
+        .to_string();
+
+        manager
+            .block(BlockedIdentity::new(format!("pk:{public_key}")))
+            .unwrap();
+
+        assert!(
+            manager.is_blocked(&peer_id, None).unwrap(),
+            "transport PeerId must resolve to the UI's public-key block"
+        );
+    }
+
+    #[test]
+    fn legacy_prefixed_peer_id_rows_remain_enforceable() {
+        let backend = Arc::new(MemoryStorage::new());
+        let manager = BlockedManager::new(backend.clone());
+        let keypair = crate::identity::keys::KeyPair::generate();
+        let public_key = hex::encode(keypair.verifying_key().as_bytes());
+        let peer_id = libp2p::identity::PublicKey::from(
+            libp2p::identity::ed25519::PublicKey::try_from_bytes(
+                &keypair.verifying_key().to_bytes(),
+            )
+            .unwrap(),
+        )
+        .to_peer_id()
+        .to_string();
+        let legacy = BlockedIdentity::new(format!("pk:{public_key}"));
+        let value = serde_json::to_vec(&legacy).unwrap();
+
+        // Simulate a pre-canonicalization row whose stored value retained the
+        // prefix instead of the normalized raw key.
+        backend
+            .put(legacy.storage_key().as_bytes(), &value)
+            .unwrap();
+
+        assert!(manager.is_blocked(&peer_id, None).unwrap());
     }
 
     #[test]
