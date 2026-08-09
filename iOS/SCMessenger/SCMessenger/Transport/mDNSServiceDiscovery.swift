@@ -79,7 +79,9 @@ final class mDNSServiceDiscovery: NSObject {
         let generation = advertisingGeneration
         let identity = meshRepository?.getFullIdentityInfo()
         let advertisedPeerId = identity?.libp2pPeerId?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let advertisedServiceName = advertisedPeerId?.isEmpty == false ? advertisedPeerId! : serviceName
+        let advertisedServiceName = advertisedPeerId.flatMap { peerId in
+            peerId.isEmpty ? nil : peerId
+        } ?? serviceName
         logger.info("Starting mDNS advertising for \(advertisedServiceName) on port \(port)")
         let services = serviceTypes.map { serviceType in
             let service = NetService(
