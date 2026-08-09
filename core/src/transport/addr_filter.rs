@@ -452,7 +452,9 @@ pub fn is_disclosable_multiaddr(multiaddr: &str) -> bool {
 /// not sufficient: it describes this node, not the peer receiving the data.
 /// Missing or relayed requester addresses fail closed. We use /24 for private
 /// IPv4 and /64 for ULA IPv6, which is deliberately narrower than the RFC1918
-/// address classes.
+/// address classes. CGNAT is accepted as a dialable private class elsewhere,
+/// but it is not evidence of local adjacency here because unrelated carrier
+/// subscribers can collide within the same /24.
 pub fn is_disclosable_on_rfc1918_network(
     multiaddr: &str,
     requester_addr: Option<&str>,
@@ -488,7 +490,10 @@ pub fn is_disclosable_on_rfc1918_network(
     let Some(requester_ip) = first_ip_component(requester_addr) else {
         return false;
     };
-    if !is_safe_private_ip(&requester_ip) {
+    // CGNAT is shared address space, not proof that the requester is on our
+    // local network. It may remain dialable in Local mode, but it must not
+    // authorize private-ledger disclosure.
+    if !is_private_adjacency_ip(&requester_ip) {
         return false;
     }
 
@@ -499,16 +504,16 @@ pub fn is_disclosable_on_rfc1918_network(
         return false;
     }
 
-    // When the node has concrete listener addresses, require the observed
-    // requester to be on one of those local subnets too. Wildcard-only
-    // listeners carry no usable subnet evidence, so the authenticated direct
-    // observed address remains the source of truth in that case.
+    // Require concrete listener evidence as well as an observed direct
+    // requester. Wildcard-only listeners, DNS-only listeners, and the startup
+    // window before a concrete listen address is reported carry no usable
+    // local-subnet evidence, so they must fail closed.
     let concrete_local_ips: Vec<_> = my_addrs
         .iter()
         .filter_map(|a| first_ip_component(a))
         .collect();
-    concrete_local_ips.is_empty()
-        || concrete_local_ips
+    !concrete_local_ips.is_empty()
+        && concrete_local_ips
             .iter()
             .any(|local_ip| same_private_subnet(local_ip, &requester_ip))
 }
@@ -546,6 +551,31 @@ fn is_safe_private_ip(ip: &std::net::IpAddr) -> bool {
                             && !v4.is_broadcast()
                             && (v4.is_private() || is_cgnat(&v4))
                     }))
+        }
+    }
+}
+
+/// Returns true only for an address class that can provide local-adjacency
+/// evidence. Unlike [`is_safe_private_ip`], this deliberately excludes CGNAT:
+/// the same carrier /24 can contain unrelated subscribers.
+fn is_private_adjacency_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let ip_addr = std::net::IpAddr::V4(*ip);
+            is_safe_private_ip(&ip_addr) && ip.is_private()
+        }
+        std::net::IpAddr::V6(ip) => {
+            let ip_addr = std::net::IpAddr::V6(*ip);
+            if !is_safe_private_ip(&ip_addr) {
+                return false;
+            }
+            if (ip.segments()[0] & 0xfe00) == 0xfc00 {
+                return true;
+            }
+            embedded_ipv4(ip).is_some_and(|v4| {
+                let ip_addr = std::net::IpAddr::V4(v4);
+                is_safe_private_ip(&ip_addr) && v4.is_private()
+            })
         }
     }
 }
@@ -1423,6 +1453,30 @@ mod tests {
             "/ip4/10.0.0.42/tcp/9001",
             None,
             &local_addrs,
+        ));
+    }
+
+    #[test]
+    fn rfc1918_disclosure_rejects_cgnat_requester_same_subnet_collision() {
+        // Carrier-grade NAT /24s can contain unrelated subscribers. A shared
+        // 100.64/24 is therefore not evidence that the requester is our LAN
+        // neighbour, even when the entry and listener are in that /24.
+        let local_addrs = vec!["/ip4/100.64.0.10/tcp/9001".to_string()];
+        assert!(!is_disclosable_on_rfc1918_network(
+            "/ip4/100.64.0.12/tcp/9001",
+            Some("/ip4/100.64.0.11/tcp/9001"),
+            &local_addrs,
+        ));
+    }
+
+    #[test]
+    fn rfc1918_disclosure_requires_concrete_local_listener_evidence() {
+        // An observed requester and matching entry are insufficient while the
+        // listener list is empty (startup, wildcard-only, or DNS-only state).
+        assert!(!is_disclosable_on_rfc1918_network(
+            "/ip4/192.168.1.100/tcp/9001",
+            Some("/ip4/192.168.1.20/tcp/9001"),
+            &[],
         ));
     }
 
