@@ -14,9 +14,23 @@ tight loop with no backoff, no retry cap, and no socket re-creation. When the
 server socket dies the failure is permanent, so the loop spins at CPU speed
 logging a full stack trace on every iteration.
 
-Measured on a Pixel 6a: **220,504 iterations in 37 minutes** (17:56:03 ->
-18:33:00), roughly **99 iterations per second**, each emitting a 7+ frame stack
-trace.
+Measured on a Pixel 6a, per emitting process:
+
+| pid | window (HST) | duration | iterations | rate |
+|---|---|---|---|---|
+| 30318 | 17:56:03 | -- | **1** | single failure, no spin |
+| 1358 | 18:27:10 -> 18:30:10 | 3m00s | 50,397 | ~280 iterations/sec |
+| 5157 | 18:30:14 -> 18:32:58 | 2m44s | 170,107 | **~1,037 iterations/sec** |
+| 6116 | 18:33:00 | -- | **1** | single failure, no spin |
+
+Totals: **220,504 iterations** in two bursts of **5m44s** combined, emitting
+**2,866,556 log lines** -- **75.4% of the entire 3,802,158-line capture**. Peak
+output is roughly **13,500 log lines/sec**, each iteration carrying a 13-line
+stack trace.
+
+**The spin is conditional, not deterministic.** Two processes hit exactly one
+accept failure and did NOT enter the loop. Do not build a repro on the
+assumption that restarting the app reproduces it.
 
 ## The defect
 
@@ -103,9 +117,20 @@ Three separate problems:
 | 18:32:58 | app proc 5157 killed; 18:32:59 proc 6116 starts (current) |
 | 18:33:00 | accept-spin ends (with the process that hosted it) |
 
-Note the spin **began 33 minutes before** the Bluetooth stack death, so the BT
-process death is not its cause. The spin spans multiple app processes, so it is
-reproducible per-process rather than a one-off.
+## Trigger is NOT yet identified
+
+Two operator actions were initially suspected and both are ruled out by timing:
+
+- Burst 1 began **18:27:10**, about **1m44s before** Wi-Fi was switched off
+  (18:28:54). Wi-Fi-off is not the trigger.
+- Burst 1 also began **2m12s before** the Bluetooth stack death (18:29:22). The
+  BT process death is not the cause either.
+
+The defect is also **latent right now**: current process 6116 emitted zero
+`BleL2capManager` lines in a live 10-second sample and sits at 0.0% CPU. A naive
+"watch it spin" reproduction will show nothing on a healthy socket. Whatever
+puts the server socket into the terminal state is still unidentified -- finding
+it is part of this ticket.
 
 ## Suggested fix
 
