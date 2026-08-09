@@ -653,10 +653,10 @@ pub fn is_recordable_multiaddr(multiaddr: &str) -> bool {
                 has_circuit = true;
             }
             Protocol::Ip4(_) | Protocol::Ip6(_) => has_ip_transport = true,
-            Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_) | Protocol::Dnsaddr(_) => {
-                if !has_circuit {
-                    return false;
-                }
+            Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_) | Protocol::Dnsaddr(_)
+                if !has_circuit =>
+            {
+                return false;
             }
             _ => {}
         }
