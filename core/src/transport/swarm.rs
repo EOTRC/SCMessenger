@@ -61,6 +61,28 @@ use web_time::{Duration, Instant};
 #[cfg(not(target_arch = "wasm32"))]
 use web_time::{Duration, Instant, UNIX_EPOCH};
 
+/// Blocked peers must not reach any protocol that can disclose topology or
+/// consume relay/custody resources. Missing core state fails closed.
+fn peer_is_blocked(core_handle: &Option<Weak<crate::IronCore>>, peer_id: PeerId) -> bool {
+    core_handle
+        .as_ref()
+        .and_then(|weak| weak.upgrade())
+        .map(|core| {
+            core.is_peer_blocked(peer_id.to_string(), None)
+                .unwrap_or(true)
+        })
+        .unwrap_or(true)
+}
+
+fn empty_ledger_exchange_response() -> LedgerExchangeResponse {
+    LedgerExchangeResponse {
+        version_tag: 1,
+        peers: Vec::new(),
+        new_peers_learned: 0,
+        version: 1,
+    }
+}
+
 /// Returns true if a Multiaddr is suitable for discovery (local or global).
 ///
 /// We exclude:
@@ -3458,13 +3480,17 @@ pub async fn start_swarm_with_config(
                             }
 
                             SwarmEvent::Behaviour(super::behaviour::IronCoreBehaviourEvent::AddressReflection(
-                                request_response::Event::Message { peer, message, .. }
+                                request_response::Event::Message {
+                                    peer,
+                                    connection_id,
+                                    message,
+                                }
                             )) => {
                                 match message {
                                     request_response::Message::Request { request, channel, .. } => {
                                         // Peer is requesting address reflection
                                         let observed_addr = connection_tracker
-                                            .get_connection(&peer)
+                                            .get_connection_by_id(&peer, &connection_id.to_string())
                                             .and_then(|conn| ConnectionTracker::extract_socket_addr(&conn.remote_addr))
                                             .unwrap_or_else(|| "0.0.0.0:0".parse().expect("static socket addr parse cannot fail"));
 
@@ -3572,6 +3598,21 @@ pub async fn start_swarm_with_config(
                             )) => {
                                 match message {
                                     request_response::Message::Request { request, channel, .. } => {
+                                        if peer_is_blocked(&core_handle, peer) {
+                                            tracing::warn!(
+                                                "Blocked peer {} attempted relay/custody admission; refusing",
+                                                peer
+                                            );
+                                            let _ = swarm.behaviour_mut().relay.send_response(
+                                                channel,
+                                                RelayResponse {
+                                                    accepted: false,
+                                                    error: Some("blocked".to_string()),
+                                                    message_id: request.message_id,
+                                                },
+                                            );
+                                            continue;
+                                        }
                                         tracing::info!("Relay request from {} for message {}", peer, request.message_id);
 
                                         // Enforce relay budget — reset counter hourly
@@ -3837,6 +3878,19 @@ pub async fn start_swarm_with_config(
                                     message,
                                 }
                             )) => {
+                                if peer_is_blocked(&core_handle, peer) {
+                                    tracing::warn!(
+                                        "Blocked peer {} attempted ledger exchange; refusing topology disclosure",
+                                        peer
+                                    );
+                                    if let request_response::Message::Request { channel, .. } = message {
+                                        let _ = swarm
+                                            .behaviour_mut()
+                                            .ledger_exchange
+                                            .send_response(channel, empty_ledger_exchange_response());
+                                    }
+                                    continue;
+                                }
                                 match message {
                                     request_response::Message::Request { request, channel, .. } => {
                                         // RATE LIMIT BEFORE ANY WORK (re-review NEW-5).
@@ -4826,6 +4880,10 @@ pub async fn start_swarm_with_config(
                                     &peer_id,
                                     &connection_id.to_string(),
                                 );
+                                // A different live path may now be selected. Force a
+                                // fresh ledger exchange so failover cannot leave this
+                                // peer with stale topology knowledge.
+                                ledger_exchanged_peers.remove(&peer_id);
                                 tracing::debug!(
                                     "Connection to {} closed, {} still established; skipping peer teardown",
                                     peer_id,
@@ -5677,7 +5735,12 @@ pub async fn start_swarm_with_config(
                                 // copied `known_topics` verbatim -- the field the
                                 // response path deliberately blanks. A request is just
                                 // as much a disclosure as a response.
-                                if !ledger_exchanged_peers.contains(&peer_id) {
+                                if peer_is_blocked(&core_handle, peer_id) {
+                                    tracing::warn!(
+                                        "Refusing outbound ledger exchange with blocked peer {}",
+                                        peer_id
+                                    );
+                                } else if !ledger_exchanged_peers.contains(&peer_id) {
                                     // This outbound request is built before
                                     // request-response selects a connection, so
                                     // it cannot safely carry private entries.
@@ -6240,7 +6303,12 @@ pub async fn start_swarm_with_config(
                                 // RESPONSE arm below already replies empty for the same
                                 // reason. A browser node still LEARNS from the peers it
                                 // asks, which is what the request is for.
-                                if !ledger_exchanged_peers.contains(&peer_id) {
+                                if peer_is_blocked(&core_handle, peer_id) {
+                                    tracing::warn!(
+                                        "Refusing outbound ledger exchange with blocked peer {} (WASM)",
+                                        peer_id
+                                    );
+                                } else if !ledger_exchanged_peers.contains(&peer_id) {
                                     let entries: Vec<SharedPeerEntry> = Vec::new();
                                     let request = LedgerExchangeRequest {
                                         version_tag: 1,
@@ -6477,10 +6545,10 @@ pub async fn start_swarm_with_config(
                             }
                             SwarmEvent::Behaviour(super::behaviour::IronCoreBehaviourEvent::AddressReflection(ev)) => {
                                 match ev {
-                                    request_response::Event::Message { peer, message, .. } => match message {
+                                    request_response::Event::Message { peer, connection_id, message } => match message {
                                         request_response::Message::Request { request, channel, .. } => {
                                             let observed_addr = connection_tracker
-                                                .get_connection(&peer)
+                                                .get_connection_by_id(&peer, &connection_id.to_string())
                                                 .and_then(|conn| ConnectionTracker::extract_socket_addr(&conn.remote_addr))
                                                 .unwrap_or_else(|| "0.0.0.0:0".parse().expect("static socket addr parse cannot fail"));
 
@@ -6512,6 +6580,21 @@ pub async fn start_swarm_with_config(
                                 match ev {
                                     request_response::Event::Message { peer, message, .. } => match message {
                                     request_response::Message::Request { request, channel, .. } => {
+                                            if peer_is_blocked(&core_handle, peer) {
+                                                tracing::warn!(
+                                                    "Blocked peer {} attempted relay/custody admission (WASM); refusing",
+                                                    peer
+                                                );
+                                                let _ = swarm.behaviour_mut().relay.send_response(
+                                                    channel,
+                                                    RelayResponse {
+                                                        accepted: false,
+                                                        error: Some("blocked".to_string()),
+                                                        message_id: request.message_id,
+                                                    },
+                                                );
+                                                continue;
+                                            }
                                             let now_ms = js_sys::Date::now() as u64;
                                             if js_sys::Date::now() - relay_hour_start >= 3_600_000.0 {
                                                 relay_count_this_hour = 0;
@@ -6696,6 +6779,19 @@ pub async fn start_swarm_with_config(
                             }
                             SwarmEvent::Behaviour(super::behaviour::IronCoreBehaviourEvent::LedgerExchange(ev)) => {
                                 if let request_response::Event::Message { peer, message, .. } = ev {
+                                    if peer_is_blocked(&core_handle, peer) {
+                                        tracing::warn!(
+                                            "Blocked peer {} attempted ledger exchange (WASM); refusing",
+                                            peer
+                                        );
+                                        if let request_response::Message::Request { channel, .. } = message {
+                                            let _ = swarm
+                                                .behaviour_mut()
+                                                .ledger_exchange
+                                                .send_response(channel, empty_ledger_exchange_response());
+                                        }
+                                        continue;
+                                    }
                                     match message {
                                         request_response::Message::Request { request, channel, .. } => {
                                             // Cap before the clone, same reasoning and same
@@ -6885,6 +6981,7 @@ pub async fn start_swarm_with_config(
                                     &peer_id,
                                     &connection_id.to_string(),
                                 );
+                                ledger_exchanged_peers.remove(&peer_id);
                                 tracing::debug!(
                                     "Connection to {} closed, {} still established; skipping peer teardown (WASM)",
                                     peer_id,
@@ -7143,17 +7240,37 @@ use libp2p::{gossipsub, request_response};
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_ed25519_public_key_from_peer_id, should_apply_delivery_convergence_marker,
-        validate_delivery_convergence_marker_shape, verify_registration_message,
-        DeliveryConvergenceMarker, PendingCustodyDispatch, PendingMessage, RelayAbuseGuardrails,
-        RELAY_DUPLICATE_WINDOW_MS, RELAY_PEER_BUCKET_BURST_CAPACITY,
-        RELAY_PEER_BUCKET_REFILL_PER_SEC,
+        extract_ed25519_public_key_from_peer_id, peer_is_blocked,
+        should_apply_delivery_convergence_marker, validate_delivery_convergence_marker_shape,
+        verify_registration_message, DeliveryConvergenceMarker, PendingCustodyDispatch,
+        PendingMessage, RelayAbuseGuardrails, RELAY_DUPLICATE_WINDOW_MS,
+        RELAY_PEER_BUCKET_BURST_CAPACITY, RELAY_PEER_BUCKET_REFILL_PER_SEC,
     };
     use crate::identity::IdentityKeys;
     use crate::store::relay_custody::RelayCustodyStore;
     use crate::transport::RegistrationMessage;
     use libp2p::{Multiaddr, PeerId};
     use std::collections::HashMap;
+    use std::sync::Arc;
+
+    #[test]
+    fn protocol_admission_fails_closed_and_honors_blocked_peer() {
+        let peer = PeerId::random();
+        assert!(peer_is_blocked(&None, peer));
+
+        let core = Arc::new(crate::IronCore::new());
+        core.grant_consent();
+        core.initialize_identity()
+            .expect("test identity initialization must succeed");
+        core.block_peer(peer.to_string(), None, Some("test".to_string()))
+            .expect("test block must succeed");
+
+        assert!(peer_is_blocked(&Some(Arc::downgrade(&core)), peer));
+        assert!(!peer_is_blocked(
+            &Some(Arc::downgrade(&core)),
+            PeerId::random()
+        ));
+    }
 
     #[test]
     fn abusive_peer_burst_is_rate_limited_but_other_peer_still_passes() {
