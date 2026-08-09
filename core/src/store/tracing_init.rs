@@ -47,8 +47,19 @@ pub fn init_file_tracing(log_directory: &str) -> Result<(), Box<dyn std::error::
         .with_file(false)
         .with_line_number(false);
 
-    // ENV-based filter (defaults to INFO if RUST_LOG not set)
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // ENV-based filter. RUST_LOG is unavailable on mobile (there is no shell
+    // to export it from before the app process starts), so this fallback is
+    // the only lever mobile builds have. Debug/dev cargo profiles get richer
+    // delivery diagnostics; optimized/release profiles keep the quieter
+    // default to bound on-device log growth. RUST_LOG, when available, still
+    // takes precedence over this fallback.
+    #[cfg(debug_assertions)]
+    let default_filter = "info,scmessenger_core::transport=debug,scmessenger_core::store::outbox=debug,scmessenger_core::store::inbox=debug,scmessenger_core::relay=debug";
+    #[cfg(not(debug_assertions))]
+    let default_filter = "info";
+
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
     // Install global subscriber (try_init = mobile-safe for warm boots)
     tracing_subscriber::registry()

@@ -53,7 +53,10 @@ GCP_ZONE="us-central1-a"
 GCP_HOST="scmessenger-bootstrap"
 GCP_IMAGE="us-central1-docker.pkg.dev/scmessenger-bootstrapnode/scmessenger-repo/scmessenger-cli:latest"
 GCP_CONTAINER_NAME="scmessenger-relay"
-OSX_RUST_LOG="info,libp2p_autonat=debug,libp2p_dcutr=debug,libp2p_relay=debug,scmessenger_core::transport::swarm=debug,scmessenger_core::store::relay_custody=debug,scmessenger_core::mesh::delivery=debug"
+# `scmessenger_core::mesh::delivery` was stale; delivery tracing lives in the
+# outbox/inbox store targets. Include mDNS/interface diagnostics so socket
+# failures carry enough context for the five-node correlation.
+OSX_RUST_LOG="info,libp2p_autonat=debug,libp2p_dcutr=debug,libp2p_relay=debug,libp2p_mdns=trace,if_watch=debug,scmessenger_core::transport=debug,scmessenger_core::store::relay_custody=debug,scmessenger_core::store::outbox=debug,scmessenger_core::store::inbox=debug"
 
 # Prefer pre-built binary (instant start) over cargo run (30-60s compile)
 if [ -f "target/debug/scmessenger-cli" ]; then
