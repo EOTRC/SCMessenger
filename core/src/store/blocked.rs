@@ -16,6 +16,17 @@ const BLOCKED_PREFIX: &str = "blocked:";
 /// Storage key prefix for device registry entries (peer -> known device IDs)
 const DEVICE_REGISTRY_PREFIX: &str = "blocked_devs:";
 
+/// Explicit identifier provenance. Raw 64-hex strings are intentionally not
+/// classified by curve-point validity: a Blake3 identity ID can happen to be
+/// a valid Ed25519 point, and guessing in that case double-hashes identities.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IdentifierFlavor {
+    #[default]
+    Legacy,
+    PublicKey,
+    IdentityId,
+}
+
 /// A blocked identity entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockedIdentity {
@@ -41,6 +52,9 @@ pub struct BlockedIdentity {
     /// ingress layer without being persisted.
     #[serde(default)]
     pub is_deleted: bool,
+    /// How the caller identified this entry. Older rows deserialize as Legacy.
+    #[serde(default)]
+    pub identifier_flavor: IdentifierFlavor,
 }
 
 impl BlockedIdentity {
@@ -53,6 +67,7 @@ impl BlockedIdentity {
             reason: None,
             notes: None,
             is_deleted: false,
+            identifier_flavor: IdentifierFlavor::Legacy,
         }
     }
 
@@ -105,9 +120,10 @@ impl BlockedManager {
     /// identity_id cannot be reversed into a public key, so identity_id input
     /// yields only itself.
     pub fn resolved_identifiers(&self, peer_id: &str) -> Vec<String> {
-        let mut identifiers = vec![peer_id.to_string()];
-        if let Some(derived_id) = identity_id_from_public_key_hex(peer_id) {
-            if derived_id != peer_id {
+        let (raw_peer_id, flavor) = split_identifier_flavor(peer_id);
+        let mut identifiers = vec![raw_peer_id.to_string()];
+        if flavor == IdentifierFlavor::PublicKey {
+            if let Some(derived_id) = identity_id_from_public_key_hex(raw_peer_id) {
                 identifiers.push(derived_id);
             }
         }
@@ -210,6 +226,12 @@ impl BlockedManager {
     /// device registry for this peer. If a `device_id` is set, only that
     /// specific device is blocked.
     pub fn block(&self, blocked: BlockedIdentity) -> Result<(), IronCoreError> {
+        let (raw_peer_id, flavor) = split_identifier_flavor(&blocked.peer_id);
+        let blocked = BlockedIdentity {
+            peer_id: raw_peer_id.to_string(),
+            identifier_flavor: flavor,
+            ..blocked
+        };
         self.write_block_entry(&blocked)?;
 
         // Peer-level block: also block every known device for this peer
@@ -223,11 +245,15 @@ impl BlockedManager {
                     reason: blocked.reason.clone(),
                     notes: blocked.notes.clone(),
                     is_deleted: blocked.is_deleted,
+                    identifier_flavor: flavor,
                 };
                 self.write_block_entry(&device_blocked)?;
             }
 
-            if let Some(derived_id) = identity_id_from_public_key_hex(&blocked.peer_id) {
+            if flavor == IdentifierFlavor::PublicKey {
+                let Some(derived_id) = identity_id_from_public_key_hex(&blocked.peer_id) else {
+                    return Err(IronCoreError::InvalidInput);
+                };
                 // Mirror every physical block entry under the alternate
                 // identifier flavor. This also covers known devices.
                 let alias_blocked = BlockedIdentity {
@@ -237,6 +263,7 @@ impl BlockedManager {
                     reason: blocked.reason.clone(),
                     notes: blocked.notes.clone(),
                     is_deleted: blocked.is_deleted,
+                    identifier_flavor: IdentifierFlavor::IdentityId,
                 };
                 self.write_block_entry(&alias_blocked)?;
 
@@ -248,11 +275,15 @@ impl BlockedManager {
                         reason: blocked.reason.clone(),
                         notes: blocked.notes.clone(),
                         is_deleted: blocked.is_deleted,
+                        identifier_flavor: IdentifierFlavor::IdentityId,
                     };
                     self.write_block_entry(&alias_dev)?;
                 }
             }
-        } else if let Some(derived_id) = identity_id_from_public_key_hex(&blocked.peer_id) {
+        } else if flavor == IdentifierFlavor::PublicKey {
+            let Some(derived_id) = identity_id_from_public_key_hex(&blocked.peer_id) else {
+                return Err(IronCoreError::InvalidInput);
+            };
             // Device-specific blocks must also be mirrored; otherwise a
             // mixed-version device identifier can bypass a targeted block.
             let alias_blocked = BlockedIdentity {
@@ -262,6 +293,7 @@ impl BlockedManager {
                 reason: blocked.reason.clone(),
                 notes: blocked.notes.clone(),
                 is_deleted: blocked.is_deleted,
+                identifier_flavor: IdentifierFlavor::IdentityId,
             };
             self.write_block_entry(&alias_blocked)?;
         }
@@ -331,15 +363,19 @@ impl BlockedManager {
     /// row is still present. Legacy identity_id-only rows remain identity-only.
     fn identifiers_for_unblock(&self, peer_id: &str) -> Result<Vec<String>, IronCoreError> {
         let mut identifiers = self.resolved_identifiers(peer_id);
+        let (raw_peer_id, _) = split_identifier_flavor(peer_id);
 
         let blocked_entries = self
             .backend
             .scan_prefix(BLOCKED_PREFIX.as_bytes())
             .map_err(|_| IronCoreError::StorageError)?;
         for (_, value) in blocked_entries {
-            let blocked: BlockedIdentity =
-                serde_json::from_slice(&value).map_err(|_| IronCoreError::Internal)?;
-            if identity_id_from_public_key_hex(&blocked.peer_id).as_deref() == Some(peer_id)
+            let Ok(blocked) = serde_json::from_slice::<BlockedIdentity>(&value) else {
+                tracing::warn!("Skipping malformed blocked row while resolving unblock");
+                continue;
+            };
+            if blocked.identifier_flavor == IdentifierFlavor::PublicKey
+                && identity_id_from_public_key_hex(&blocked.peer_id).as_deref() == Some(raw_peer_id)
                 && !identifiers
                     .iter()
                     .any(|identifier| identifier == &blocked.peer_id)
@@ -359,7 +395,7 @@ impl BlockedManager {
             else {
                 continue;
             };
-            if identity_id_from_public_key_hex(public_key).as_deref() == Some(peer_id)
+            if identity_id_from_public_key_hex(public_key).as_deref() == Some(raw_peer_id)
                 && !identifiers
                     .iter()
                     .any(|identifier| identifier == public_key)
@@ -443,9 +479,11 @@ impl BlockedManager {
             blocked_list.iter().map(|b| b.peer_id.clone()).collect();
 
         blocked_list.retain(|b| {
-            if let Some(derived) = identity_id_from_public_key_hex(&b.peer_id) {
-                if derived != b.peer_id && identity_ids.contains(&derived) {
-                    return false; // Duplicate -- identity_id entry wins
+            if b.identifier_flavor == IdentifierFlavor::PublicKey {
+                if let Some(derived) = identity_id_from_public_key_hex(&b.peer_id) {
+                    if derived != b.peer_id && identity_ids.contains(&derived) {
+                        return false; // Duplicate -- identity_id entry wins
+                    }
                 }
             }
             true
@@ -509,22 +547,23 @@ impl BlockedManager {
         peer_id: &str,
         device_id: &str,
     ) -> Result<bool, IronCoreError> {
-        let mut devices = self.get_known_devices(peer_id)?;
+        let (raw_peer_id, flavor) = split_identifier_flavor(peer_id);
+        let mut devices = self.get_known_devices(raw_peer_id)?;
         if devices.contains(&device_id.to_string()) {
             return Ok(false); // Already registered
         }
         devices.push(device_id.to_string());
-        let reg_key = format!("{}{}", DEVICE_REGISTRY_PREFIX, peer_id);
+        let reg_key = format!("{}{}", DEVICE_REGISTRY_PREFIX, raw_peer_id);
         let encoded = serde_json::to_vec(&devices).map_err(|_| IronCoreError::Internal)?;
         self.backend
             .put(reg_key.as_bytes(), &encoded)
             .map_err(|_| IronCoreError::StorageError)?;
 
         // If the peer is blocked, auto-block this device
-        if self.is_blocked_resolved(peer_id, None)? {
-            let peer_block = self.get(peer_id, None)?;
+        if self.is_blocked_resolved(raw_peer_id, None)? {
+            let peer_block = self.get(raw_peer_id, None)?;
             let blocked = BlockedIdentity {
-                peer_id: peer_id.to_string(),
+                peer_id: raw_peer_id.to_string(),
                 device_id: Some(device_id.to_string()),
                 blocked_at: peer_block
                     .as_ref()
@@ -533,6 +572,7 @@ impl BlockedManager {
                 reason: peer_block.as_ref().and_then(|b| b.reason.clone()),
                 notes: None,
                 is_deleted: peer_block.as_ref().map(|b| b.is_deleted).unwrap_or(false),
+                identifier_flavor: flavor,
             };
             self.block(blocked)?;
         }
@@ -542,7 +582,8 @@ impl BlockedManager {
 
     /// Get all known device IDs registered for a peer.
     pub fn get_known_devices(&self, peer_id: &str) -> Result<Vec<String>, IronCoreError> {
-        let reg_key = format!("{}{}", DEVICE_REGISTRY_PREFIX, peer_id);
+        let (raw_peer_id, _) = split_identifier_flavor(peer_id);
+        let reg_key = format!("{}{}", DEVICE_REGISTRY_PREFIX, raw_peer_id);
         if let Some(data) = self
             .backend
             .get(reg_key.as_bytes())
@@ -562,9 +603,10 @@ impl BlockedManager {
         peer_id: &str,
         device_id: &str,
     ) -> Result<(), IronCoreError> {
-        let mut devices = self.get_known_devices(peer_id)?;
+        let (raw_peer_id, _) = split_identifier_flavor(peer_id);
+        let mut devices = self.get_known_devices(raw_peer_id)?;
         devices.retain(|d| d != device_id);
-        let reg_key = format!("{}{}", DEVICE_REGISTRY_PREFIX, peer_id);
+        let reg_key = format!("{}{}", DEVICE_REGISTRY_PREFIX, raw_peer_id);
         if devices.is_empty() {
             self.backend
                 .remove(reg_key.as_bytes())
@@ -606,6 +648,16 @@ fn current_timestamp() -> u64 {
         .duration_since(web_time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn split_identifier_flavor(peer_id: &str) -> (&str, IdentifierFlavor) {
+    if let Some(raw) = peer_id.strip_prefix(crate::identity::keys::PUBLIC_KEY_PREFIX) {
+        (raw, IdentifierFlavor::PublicKey)
+    } else if let Some(raw) = peer_id.strip_prefix(crate::identity::keys::IDENTITY_ID_PREFIX) {
+        (raw, IdentifierFlavor::IdentityId)
+    } else {
+        (peer_id, IdentifierFlavor::Legacy)
+    }
 }
 
 #[cfg(test)]
@@ -1006,7 +1058,7 @@ mod tests {
 
         // Block under the public key
         manager
-            .block(BlockedIdentity::new(pk_hex.clone()).with_reason("spam".to_string()))
+            .block(BlockedIdentity::new(format!("pk:{pk_hex}")).with_reason("spam".to_string()))
             .unwrap();
 
         // The derived identity_id must also be blocked (dual-flavor write)
@@ -1047,12 +1099,14 @@ mod tests {
         let (pk_hex, derived_id) = generate_test_keypair();
 
         // Block under public key (creates dual entries)
-        manager.block(BlockedIdentity::new(pk_hex.clone())).unwrap();
+        manager
+            .block(BlockedIdentity::new(format!("pk:{pk_hex}")))
+            .unwrap();
         assert!(manager.is_blocked(&pk_hex, None).unwrap());
         assert!(manager.is_blocked(&derived_id, None).unwrap());
 
         // Unblock using the public key
-        manager.unblock(pk_hex.clone(), None).unwrap();
+        manager.unblock(format!("pk:{pk_hex}"), None).unwrap();
 
         // Both flavors must be gone
         assert!(
@@ -1076,7 +1130,9 @@ mod tests {
 
         manager.register_device_id(&pk_hex, device_a).unwrap();
         manager.register_device_id(&pk_hex, device_b).unwrap();
-        manager.block(BlockedIdentity::new(pk_hex.clone())).unwrap();
+        manager
+            .block(BlockedIdentity::new(format!("pk:{pk_hex}")))
+            .unwrap();
 
         let listed = manager.list().unwrap();
         assert!(!listed.is_empty());
@@ -1109,7 +1165,7 @@ mod tests {
 
         // Block under public key (writes two peer-level entries)
         manager
-            .block(BlockedIdentity::new(pk_hex.clone()).with_reason("test".to_string()))
+            .block(BlockedIdentity::new(format!("pk:{pk_hex}")).with_reason("test".to_string()))
             .unwrap();
 
         // Verify both entries exist in the raw store
@@ -1162,5 +1218,29 @@ mod tests {
             crate::identity::keys::identity_id_from_public_key_hex(&derived_id).is_none(),
             "an identity_id is not a valid Ed25519 curve point; derivation must return None"
         );
+    }
+
+    #[test]
+    fn curve_valid_identity_id_is_not_double_hashed() {
+        let backend = Arc::new(MemoryStorage::new());
+        let manager = BlockedManager::new(backend);
+        let (identity_id, double_hash) = (0..10_000)
+            .find_map(|_| {
+                let (_pk, id) = generate_test_keypair();
+                identity_id_from_public_key_hex(&id).map(|double_hash| (id, double_hash))
+            })
+            .expect("test should find a curve-valid identity id");
+
+        manager
+            .block(BlockedIdentity::new(identity_id.clone()))
+            .unwrap();
+
+        assert_eq!(
+            manager.resolved_identifiers(&identity_id),
+            vec![identity_id.clone()]
+        );
+        assert!(manager.is_blocked(&identity_id, None).unwrap());
+        assert!(!manager.is_blocked(&double_hash, None).unwrap());
+        assert_eq!(manager.list().unwrap().len(), 1);
     }
 }

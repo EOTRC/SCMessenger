@@ -227,19 +227,31 @@ impl RelayEngine {
     /// Process an incoming DriftEnvelope. Returns what to do with it.
     /// This is the central routing decision for every message.
     pub fn process_incoming(&mut self, envelope_data: &[u8]) -> Result<RelayDecision, DriftError> {
+        self.process_incoming_from(envelope_data, None)
+    }
+
+    /// Process an incoming envelope with the authenticated transport identity
+    /// used for reputation accounting. Callers without that identity use the
+    /// compatibility method above, which deliberately skips reputation lookup
+    /// rather than attributing every sender to one shared `unknown` bucket.
+    pub fn process_incoming_from(
+        &mut self,
+        envelope_data: &[u8],
+        sender_peer_id: Option<&str>,
+    ) -> Result<RelayDecision, DriftError> {
         // Parse envelope
         let envelope = DriftEnvelope::from_bytes(envelope_data)?;
 
         // Check for spam patterns if reputation manager is available
-        let enhanced_score = if let Some(ref reputation_manager) = self.shared_reputation_manager {
-            let sender_peer_id = "unknown"; // In a real implementation, this would be extracted from the envelope
-            Some(reputation_manager.read().get_enhanced_score(sender_peer_id))
-        } else if let Some(ref reputation_manager) = self.reputation_manager {
-            let sender_peer_id = "unknown"; // In a real implementation, this would be extracted from the envelope
-            Some(reputation_manager.get_enhanced_score(sender_peer_id))
-        } else {
-            None
-        };
+        let enhanced_score = sender_peer_id.and_then(|sender_peer_id| {
+            if let Some(ref reputation_manager) = self.shared_reputation_manager {
+                Some(reputation_manager.read().get_enhanced_score(sender_peer_id))
+            } else {
+                self.reputation_manager
+                    .as_ref()
+                    .map(|reputation_manager| reputation_manager.get_enhanced_score(sender_peer_id))
+            }
+        });
 
         if let Some(enhanced_score) = enhanced_score {
             if enhanced_score.is_abusive() && enhanced_score.spam_confidence > 0.8 {

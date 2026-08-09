@@ -445,110 +445,122 @@ pub fn is_disclosable_multiaddr(multiaddr: &str) -> bool {
     }
 }
 
-/// Returns true if `multiaddr` may be disclosed as a knob that only peers on
-/// the same RFC1918 / local network as us can reach.
+/// Returns true if a private `multiaddr` may be disclosed to the observed
+/// requester on the same local subnet.
 ///
-/// RFC1918 and CGNAT addresses are only disclosable when at least one of our
-/// own addresses lands in the same private class (same /8, /16 or /24 block),
-/// because a private address a remote node could never route to is worse than
-/// useless in a ledger -- it leaks topology. Public IPv4, global IPv6 and DNS
-/// forms are never disclosable through this predicate.
-pub fn is_disclosable_on_rfc1918_network(multiaddr: &str, my_addrs: &[String]) -> bool {
+/// The requester address is required evidence. A local listener list alone is
+/// not sufficient: it describes this node, not the peer receiving the data.
+/// Missing or relayed requester addresses fail closed. We use /24 for private
+/// IPv4 and /64 for ULA IPv6, which is deliberately narrower than the RFC1918
+/// address classes.
+pub fn is_disclosable_on_rfc1918_network(
+    multiaddr: &str,
+    requester_addr: Option<&str>,
+    my_addrs: &[String],
+) -> bool {
     let Ok(addr) = multiaddr.parse::<Multiaddr>() else {
         return false;
     };
 
-    for proto in addr.iter() {
-        match proto {
-            Protocol::P2pCircuit => return true,
-            Protocol::Ip4(ip) => {
-                if ip.is_private() || is_cgnat(&ip) {
-                    return has_matching_private_class(&ip, my_addrs);
-                }
-                return false; // Public IPv4 — never via exchange
-            }
-            Protocol::Ip6(ip) => {
-                if let Some(v4) = embedded_ipv4(&ip) {
-                    if v4.is_private() || is_cgnat(&v4) {
-                        return has_matching_private_class(&v4, my_addrs);
-                    }
-                    return false;
-                }
-                let seg0 = ip.segments()[0];
-                if (seg0 & 0xfe00) == 0xfc00 {
-                    // ULA
-                    return my_addrs.iter().any(|a| {
-                        extract_ipv6(a)
-                            .is_some_and(|my_ip| (my_ip.segments()[0] & 0xfe00) == 0xfc00)
-                    });
-                }
-                return false; // Global IPv6 — never
-            }
-            Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_) | Protocol::Dnsaddr(_) => {
-                return false;
-            }
-            _ => {}
-        }
+    if addr
+        .iter()
+        .any(|proto| matches!(proto, Protocol::P2pCircuit))
+    {
+        return false;
     }
-    true
+
+    let Some(requester_ip) = requester_addr.and_then(first_ip_component) else {
+        return false;
+    };
+    if !is_safe_private_ip(&requester_ip) {
+        return false;
+    }
+
+    let Some(entry_ip) = first_ip_component(multiaddr) else {
+        return false;
+    };
+    if !is_safe_private_ip(&entry_ip) || !same_private_subnet(&entry_ip, &requester_ip) {
+        return false;
+    }
+
+    // When the node has concrete listener addresses, require the observed
+    // requester to be on one of those local subnets too. Wildcard-only
+    // listeners carry no usable subnet evidence, so the authenticated direct
+    // observed address remains the source of truth in that case.
+    let concrete_local_ips: Vec<_> = my_addrs
+        .iter()
+        .filter_map(|a| first_ip_component(a))
+        .collect();
+    concrete_local_ips.is_empty()
+        || concrete_local_ips
+            .iter()
+            .any(|local_ip| same_private_subnet(local_ip, &requester_ip))
 }
 
-/// Returns true if `ip` is in the same RFC1918 class as at least one of `my_addrs`.
-fn has_matching_private_class(ip: &Ipv4Addr, my_addrs: &[String]) -> bool {
-    my_addrs.iter().any(|a| {
-        extract_ipv4(a).is_some_and(|my_ip| {
-            rfc1918_class(&my_ip) == rfc1918_class(ip) && rfc1918_class(ip).is_some()
-        })
+fn first_ip_component(multiaddr: &str) -> Option<std::net::IpAddr> {
+    let addr = multiaddr.parse::<Multiaddr>().ok()?;
+    addr.iter().find_map(|proto| match proto {
+        Protocol::Ip4(ip) => Some(std::net::IpAddr::V4(ip)),
+        Protocol::Ip6(ip) => Some(std::net::IpAddr::V6(ip)),
+        _ => None,
     })
 }
 
-/// Classify RFC1918 or CGNAT range.
-fn rfc1918_class(ip: &Ipv4Addr) -> Option<u8> {
-    let o = ip.octets();
-    if o[0] == 10 {
-        Some(0)
-    } else if o[0] == 172 && (16..=31).contains(&o[1]) {
-        Some(1)
-    } else if o[0] == 192 && o[1] == 168 {
-        Some(2)
-    } else if o[0] == 100 && (64..=127).contains(&o[1]) {
-        Some(3)
+fn is_safe_private_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            !ip.is_loopback()
+                && !ip.is_unspecified()
+                && !ip.is_link_local()
+                && !ip.is_multicast()
+                && !ip.is_broadcast()
+                && (ip.is_private() || is_cgnat(ip))
+        }
+        std::net::IpAddr::V6(ip) => {
+            !ip.is_loopback()
+                && !ip.is_unspecified()
+                && !ip.is_multicast()
+                && !ip.is_unicast_link_local()
+                && ((ip.segments()[0] & 0xfe00) == 0xfc00
+                    || embedded_ipv4(ip).is_some_and(|v4| {
+                        !v4.is_loopback()
+                            && !v4.is_unspecified()
+                            && !v4.is_link_local()
+                            && !v4.is_multicast()
+                            && !v4.is_broadcast()
+                            && (v4.is_private() || is_cgnat(&v4))
+                    }))
+        }
     }
-    // CGNAT
-    else {
-        None
+}
+
+fn same_private_subnet(left: &std::net::IpAddr, right: &std::net::IpAddr) -> bool {
+    match (left, right) {
+        (std::net::IpAddr::V4(left), std::net::IpAddr::V4(right)) => {
+            let left = left.octets();
+            let right = right.octets();
+            left[..3] == right[..3]
+        }
+        (std::net::IpAddr::V6(left), std::net::IpAddr::V6(right)) => {
+            if (left.segments()[0] & 0xfe00) != 0xfc00 || (right.segments()[0] & 0xfe00) != 0xfc00 {
+                return false;
+            }
+            left.segments()[..4] == right.segments()[..4]
+        }
+        (std::net::IpAddr::V6(left), std::net::IpAddr::V4(right)) => embedded_ipv4(left)
+            .is_some_and(|left| {
+                same_private_subnet(&std::net::IpAddr::V4(left), &std::net::IpAddr::V4(*right))
+            }),
+        (std::net::IpAddr::V4(left), std::net::IpAddr::V6(right)) => embedded_ipv4(right)
+            .is_some_and(|right| {
+                same_private_subnet(&std::net::IpAddr::V4(*left), &std::net::IpAddr::V4(right))
+            }),
     }
 }
 
 fn is_cgnat(ip: &Ipv4Addr) -> bool {
     let o = ip.octets();
     o[0] == 100 && (64..=127).contains(&o[1])
-}
-
-/// Extract IPv6 from a multiaddr string.
-fn extract_ipv6(multiaddr: &str) -> Option<std::net::Ipv6Addr> {
-    let parts: Vec<&str> = multiaddr.split('/').collect();
-    for i in 0..parts.len() {
-        if parts[i] == "ip6" && i + 1 < parts.len() {
-            if let Ok(ip) = parts[i + 1].parse::<std::net::Ipv6Addr>() {
-                return Some(ip);
-            }
-        }
-    }
-    None
-}
-
-/// Extract IPv4 from a multiaddr string.
-fn extract_ipv4(multiaddr: &str) -> Option<Ipv4Addr> {
-    let parts: Vec<&str> = multiaddr.split('/').collect();
-    for i in 0..parts.len() {
-        if parts[i] == "ip4" && i + 1 < parts.len() {
-            if let Ok(ip) = parts[i + 1].parse::<Ipv4Addr>() {
-                return Some(ip);
-            }
-        }
-    }
-    None
 }
 
 /// Returns true iff `addr` may be WRITTEN INTO A LEDGER as an address this node
@@ -1343,7 +1355,11 @@ mod tests {
     fn rfc1918_disclosable_when_local_network_matches() {
         let local_addrs = vec!["/ip4/192.168.1.50/tcp/9001".to_string()];
         assert!(
-            is_disclosable_on_rfc1918_network("/ip4/192.168.1.100/tcp/9001", &local_addrs),
+            is_disclosable_on_rfc1918_network(
+                "/ip4/192.168.1.100/tcp/9001",
+                Some("/ip4/192.168.1.20/tcp/9001"),
+                &local_addrs,
+            ),
             "same /24 should be disclosable"
         );
     }
@@ -1352,7 +1368,11 @@ mod tests {
     fn rfc1918_not_disclosable_when_different_private_class() {
         let local_addrs = vec!["/ip4/10.0.0.5/tcp/9001".to_string()];
         assert!(
-            !is_disclosable_on_rfc1918_network("/ip4/192.168.1.100/tcp/9001", &local_addrs),
+            !is_disclosable_on_rfc1918_network(
+                "/ip4/192.168.1.100/tcp/9001",
+                Some("/ip4/192.168.1.20/tcp/9001"),
+                &local_addrs,
+            ),
             "different RFC1918 class should NOT be disclosable"
         );
     }
@@ -1361,8 +1381,56 @@ mod tests {
     fn public_ipv4_never_disclosable_on_network() {
         let local_addrs = vec!["/ip4/192.168.1.50/tcp/9001".to_string()];
         assert!(
-            !is_disclosable_on_rfc1918_network("/ip4/203.0.113.45/tcp/9001", &local_addrs),
+            !is_disclosable_on_rfc1918_network(
+                "/ip4/203.0.113.45/tcp/9001",
+                Some("/ip4/192.168.1.20/tcp/9001"),
+                &local_addrs,
+            ),
             "public IPv4 must never be disclosed via network check"
         );
+    }
+
+    #[test]
+    fn rfc1918_disclosure_requires_observed_same_subnet_requester() {
+        let local_addrs = vec!["/ip4/10.0.0.5/tcp/9001".to_string()];
+        assert!(!is_disclosable_on_rfc1918_network(
+            "/ip4/10.99.0.42/tcp/9001",
+            Some("/ip4/10.0.0.20/tcp/9001"),
+            &local_addrs,
+        ));
+        assert!(!is_disclosable_on_rfc1918_network(
+            "/ip4/10.0.0.42/tcp/9001",
+            Some("/ip4/198.51.100.20/tcp/9001"),
+            &local_addrs,
+        ));
+        assert!(!is_disclosable_on_rfc1918_network(
+            "/ip4/10.0.0.42/tcp/9001",
+            None,
+            &local_addrs,
+        ));
+    }
+
+    #[test]
+    fn rfc1918_disclosure_rejects_relay_loopback_and_link_local() {
+        let local_addrs = vec!["/ip4/192.168.1.5/tcp/9001".to_string()];
+        for entry in [
+            "/ip4/127.0.0.1/tcp/9001",
+            "/ip4/169.254.1.2/tcp/9001",
+            "/p2p-circuit/p2p/12D3KooWJ7t4Qz4VwzYbP4uU6z4aGz2gZ4nM6mX2sJ6j7V8b9c1d",
+        ] {
+            assert!(
+                !is_disclosable_on_rfc1918_network(
+                    entry,
+                    Some("/ip4/192.168.1.20/tcp/9001"),
+                    &local_addrs,
+                ),
+                "unsafe entry disclosed: {entry}"
+            );
+        }
+        assert!(!is_disclosable_on_rfc1918_network(
+            "/ip4/192.168.1.42/tcp/9001",
+            Some("/ip4/127.0.0.1/tcp/9001"),
+            &local_addrs,
+        ));
     }
 }

@@ -3135,9 +3135,9 @@ pub async fn start_swarm_with_config(
                                         let sender_blocked = if let Some(core_handle) = core_handle.as_ref().and_then(|w| w.upgrade()) {
                                             // Libp2pMessageRequest doesn't have device_id, only RelayRequest does.
                                             // For direct messaging, we check the peer-level block.
-                                            core_handle.is_peer_blocked(peer.to_string(), None).unwrap_or(false)
+                                            core_handle.is_peer_blocked(peer.to_string(), None).unwrap_or(true)
                                         } else {
-                                            false
+                                            true
                                         };
                                         if sender_blocked {
                                             tracing::warn!("Blocked peer {} attempted to send message", peer);
@@ -3982,23 +3982,23 @@ pub async fn start_swarm_with_config(
                                             //     was disclosed to internet peers.
                                             // FusionLite (RFC1918 disclosure): pass this node's own
                                             // listener addresses so the exchange can disclose entries
-                                            // on the same private class (and route foreign-subnet
-                                            // RFC1918 entries to verified contacts).
-                                            let mut my_listener_addrs: Vec<String> = swarm
+                                            // only with observed same-subnet evidence.
+                                            let my_listener_addrs: Vec<String> = swarm
                                                 .listeners()
                                                 .chain(swarm.external_addresses())
                                                 .map(|a| a.to_string())
                                                 .collect();
-                                            if let Some(conn) = connection_tracker.get_connection(&peer) {
-                                                my_listener_addrs.push(conn.remote_addr.to_string());
-                                            }
+                                            let requester_addr = connection_tracker
+                                                .get_connection(&peer)
+                                                .map(|conn| conn.remote_addr.to_string());
                                             response_peers = core_handle
                                                 .as_ref()
                                                 .and_then(|w| w.upgrade())
                                                 .map(|core| {
-                                                    core.ledger_manager.exchange_response_entries(
+                                                    core.ledger_manager.exchange_response_entries_for_request(
                                                         LEDGER_EXCHANGE_MAX_RESPONSE_PEERS,
                                                         &requester,
+                                                        requester_addr.as_deref(),
                                                         &my_listener_addrs,
                                                     )
                                                 })
@@ -5692,24 +5692,24 @@ pub async fn start_swarm_with_config(
                                 // as much a disclosure as a response.
                                 if !ledger_exchanged_peers.contains(&peer_id) {
                                     // FusionLite (RFC1918 disclosure): pass this node's own
-                                    // listener addresses so the request carries same-class
-                                    // private entries (and foreign-subnet RFC1918 entries to
-                                    // verified contacts).
-                                    let mut my_listener_addrs: Vec<String> = swarm
+                                    // listener addresses so the request carries private entries
+                                    // only with observed same-subnet evidence.
+                                    let my_listener_addrs: Vec<String> = swarm
                                         .listeners()
                                         .chain(swarm.external_addresses())
                                         .map(|a| a.to_string())
                                         .collect();
-                                    if let Some(conn) = connection_tracker.get_connection(&peer_id) {
-                                        my_listener_addrs.push(conn.remote_addr.to_string());
-                                    }
+                                    let requester_addr = connection_tracker
+                                        .get_connection(&peer_id)
+                                        .map(|conn| conn.remote_addr.to_string());
                                     let entries: Vec<SharedPeerEntry> = core_handle
                                         .as_ref()
                                         .and_then(|w| w.upgrade())
                                         .map(|core| {
-                                            core.ledger_manager.exchange_response_entries(
+                                            core.ledger_manager.exchange_response_entries_for_request(
                                                 LEDGER_EXCHANGE_MAX_RESPONSE_PEERS,
                                                 &peer_id.to_string(),
+                                                requester_addr.as_deref(),
                                                 &my_listener_addrs,
                                             )
                                         })
@@ -6336,9 +6336,9 @@ pub async fn start_swarm_with_config(
                                             // Check if sender is blocked before processing message
                                             let sender_blocked = if let Some(ref core_handle) = core_handle {
                                                 // WASM version doesn't have device ID in request, so pass None
-                                                core_handle.upgrade().map(|c| c.is_peer_blocked(peer.to_string(), None).unwrap_or(false)).unwrap_or(false)
+                                                core_handle.upgrade().map(|c| c.is_peer_blocked(peer.to_string(), None).unwrap_or(true)).unwrap_or(true)
                                             } else {
-                                                false
+                                                true
                                             };
 
                                             if sender_blocked {

@@ -203,6 +203,12 @@ fn message_request_key(sender_public_key_hex: &Option<String>, sender_id: &str) 
         return scmessenger_core::identity::keys::identity_id_from_public_key_hex(key);
     }
 
+    // Older messages used sender_id for the public key. Preserve the same
+    // canonical request key when that legacy field is explicitly key-shaped.
+    if scmessenger_core::identity::keys::is_valid_public_key(sender_id) {
+        return scmessenger_core::identity::keys::identity_id_from_public_key_hex(sender_id);
+    }
+
     // Without an authenticated envelope key, a legacy public key and a
     // legacy identity_id are intentionally kept in their wire form. Both are
     // 64-hex identifiers and cannot be distinguished safely from plaintext.
@@ -1557,36 +1563,25 @@ pub async fn handle_jsonrpc_request(
                     .filter_map(|m| m.sender_public_key_hex)
                     .next_back();
 
-                match public_key_hex {
-                    Some(public_key) => {
-                        match core.block_peer(
-                            public_key,
-                            None,
-                            Some("message_request_rejected".to_string()),
-                        ) {
-                            Ok(()) => {
-                                let mut m = Map::new();
-                                m.insert("rejected".to_string(), true.into());
-                                rpc_result(id, Value::Object(m))
-                            }
-                            Err(e) => rpc_error(
-                                id,
-                                JsonRpcErrorBody {
-                                    code: -32000,
-                                    message: format!("Failed to reject message request: {:?}", e),
-                                    data: None,
-                                },
-                            ),
-                        }
+                let block_identifier = public_key_hex
+                    .map(|public_key| format!("pk:{public_key}"))
+                    .unwrap_or_else(|| format!("id:{canonical_req_id}"));
+
+                match core.block_peer(
+                    block_identifier,
+                    None,
+                    Some("message_request_rejected".to_string()),
+                ) {
+                    Ok(()) => {
+                        let mut m = Map::new();
+                        m.insert("rejected".to_string(), true.into());
+                        rpc_result(id, Value::Object(m))
                     }
-                    None => rpc_error(
+                    Err(e) => rpc_error(
                         id,
                         JsonRpcErrorBody {
-                            code: -32002,
-                            message: format!(
-                                "No pending message request found from {}",
-                                request_id
-                            ),
+                            code: -32000,
+                            message: format!("Failed to reject message request: {:?}", e),
                             data: None,
                         },
                     ),

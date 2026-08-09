@@ -1399,15 +1399,19 @@ impl IronCore {
         self.inbox.read().all_messages()
     }
 
-    /// Get the canonical peer ID (identity_id) for a given identifier.
-    /// If the identifier is a valid Ed25519 public key, returns its derived
-    /// identity_id. Otherwise returns the identifier unchanged.
-    /// Used to map pending-request peerIds to the canonical format used by
-    /// the blocked list (which deduplicates to identity_id).
+    /// Get the canonical peer ID (identity_id) for an explicitly tagged
+    /// identifier. Unprefixed 64-hex values are left unchanged because an
+    /// identity_id can be a valid Ed25519 point by chance.
     pub fn get_canonical_peer_id(&self, peer_id: &str) -> Option<String> {
-        crate::identity::keys::identity_id_from_public_key_hex(peer_id)
-            .filter(|derived| derived != peer_id)
-            .or(Some(peer_id.to_string()))
+        if let Some(public_key) = peer_id.strip_prefix(crate::identity::keys::PUBLIC_KEY_PREFIX) {
+            return crate::identity::keys::identity_id_from_public_key_hex(public_key);
+        }
+        Some(
+            peer_id
+                .strip_prefix(crate::identity::keys::IDENTITY_ID_PREFIX)
+                .unwrap_or(peer_id)
+                .to_string(),
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -1424,6 +1428,15 @@ impl IronCore {
         device_id: Option<String>,
         reason: Option<String>,
     ) -> Result<(), IronCoreError> {
+        let contact_public_key = self
+            .contact_manager
+            .read()
+            .get(peer_id.clone())
+            .ok()
+            .flatten()
+            .map(|contact| contact.public_key)
+            .filter(|public_key| public_key != &peer_id);
+
         // Register known device IDs from the contact before blocking
         if let Some(contact) = self
             .contact_manager
@@ -1446,8 +1459,8 @@ impl IronCore {
                 .register_device_id(&peer_id, did);
         }
 
-        let blocked = crate::store::blocked::BlockedIdentity::new(peer_id);
-        let blocked = if let Some(did) = device_id {
+        let blocked = crate::store::blocked::BlockedIdentity::new(peer_id.clone());
+        let blocked = if let Some(did) = device_id.clone() {
             crate::store::blocked::BlockedIdentity {
                 device_id: Some(did),
                 ..blocked
@@ -1455,7 +1468,7 @@ impl IronCore {
         } else {
             blocked
         };
-        let blocked = if let Some(r) = reason {
+        let blocked = if let Some(r) = reason.clone() {
             crate::store::blocked::BlockedIdentity {
                 reason: Some(r),
                 ..blocked
@@ -1463,7 +1476,18 @@ impl IronCore {
         } else {
             blocked
         };
-        self.blocked_manager.write().block(blocked)
+        self.blocked_manager.write().block(blocked)?;
+
+        // A contact record is the explicit provenance needed to write the
+        // public-key flavor. Never infer it from curve-point validity.
+        if let Some(public_key) = contact_public_key {
+            let mut public_key_block =
+                crate::store::blocked::BlockedIdentity::new(format!("pk:{public_key}"));
+            public_key_block.device_id = device_id;
+            public_key_block.reason = reason;
+            self.blocked_manager.write().block(public_key_block)?;
+        }
+        Ok(())
     }
 
     pub fn unblock_peer(
@@ -1471,10 +1495,30 @@ impl IronCore {
         peer_id: String,
         device_id: Option<String>,
     ) -> Result<(), IronCoreError> {
+        let contact_public_key = self
+            .contact_manager
+            .read()
+            .get(peer_id.clone())
+            .ok()
+            .flatten()
+            .map(|contact| contact.public_key)
+            .filter(|public_key| public_key != &peer_id);
+
         self.blocked_manager
             .write()
-            .unblock(peer_id.clone(), device_id)?;
+            .unblock(peer_id.clone(), device_id.clone())?;
+        if let Some(public_key) = contact_public_key {
+            self.blocked_manager
+                .write()
+                .unblock(format!("pk:{public_key}"), device_id)?;
+        }
         let _ = self.history_manager.unhide_messages_for_peer(&peer_id);
+        if let Some(canonical) = self
+            .get_canonical_peer_id(&peer_id)
+            .filter(|canonical| canonical != &peer_id)
+        {
+            let _ = self.history_manager.unhide_messages_for_peer(&canonical);
+        }
         Ok(())
     }
 
@@ -1484,6 +1528,15 @@ impl IronCore {
         _device_id: Option<String>,
         reason: Option<String>,
     ) -> Result<(), IronCoreError> {
+        let contact_public_key = self
+            .contact_manager
+            .read()
+            .get(peer_id.clone())
+            .ok()
+            .flatten()
+            .map(|contact| contact.public_key)
+            .filter(|public_key| public_key != &peer_id);
+
         // Register known devices before block_and_delete so they get auto-blocked
         if let Some(contact) = self
             .contact_manager
@@ -1502,10 +1555,22 @@ impl IronCore {
 
         self.blocked_manager
             .write()
-            .block_and_delete(peer_id.clone(), reason)?;
+            .block_and_delete(peer_id.clone(), reason.clone())?;
+        if let Some(public_key) = contact_public_key {
+            self.blocked_manager
+                .write()
+                .block_and_delete(format!("pk:{public_key}"), reason.clone())?;
+        }
         // Purge messages from this peer
         let _ = self.history_manager.remove_conversation(peer_id.clone());
         let _ = self.outbox.write().drain_for_peer(&peer_id);
+        if let Some(canonical) = self
+            .get_canonical_peer_id(&peer_id)
+            .filter(|canonical| canonical != &peer_id)
+        {
+            let _ = self.history_manager.remove_conversation(canonical.clone());
+            let _ = self.outbox.write().drain_for_peer(&canonical);
+        }
         Ok(())
     }
 
@@ -2925,8 +2990,20 @@ impl IronCore {
                                     "Message queued to transport; awaiting delivery receipt"
                                 );
                                 succeeded += 1;
+                                msg.attempts = current_attempt;
                                 msg.state = crate::store::outbox::MessageState::Enqueued;
-                                msg.next_retry_at = None;
+                                let now_secs = web_time::SystemTime::now()
+                                    .duration_since(web_time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs();
+                                if current_attempt >= 12 {
+                                    msg.state = crate::store::outbox::MessageState::Failed;
+                                    msg.next_retry_at = None;
+                                } else {
+                                    let receipt_timeout =
+                                        2u64.saturating_pow(current_attempt.min(12)).min(3600);
+                                    msg.next_retry_at = Some(now_secs + receipt_timeout);
+                                }
                                 // Transport queuing is not delivery confirmation. Keep the
                                 // message in the outbox until an application-level receipt
                                 // calls mark_message_sent.
@@ -4458,7 +4535,7 @@ impl IronCore {
         device_id: &str,
     ) -> Result<(), crate::IronCoreError> {
         self.blocked_manager
-            .read()
+            .write()
             .register_device_id(peer_id, device_id)
             .map(|_| ())
     }
