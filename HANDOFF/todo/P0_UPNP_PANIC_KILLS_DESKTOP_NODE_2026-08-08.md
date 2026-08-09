@@ -1,6 +1,6 @@
 # P0 -- UPnP panic kills the desktop node ~5 minutes after start
 
-Status: Active
+Status: Fixed in PR #139 hardening branch; Windows soak still required
 Severity: P0 (release blocker for v0.4.0)
 Discovered: 2026-08-08 (Windows orchestrator lane, live node run)
 Affects: all non-Android desktop lanes (Windows CLI, macOS CLI, likely iOS)
@@ -118,15 +118,17 @@ Caveat carried forward: `tasklist /FO CSV /NH` silently returns nothing under
 Git Bash (it mangles `/FO` into a path), producing a false "process not
 running". Use plain `tasklist | grep -i`.
 
-## Not yet decided (needs operator direction)
+## Resolution
 
-Candidate directions, NOT yet chosen -- `core/src/transport/` changes are
-merge-blocked pending adversarial review per AGENTS.md rule 8:
+The user-authorized remediation removes the optional `libp2p-upnp` feature and
+the unconditionally constructed UPnP behaviour from the workspace. Relay v2,
+DCUtR, AutoNAT, and ledger-based address exchange remain available for the
+mesh; a gateway port-mapping dependency is no longer allowed to terminate the
+swarm event loop. The Windows authoritative lane must still run a long-lived
+soak and confirm that no `panicked` or `swarm_event_loop_died` lines occur.
 
-- Gate or remove the libp2p `upnp` feature (UPnP contributes nothing to LAN-only
-  testing and is the sole source of this panic).
-- Upgrade `libp2p-upnp` past 0.5.0 if a fix exists upstream.
-- Keep UPnP but isolate the behaviour so its panic cannot take down the swarm
-  event loop.
+## Not selected
 
-Do not implement without operator sign-off and the rule 8 review.
+The previously listed directions are superseded by the feature removal above.
+No additional UPnP code path remains in the workspace; the Windows soak is the
+remaining evidence gate.

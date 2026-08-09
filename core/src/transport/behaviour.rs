@@ -20,8 +20,6 @@ use crate::store::ledger_entry::{LedgerExchangeRequest, LedgerExchangeResponse};
 use libp2p::mdns;
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 use libp2p::swarm::behaviour::toggle::Toggle;
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-use libp2p::upnp;
 use libp2p::{
     autonat, connection_limits, dcutr, gossipsub, identify, kad, ping, relay,
     request_response::{self, ProtocolSupport},
@@ -67,9 +65,6 @@ pub struct IronCoreBehaviour {
     pub mdns: Toggle<mdns::tokio::Behaviour>,
     /// Peer identification — advertises relay capability
     pub identify: identify::Behaviour,
-    /// UPnP port mapping
-    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-    pub upnp: upnp::tokio::Behaviour,
     /// Connection limits to prevent resource exhaustion
     pub connection_limits: connection_limits::Behaviour,
 }
@@ -516,9 +511,6 @@ impl IronCoreBehaviour {
                     peer_id
                 )),
         );
-        #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-        let upnp = upnp::tokio::Behaviour::default();
-
         // Relay server - all nodes act as relays for NAT traversal
         let relay_server = relay::Behaviour::new(peer_id, relay::Config::default());
 
@@ -547,8 +539,6 @@ impl IronCoreBehaviour {
             #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
             mdns,
             identify,
-            #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-            upnp,
             connection_limits,
         })
     }

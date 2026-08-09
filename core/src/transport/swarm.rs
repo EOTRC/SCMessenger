@@ -4572,28 +4572,6 @@ pub async fn start_swarm_with_config(
                                 }
                             }
 
-                            #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android"), not(target_os = "windows")))]
-                            SwarmEvent::Behaviour(super::behaviour::IronCoreBehaviourEvent::Upnp(event)) => {
-                                use libp2p::upnp;
-                                match event {
-                                    upnp::Event::NewExternalAddr(addr) => {
-                                        tracing::info!("UPnP: successfully mapped external address {}", addr);
-                                        swarm.add_external_address(addr.clone());
-                                        let _ = event_tx.send(SwarmEvent2::PortMapping(format!("mapped:{}", addr))).await;
-                                    }
-                                    upnp::Event::GatewayNotFound => {
-                                        tracing::debug!("UPnP: no compatible gateway found");
-                                    }
-                                    upnp::Event::NonRoutableGateway => {
-                                        tracing::debug!("UPnP: gateway is not a routing device");
-                                    }
-                                    upnp::Event::ExpiredExternalAddr(addr) => {
-                                        tracing::info!("UPnP: external address mapping expired: {}", addr);
-                                        let _ = event_tx.send(SwarmEvent2::PortMapping(format!("expired:{}", addr))).await;
-                                    }
-                                }
-                            }
-
                             SwarmEvent::NewListenAddr { address, .. } => {
                                 tracing::info!("Listening on {}", address);
                                 bound_addresses.push(address.clone());
