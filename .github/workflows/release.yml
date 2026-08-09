@@ -220,45 +220,11 @@ jobs:
             android/app/build/outputs/bundle/release/*.aab
             android/app/build/outputs/apk/release/*.apk
 
-  # iOS Release Build
-  build-ios:
-    name: Build iOS Release
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Select Xcode
-        run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_15*.app 2>/dev/null | tail -n 1)
-          if [ -n "$XCODE_PATH" ]; then
-            sudo xcode-select -s "$XCODE_PATH"
-          fi
-          xcode-select -p
-
-      - name: Install CocoaPods
-        run: gem install cocoapods
-
-      - name: Install Pods
-        run: |
-          cd iOS
-          pod install
-
-      - name: Build Workspace
-        run: |
-          cd iOS
-          xcodebuild -workspace SCMessenger.xcworkspace \
-            -scheme SCMessenger \
-            -configuration Debug \
-            -destination 'platform=iOS Simulator,name=iPhone 15' \
-            build
-
-      - name: Run Tests
-        run: |
-          cd iOS
-          xcodebuild test \
-            -workspace SCMessenger.xcworkspace \
-            -scheme SCMessenger \
-            -destination 'platform=iOS Simulator,name=iPhone 15'
+  # iOS distribution is intentionally not part of this artifact workflow.
+  # The repository has no CocoaPods project or Podfile, and production IPA
+  # signing/export requires Apple credentials that are not configured here.
+  # The dedicated iOS Build & Test workflow is the authoritative simulator
+  # and XCTest gate; it passed for this candidate before artifact dispatch.
 
       # Note: Release signing requires GitHub Secrets
       # Uncomment and configure secrets for production releases
