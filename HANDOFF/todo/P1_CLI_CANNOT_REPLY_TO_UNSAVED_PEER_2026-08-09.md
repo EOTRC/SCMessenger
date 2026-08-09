@@ -1,10 +1,24 @@
-# P1 -- CLI can receive and decrypt from a peer it cannot reply to
+# P1 -- Three defects in the CLI send path (`handle_send_message`)
 
 Status: Active
-Severity: P1 (blocks the reply leg of any five-node gate unless worked around)
+Severity: P1 (blocks the reply leg of any five-node gate, and corrupts its scoring)
 Discovered: 2026-08-09, live on the Windows node during the candidate soak
 Affects: `scmessenger-cli` (Windows, macOS, Linux desktop nodes)
 Candidate observed on: `33c16712`
+
+All three live in the same ~80-line handler, `cli/src/api.rs:561-632`.
+
+| # | Defect | Run-1 impact |
+|---|---|---|
+| A | Cannot reply to a peer that is not in contacts | Reply leg fails; reads as a transport fault |
+| B | `/api/send` reports failure for messages that are then delivered by retry | False negatives; under-reports delivery |
+| C | Outbound messages are never written to durable history | Sender-side persistence cannot be scored at all |
+
+Defects B and C were found while sending the reply that worked around A.
+
+---
+
+# A -- CLI can receive and decrypt from a peer it cannot reply to
 
 ## Summary
 
@@ -92,7 +106,7 @@ product, but the CLI change should be reviewed with that in mind rather than
 copied uncritically -- and it must interact correctly with the blocked-peer
 gates added in this PR.
 
-## Acceptance criteria
+## Acceptance criteria (A)
 
 1. A desktop node messaged first by an unknown peer can reply without manual
    contact creation.
@@ -101,3 +115,90 @@ gates added in this PR.
 3. Regression test covering reply-to-unsaved-peer and reply-to-blocked-peer.
 4. Platform behaviour documented: whether CLI auto-creates contacts, and if it
    diverges from Android, why.
+
+---
+
+# B -- `/api/send` reports failure for messages that are then delivered
+
+## Observed
+
+`POST /api/send` returned `500 Failed to send message via BLE and Swarm` at
+`2026-08-09T11:11:20Z`. The node log for the same message id, same second:
+
+```
+11:11:20.672  ROUTE_DECISION message_id=...-1786273880672 attempt=1 pass=0
+11:11:20.807  WARN Delivery pass failed for message ...-1786273880672; continuing cyclic retries
+11:11:20.808  ROUTE_DECISION message_id=...-1786273880672 attempt=2 pass=1
+11:11:20.835  [OK] Message delivered successfully to 12D3KooWNnPi9wqUJ7... (27ms)
+```
+
+**The message was delivered 28 ms after the API told the caller it had failed.**
+
+## Root cause
+
+`cli/src/api.rs:612-627`:
+
+```rust
+let sent = crate::ble_mesh::send_ble_message(&peer_id.to_string(), &prepared.envelope_data)
+    .await
+    .is_ok()
+    || ctx.swarm_handle.send_message(peer_id, prepared.envelope_data, None, None).await.is_ok();
+
+if !sent {
+    return Err((StatusCode::INTERNAL_SERVER_ERROR, "Failed to send message via BLE and Swarm".to_string()));
+}
+```
+
+`sent` captures only the outcome of the **first** BLE attempt and the **first**
+swarm attempt. The swarm's cyclic-retry machinery keeps working after
+`send_message` returns, and frequently succeeds on a later pass -- but the HTTP
+response has already been decided. The API result and the delivery outcome are
+two different facts, and only the pessimistic one reaches the caller.
+
+## Run-1 impact
+
+Any harness that scores sends on the `/api/send` response will **under-report
+deliveries**. A message counted as failed here was on the wire and acknowledged.
+This is a false negative in the exact direction that makes a passing run look
+like a failing one.
+
+## Acceptance criteria (B)
+
+1. The response distinguishes "rejected outright" from "queued, retrying" from
+   "delivered". A 202-with-message-id plus a status lookup is the natural shape.
+2. Run-1 scoring does not treat a non-200 from `/api/send` as proof of
+   non-delivery; correlate on message id in the node log instead.
+
+---
+
+# C -- outbound messages are never written to durable history
+
+## Observed
+
+After two confirmed outbound deliveries from this node (81 ms at
+`10:53:51Z`, 27 ms at `11:11:20Z`), `POST /api/history {"limit":10}` returned
+**only `direction: "received"` rows**. Neither sent message appears. The local
+conversation view is therefore half a conversation.
+
+## Root cause
+
+`handle_send_message` prepares the envelope, attempts delivery, and returns. It
+never touches `core.history_store_manager()`. Receives are recorded (the inbound
+path emits `event="inbox_receive"` and rows appear in history); sends are not.
+
+## Run-1 impact
+
+This is the more serious of the two. The agreed scoring standard is **receiver
+decrypt + durable history + receipt**. On the sender side there is no durable
+history to check, so send-side persistence cannot be evidenced at all on a
+desktop node -- and a restart loses any record that the node ever sent anything.
+
+## Acceptance criteria (C)
+
+1. A successful send writes a `direction: "sent"` row to durable history with
+   message id, recipient, and timestamp.
+2. The row survives a node restart.
+3. Confirm whether Android and iOS record outbound messages; if they do, this is
+   also a platform-parity gap and belongs in `docs/FEATURE_PARITY.md`.
+4. Decide whether a queued-but-not-yet-delivered send is recorded, and with what
+   status, so B and C stay consistent.
