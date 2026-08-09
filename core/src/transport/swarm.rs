@@ -1508,6 +1508,7 @@ fn dispatch_pending_custody_for_peer(
     swarm: &mut libp2p::Swarm<IronCoreBehaviour>,
     custody_store: &RelayCustodyStore,
     destination_peer: PeerId,
+    core_handle: &Option<Weak<crate::IronCore>>,
     pending_custody_dispatches: &mut HashMap<
         libp2p::request_response::OutboundRequestId,
         PendingCustodyDispatch,
@@ -1515,6 +1516,15 @@ fn dispatch_pending_custody_for_peer(
     max_inflight_dispatches: usize,
     trigger_reason: &str,
 ) {
+    if peer_is_blocked(core_handle, destination_peer) {
+        tracing::debug!(
+            "Skipping custody dispatch to blocked peer {} ({})",
+            destination_peer,
+            trigger_reason
+        );
+        return;
+    }
+
     if !swarm.is_connected(&destination_peer) {
         return;
     }
@@ -2922,6 +2932,7 @@ pub async fn start_swarm_with_config(
                                 &mut swarm,
                                 &relay_custody_store,
                                 destination,
+                                &core_handle,
                                 &mut pending_custody_dispatches,
                                 RELAY_MAX_INFLIGHT_DISPATCHES,
                                 "periodic_pull",
@@ -3820,6 +3831,7 @@ pub async fn start_swarm_with_config(
                                                                                 &mut swarm,
                                                                                 &relay_custody_store,
                                                                                 destination,
+                                                                                &core_handle,
                                                                                 &mut pending_custody_dispatches,
                                                                                 RELAY_MAX_INFLIGHT_DISPATCHES,
                                                                                 "accept_immediate_pull",
@@ -4807,6 +4819,7 @@ pub async fn start_swarm_with_config(
                                     &mut swarm,
                                     &relay_custody_store,
                                     peer_id,
+                                    &core_handle,
                                     &mut pending_custody_dispatches,
                                     RELAY_MAX_INFLIGHT_DISPATCHES,
                                     "peer_reconnect",
@@ -4926,6 +4939,34 @@ pub async fn start_swarm_with_config(
                                 // fresh ledger exchange so failover cannot leave this
                                 // peer with stale topology knowledge.
                                 ledger_exchanged_peers.remove(&peer_id);
+                                if !peer_is_blocked(&core_handle, peer_id) {
+                                    let entries = core_handle
+                                        .as_ref()
+                                        .and_then(|weak| weak.upgrade())
+                                        .map(|core| {
+                                            core.ledger_manager.exchange_response_entries(
+                                                LEDGER_EXCHANGE_MAX_RESPONSE_PEERS,
+                                                &peer_id.to_string(),
+                                                &[],
+                                            )
+                                        })
+                                        .unwrap_or_default();
+                                    let request = LedgerExchangeRequest {
+                                        version_tag: 1,
+                                        peers: entries,
+                                        sender_peer_id: local_peer_id.to_string(),
+                                        version: 1,
+                                    };
+                                    let _ = swarm
+                                        .behaviour_mut()
+                                        .ledger_exchange
+                                        .send_request(&peer_id, request);
+                                    ledger_exchanged_peers.insert(peer_id);
+                                    tracing::debug!(
+                                        "Re-exchanged public ledger with {} after one path closed",
+                                        peer_id
+                                    );
+                                }
                                 tracing::debug!(
                                     "Connection to {} closed, {} still established; skipping peer teardown",
                                     peer_id,
@@ -5356,6 +5397,10 @@ pub async fn start_swarm_with_config(
                             }
 
                             SwarmCommand::RegisterIdentity { peer_id, request, reply } => {
+                                if peer_is_blocked(&core_handle, peer_id) {
+                                    let _ = reply.send(Err("blocked".to_string())).await;
+                                    continue;
+                                }
                                 let request_id = swarm
                                     .behaviour_mut()
                                     .registration
@@ -5364,6 +5409,10 @@ pub async fn start_swarm_with_config(
                             }
 
                             SwarmCommand::DeregisterIdentity { peer_id, request, reply } => {
+                                if peer_is_blocked(&core_handle, peer_id) {
+                                    let _ = reply.send(Err("blocked".to_string())).await;
+                                    continue;
+                                }
                                 let request_id = swarm
                                     .behaviour_mut()
                                     .registration
@@ -5372,6 +5421,10 @@ pub async fn start_swarm_with_config(
                             }
 
                             SwarmCommand::RequestAddressReflection { peer_id, reply } => {
+                                if peer_is_blocked(&core_handle, peer_id) {
+                                    let _ = reply.send(Err("blocked".to_string())).await;
+                                    continue;
+                                }
                                 let mut request_id_bytes = [0u8; 16];
                                 use rand::RngCore;
                                 rand::thread_rng().fill_bytes(&mut request_id_bytes);
@@ -6198,6 +6251,10 @@ pub async fn start_swarm_with_config(
                                 pending_direct_replies.insert(request_id, reply);
                             }
                             SwarmCommand::RegisterIdentity { peer_id, request, reply } => {
+                                if peer_is_blocked(&core_handle, peer_id) {
+                                    let _ = reply.send(Err("blocked".to_string())).await;
+                                    continue;
+                                }
                                 let request_id = swarm
                                     .behaviour_mut()
                                     .registration
@@ -6205,6 +6262,10 @@ pub async fn start_swarm_with_config(
                                 pending_registration_replies.insert(request_id, reply);
                             }
                             SwarmCommand::DeregisterIdentity { peer_id, request, reply } => {
+                                if peer_is_blocked(&core_handle, peer_id) {
+                                    let _ = reply.send(Err("blocked".to_string())).await;
+                                    continue;
+                                }
                                 let request_id = swarm
                                     .behaviour_mut()
                                     .registration
@@ -6212,6 +6273,10 @@ pub async fn start_swarm_with_config(
                                 pending_registration_replies.insert(request_id, reply);
                             }
                             SwarmCommand::RequestAddressReflection { peer_id, reply } => {
+                                if peer_is_blocked(&core_handle, peer_id) {
+                                    let _ = reply.send(Err("blocked".to_string())).await;
+                                    continue;
+                                }
                                 let mut request_id_bytes = [0u8; 16];
                                 use rand::RngCore;
                                 rand::thread_rng().fill_bytes(&mut request_id_bytes);
@@ -6806,6 +6871,7 @@ pub async fn start_swarm_with_config(
                                                                                     &mut swarm,
                                                                                     &relay_custody_store,
                                                                                     destination,
+                                                                                    &core_handle,
                                                                                     &mut pending_custody_dispatches,
                                                                                     RELAY_MAX_INFLIGHT_DISPATCHES,
                                                                                     "accept_immediate_pull",
@@ -7023,6 +7089,7 @@ pub async fn start_swarm_with_config(
                                     &mut swarm,
                                     &relay_custody_store,
                                     peer_id,
+                                    &core_handle,
                                     &mut pending_custody_dispatches,
                                     RELAY_MAX_INFLIGHT_DISPATCHES,
                                     "peer_reconnect",
@@ -7066,6 +7133,23 @@ pub async fn start_swarm_with_config(
                                     &connection_id.to_string(),
                                 );
                                 ledger_exchanged_peers.remove(&peer_id);
+                                if !peer_is_blocked(&core_handle, peer_id) {
+                                    let request = LedgerExchangeRequest {
+                                        version_tag: 1,
+                                        peers: Vec::new(),
+                                        sender_peer_id: local_peer_id.to_string(),
+                                        version: 1,
+                                    };
+                                    let _ = swarm
+                                        .behaviour_mut()
+                                        .ledger_exchange
+                                        .send_request(&peer_id, request);
+                                    ledger_exchanged_peers.insert(peer_id);
+                                    tracing::debug!(
+                                        "Re-exchanged empty ledger with {} after one path closed (WASM)",
+                                        peer_id
+                                    );
+                                }
                                 tracing::debug!(
                                     "Connection to {} closed, {} still established; skipping peer teardown (WASM)",
                                     peer_id,
@@ -7234,6 +7318,7 @@ pub async fn start_swarm_with_config(
                             &mut swarm,
                             &relay_custody_store,
                             destination,
+                            &core_handle,
                             &mut pending_custody_dispatches,
                             RELAY_MAX_INFLIGHT_DISPATCHES,
                             "periodic_pull",
