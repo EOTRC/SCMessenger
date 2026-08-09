@@ -2405,6 +2405,7 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>, auto_reply: boo
                                 if let Ok(messages) = history_rx.conversation(peer_id.clone(), l) {
                                     let history_messages = messages.into_iter().map(|m| {
                                         crate::api::HistoryMessage {
+                                            id: m.id,
                                             peer_id: m.peer_id,
                                             content: m.content,
                                             direction: match m.direction {
@@ -2412,6 +2413,7 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>, auto_reply: boo
                                                 MessageDirection::Received => "received".to_string(),
                                             },
                                             timestamp: m.timestamp,
+                                            delivered: m.delivered,
                                         }
                                     }).collect::<Vec<_>>();
                                     let history_messages: Vec<serde_json::Value> = history_messages.into_iter().map(|m| serde_json::to_value(m).unwrap_or_default()).collect();
