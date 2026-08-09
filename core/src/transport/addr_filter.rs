@@ -357,11 +357,23 @@ pub fn is_dialable_trusted_local_proxy_parsed(addr: &Multiaddr, dns: DnsPolicy) 
 /// protocol component can never be interpreted two different ways.
 fn check_multiaddr(addr: &Multiaddr, audience: Audience, dns: DnsPolicy) -> bool {
     let mut has_transport = false;
+    let mut has_circuit = false;
 
     for proto in addr.iter() {
+        // After the first relay marker, the remaining components describe the
+        // target peer and are not independently dialed. Still reject a second
+        // marker: libp2p does not support nested relay circuits, and retaining
+        // one in the ledger creates a retry storm against an invalid path.
+        if has_circuit {
+            if matches!(proto, Protocol::P2pCircuit) {
+                return false;
+            }
+            continue;
+        }
+
         match proto {
             // Everything beyond the relay hop belongs to the relayed peer.
-            Protocol::P2pCircuit => return has_transport,
+            Protocol::P2pCircuit => has_circuit = true,
             Protocol::Ip4(ip) => {
                 has_transport = true;
                 if !ipv4_permitted(&ip, audience) {
@@ -628,14 +640,23 @@ pub fn is_recordable_multiaddr(multiaddr: &str) -> bool {
         return false;
     };
     let mut has_ip_transport = false;
+    let mut has_circuit = false;
     for proto in addr.iter() {
         match proto {
             // Everything past the relay hop belongs to the relayed peer; the
-            // hop itself has already been seen by this point.
-            Protocol::P2pCircuit => return has_ip_transport,
+            // hop itself has already been seen by this point. A second relay
+            // marker is malformed and cannot be dialed by libp2p.
+            Protocol::P2pCircuit => {
+                if has_circuit {
+                    return false;
+                }
+                has_circuit = true;
+            }
             Protocol::Ip4(_) | Protocol::Ip6(_) => has_ip_transport = true,
             Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_) | Protocol::Dnsaddr(_) => {
-                return false
+                if !has_circuit {
+                    return false;
+                }
             }
             _ => {}
         }
@@ -1054,6 +1075,13 @@ mod tests {
             LOCAL,
             REMOTE
         ));
+    }
+
+    #[test]
+    fn rejects_nested_relay_circuits() {
+        let nested = "/ip4/203.0.113.9/tcp/443/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN/p2p-circuit/p2p/12D3KooWSHj3RRbBjD15g6wekV8y3mm57Pobmps2g2WJm6F67Lay/p2p-circuit/p2p/12D3KooWJ7t4Qz4VwzYbP4uU6z4aGz2gZ4nM6mX2sJ6j7V8b9c1d";
+        assert!(!is_dialable_multiaddr(nested, LOCAL, REMOTE));
+        assert!(!is_recordable_multiaddr(nested));
     }
 
     #[test]
