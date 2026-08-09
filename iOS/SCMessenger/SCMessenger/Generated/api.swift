@@ -1803,11 +1803,9 @@ public protocol IronCoreProtocol: AnyObject, Sendable {
     func getBlockedPeerDevices(peerId: String) throws  -> [String]
 
     /**
-     * Get the canonical peer ID (identity_id) for a given identifier.
-     * If the identifier is a valid Ed25519 public key, returns its derived
-     * identity_id. Otherwise returns the identifier unchanged.
-     * Used to map pending-request peerIds to the canonical format used by
-     * the blocked list (which deduplicates to identity_id).
+     * Get the canonical peer ID (identity_id) for an explicitly tagged
+     * identifier. Unprefixed 64-hex values are left unchanged because an
+     * identity_id can be a valid Ed25519 point by chance.
      */
     func getCanonicalPeerId(peerId: String)  -> String?
 
@@ -2763,11 +2761,9 @@ open func getBlockedPeerDevices(peerId: String)throws  -> [String]  {
 }
 
     /**
-     * Get the canonical peer ID (identity_id) for a given identifier.
-     * If the identifier is a valid Ed25519 public key, returns its derived
-     * identity_id. Otherwise returns the identifier unchanged.
-     * Used to map pending-request peerIds to the canonical format used by
-     * the blocked list (which deduplicates to identity_id).
+     * Get the canonical peer ID (identity_id) for an explicitly tagged
+     * identifier. Unprefixed 64-hex values are left unchanged because an
+     * identity_id can be a valid Ed25519 point by chance.
      */
 open func getCanonicalPeerId(peerId: String) -> String?  {
     return try!  FfiConverterOptionString.lift(try! rustCall() {
@@ -11104,7 +11100,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_scmessenger_core_checksum_method_ironcore_get_blocked_peer_devices() != 13718) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_scmessenger_core_checksum_method_ironcore_get_canonical_peer_id() != 11097) {
+    if (uniffi_scmessenger_core_checksum_method_ironcore_get_canonical_peer_id() != 2630) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_scmessenger_core_checksum_method_ironcore_get_device_id() != 42390) {
