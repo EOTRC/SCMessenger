@@ -469,7 +469,23 @@ pub fn is_disclosable_on_rfc1918_network(
         return false;
     }
 
-    let Some(requester_ip) = requester_addr.and_then(first_ip_component) else {
+    let Some(requester_addr) = requester_addr else {
+        return false;
+    };
+    let Ok(requester_multiaddr) = requester_addr.parse::<Multiaddr>() else {
+        return false;
+    };
+    // A circuit address identifies the relay hop, not the peer's local
+    // network. Treating that hop as observed requester adjacency would allow
+    // a LAN-resident relay to authorize private-ledger disclosure to a remote
+    // circuit peer.
+    if requester_multiaddr
+        .iter()
+        .any(|proto| matches!(proto, Protocol::P2pCircuit))
+    {
+        return false;
+    }
+    let Some(requester_ip) = first_ip_component(requester_addr) else {
         return false;
     };
     if !is_safe_private_ip(&requester_ip) {
@@ -1430,6 +1446,21 @@ mod tests {
         assert!(!is_disclosable_on_rfc1918_network(
             "/ip4/192.168.1.42/tcp/9001",
             Some("/ip4/127.0.0.1/tcp/9001"),
+            &local_addrs,
+        ));
+        assert!(!is_disclosable_on_rfc1918_network(
+            "/ip4/192.168.1.42/tcp/9001",
+            Some("/ip4/192.168.1.50/tcp/443/p2p-circuit"),
+            &local_addrs,
+        ));
+        assert!(!is_disclosable_on_rfc1918_network(
+            "/ip4/192.168.1.42/tcp/9001",
+            Some("/p2p-circuit"),
+            &local_addrs,
+        ));
+        assert!(!is_disclosable_on_rfc1918_network(
+            "/ip4/192.168.1.42/tcp/9001",
+            Some("not-a-multiaddr"),
             &local_addrs,
         ));
     }
