@@ -5037,6 +5037,11 @@ pub async fn start_swarm_with_config(
                             }
 
                             SwarmEvent::ConnectionEstablished { peer_id, endpoint, connection_id, .. } => {
+                                // A peer may legitimately have several simultaneous paths.
+                                // Only the transition from zero active paths to connected
+                                // should flush the outbox; flushing once per path causes a
+                                // delivery storm when mDNS, relay, and ledger dials converge.
+                                let had_active_connection = connection_tracker.get_connection(&peer_id).is_some();
                                 let remote_addr = endpoint.get_remote_address().clone();
 
                                 // P1 Item 3: Reset backoff state on successful connection
@@ -5137,7 +5142,9 @@ pub async fn start_swarm_with_config(
                                             }
                                         }
 
-                                        c_arc.handle_peer_connection_event(&peer_id.to_string(), true);
+                                        if !had_active_connection {
+                                            c_arc.handle_peer_connection_event(&peer_id.to_string(), true);
+                                        }
                                     }
                                 }
 
