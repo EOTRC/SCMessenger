@@ -232,11 +232,45 @@ impl BlockedManager {
             identifier_flavor: flavor,
             ..blocked
         };
+
+        // Resolve the canonical alias before the first write. For a public-key
+        // request, persist the identity_id row first so an interrupted
+        // dual-flavor write fails closed: ingress can still match the
+        // canonical block even if the legacy/public-key mirror is the write
+        // that fails. There is no transactional batch primitive in the
+        // StorageBackend, so ordering is the fail-safe we can guarantee here.
+        let derived_id = if flavor == IdentifierFlavor::PublicKey {
+            Some(
+                identity_id_from_public_key_hex(&blocked.peer_id)
+                    .ok_or(IronCoreError::InvalidInput)?,
+            )
+        } else {
+            None
+        };
+
+        let devices = if blocked.device_id.is_none() {
+            self.get_known_devices(&blocked.peer_id)?
+        } else {
+            Vec::new()
+        };
+
+        if let Some(derived_id) = derived_id.as_ref() {
+            let canonical_blocked = BlockedIdentity {
+                peer_id: derived_id.clone(),
+                device_id: blocked.device_id.clone(),
+                blocked_at: blocked.blocked_at,
+                reason: blocked.reason.clone(),
+                notes: blocked.notes.clone(),
+                is_deleted: blocked.is_deleted,
+                identifier_flavor: IdentifierFlavor::IdentityId,
+            };
+            self.write_block_entry(&canonical_blocked)?;
+        }
+
         self.write_block_entry(&blocked)?;
 
         // Peer-level block: also block every known device for this peer
         if blocked.device_id.is_none() {
-            let devices = self.get_known_devices(&blocked.peer_id)?;
             for device_id in &devices {
                 let device_blocked = BlockedIdentity {
                     peer_id: blocked.peer_id.clone(),
@@ -250,23 +284,9 @@ impl BlockedManager {
                 self.write_block_entry(&device_blocked)?;
             }
 
-            if flavor == IdentifierFlavor::PublicKey {
-                let Some(derived_id) = identity_id_from_public_key_hex(&blocked.peer_id) else {
-                    return Err(IronCoreError::InvalidInput);
-                };
+            if let Some(derived_id) = derived_id.as_ref() {
                 // Mirror every physical block entry under the alternate
                 // identifier flavor. This also covers known devices.
-                let alias_blocked = BlockedIdentity {
-                    peer_id: derived_id.clone(),
-                    device_id: None,
-                    blocked_at: blocked.blocked_at,
-                    reason: blocked.reason.clone(),
-                    notes: blocked.notes.clone(),
-                    is_deleted: blocked.is_deleted,
-                    identifier_flavor: IdentifierFlavor::IdentityId,
-                };
-                self.write_block_entry(&alias_blocked)?;
-
                 for device_id in &devices {
                     let alias_dev = BlockedIdentity {
                         peer_id: derived_id.clone(),
@@ -280,22 +300,6 @@ impl BlockedManager {
                     self.write_block_entry(&alias_dev)?;
                 }
             }
-        } else if flavor == IdentifierFlavor::PublicKey {
-            let Some(derived_id) = identity_id_from_public_key_hex(&blocked.peer_id) else {
-                return Err(IronCoreError::InvalidInput);
-            };
-            // Device-specific blocks must also be mirrored; otherwise a
-            // mixed-version device identifier can bypass a targeted block.
-            let alias_blocked = BlockedIdentity {
-                peer_id: derived_id,
-                device_id: blocked.device_id.clone(),
-                blocked_at: blocked.blocked_at,
-                reason: blocked.reason.clone(),
-                notes: blocked.notes.clone(),
-                is_deleted: blocked.is_deleted,
-                identifier_flavor: IdentifierFlavor::IdentityId,
-            };
-            self.write_block_entry(&alias_blocked)?;
         }
 
         Ok(())

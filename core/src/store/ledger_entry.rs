@@ -2144,6 +2144,37 @@ mod tests {
         );
     }
 
+    /// F4: identity annotation is not evidence that an address was reached.
+    /// An unproven row carrying a public key must remain out of exchange
+    /// responses, otherwise an attacker can amplify an address into the mesh.
+    #[test]
+    fn exchange_response_excludes_unproven_entries_carrying_a_public_key() {
+        let (_dir, mgr) = manager();
+        let addr = "/ip4/198.51.100.7/tcp/9001";
+
+        mgr.annotate_identities_batch(vec![(addr.to_string(), peer(), Some("a".repeat(64)), None)]);
+
+        let unproven = mgr.seed_addresses(64);
+        assert!(
+            unproven.iter().any(|entry| {
+                entry.multiaddr == addr && entry.success_count == 0 && entry.public_key.is_some()
+            }),
+            "precondition: annotation must create an unproven keyed row"
+        );
+
+        let response = mgr.exchange_response_entries_for_request(
+            64,
+            &peer(),
+            Some("/ip4/198.51.100.20/tcp/9001"),
+            &[],
+        );
+
+        assert!(
+            !response.iter().any(|entry| entry.multiaddr == addr),
+            "an unproven entry must not be disclosed merely because it has a public key"
+        );
+    }
+
     // ------------------------------------------------------------------
     // FusionLite -- RFC1918 same-network disclosure + contact chaining
     // ------------------------------------------------------------------

@@ -14,17 +14,20 @@ class BleL2capManagerTest {
         assertEquals(1_000L, policy.recordFailure())
         assertEquals(2_000L, policy.recordFailure())
         assertEquals(4_000L, policy.recordFailure())
+        assertEquals(8_000L, policy.recordFailure())
+        assertEquals(16_000L, policy.recordFailure())
+        assertEquals(L2CAP_ACCEPT_MAX_BACKOFF_MS, policy.recordFailure())
         repeat(100) {
             assertEquals(L2CAP_ACCEPT_MAX_BACKOFF_MS, policy.recordFailure())
         }
-        assertEquals(105, policy.failureCount)
+        assertEquals(108, policy.failureCount)
     }
 
     @Test
     fun acceptRecoveryDelayIsCapped() {
         val policy = BleL2capAcceptRecoveryPolicy()
 
-        repeat(5) { policy.recordFailure() }
+        repeat(8) { policy.recordFailure() }
 
         assertEquals(L2CAP_ACCEPT_MAX_BACKOFF_MS, policy.recordFailure())
         assertEquals(L2CAP_ACCEPT_MAX_BACKOFF_MS, policy.recordFailure())

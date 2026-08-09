@@ -23,6 +23,10 @@ use tower_http::cors::{Any, CorsLayer};
 pub const API_PORT: u16 = 9876;
 pub const API_ADDR: &str = "127.0.0.1:9876";
 
+const BUILD_VERSION: &str = env!("CARGO_PKG_VERSION");
+const BUILD_GIT_HASH: &str = env!("SCM_GIT_HASH");
+const BUILD_TIME: &str = env!("SCM_BUILD_TIME");
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SendMessageRequest {
     pub recipient: String,
@@ -1204,6 +1208,17 @@ pub async fn start_api_server(ctx: ApiContext, bind_addr: Option<String>) -> Res
         .route(
             "/health",
             get(|| async { axum::Json(serde_json::json!({"status": "healthy"})) }),
+        )
+        .route(
+            "/version",
+            get(|| async {
+                axum::Json(serde_json::json!({
+                    "version": BUILD_VERSION,
+                    "git_hash": BUILD_GIT_HASH,
+                    "build_time": BUILD_TIME,
+                    "core_provenance": scmessenger_core::get_build_provenance(),
+                }))
+            }),
         )
         .route("/api/identity", get(handle_get_identity))
         .route("/api/send", post(handle_send_message))
