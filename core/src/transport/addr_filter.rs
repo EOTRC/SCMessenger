@@ -500,7 +500,7 @@ pub fn is_disclosable_on_rfc1918_network(
     let Some(entry_ip) = first_ip_component(multiaddr) else {
         return false;
     };
-    if !is_safe_private_ip(&entry_ip) || !same_private_subnet(&entry_ip, &requester_ip) {
+    if !is_private_adjacency_ip(&entry_ip) || !same_private_subnet(&entry_ip, &requester_ip) {
         return false;
     }
 
@@ -1465,6 +1465,18 @@ mod tests {
         assert!(!is_disclosable_on_rfc1918_network(
             "/ip4/100.64.0.12/tcp/9001",
             Some("/ip4/100.64.0.11/tcp/9001"),
+            &local_addrs,
+        ));
+    }
+
+    #[test]
+    fn rfc1918_disclosure_rejects_nat64_embedded_cgnat_adjacency() {
+        // The same shared-space rule applies when CGNAT is embedded in an
+        // IPv6 NAT64 address; neither side may authorize private disclosure.
+        let local_addrs = vec!["/ip6/64:ff9b::6440:1a/tcp/9001".to_string()];
+        assert!(!is_disclosable_on_rfc1918_network(
+            "/ip6/64:ff9b::6440:1c/tcp/9001",
+            Some("/ip6/64:ff9b::6440:1b/tcp/9001"),
             &local_addrs,
         ));
     }
