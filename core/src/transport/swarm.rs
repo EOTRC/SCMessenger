@@ -353,9 +353,47 @@ pub fn build_mdns_advertised_addrs(all_listeners: &[Multiaddr]) -> Vec<Multiaddr
             //  - NO p2p-circuit
             //  - NO /ws/ websocket relay
             let s = a.to_string();
-            !s.contains("/p2p-circuit/") && !s.contains("/ws/") && !s.contains("/wss/")
+            is_discoverable_multiaddr(a)
+                && !s.contains("/p2p-circuit/")
+                && !s.contains("/ws/")
+                && !s.contains("/wss/")
         })
         .cloned()
+        .collect()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn build_routable_relay_addrs(
+    relay_listen_addrs: &[Multiaddr],
+    local_transport_addrs: &[String],
+) -> Vec<Multiaddr> {
+    relay_listen_addrs
+        .iter()
+        .filter_map(|addr| {
+            if !is_discoverable_multiaddr(addr)
+                || addr
+                    .iter()
+                    .any(|proto| matches!(proto, libp2p::multiaddr::Protocol::P2pCircuit))
+            {
+                return None;
+            }
+
+            let stripped = crate::transport::addr_filter::strip_peer_id_multiaddr(addr);
+            if stripped.is_empty()
+                || crate::transport::addr_filter::is_self_address(
+                    &stripped.to_string(),
+                    local_transport_addrs,
+                )
+            {
+                // Identify can echo our observed socket back in a relay's
+                // listen list. Treating that reflection as the relay's own
+                // address creates a reservation that returns through us and
+                // eventually advertises a nested/self circuit.
+                return None;
+            }
+
+            Some(stripped)
+        })
         .collect()
 }
 
@@ -4641,17 +4679,15 @@ pub async fn start_swarm_with_config(
                                     // external addresses as if they belonged to the relay:
                                     // that creates self-returning and nested circuits as the
                                     // mesh grows.
-                                    let routable_relay_addrs: Vec<Multiaddr> = info.listen_addrs
+                                    let local_transport_addrs: Vec<String> = bound_addresses
                                         .iter()
-                                        .filter(|a| {
-                                            is_discoverable_multiaddr(a)
-                                                && !a.iter().any(|proto| matches!(
-                                                    proto,
-                                                    libp2p::multiaddr::Protocol::P2pCircuit
-                                                ))
-                                        })
-                                        .map(crate::transport::addr_filter::strip_peer_id_multiaddr)
+                                        .chain(swarm.external_addresses())
+                                        .map(ToString::to_string)
                                         .collect();
+                                    let routable_relay_addrs = build_routable_relay_addrs(
+                                        &info.listen_addrs,
+                                        &local_transport_addrs,
+                                    );
                                     if !routable_relay_addrs.is_empty() {
                                         circuit_relay_ladder.add_relay(
                                             peer_id,
@@ -7481,7 +7517,7 @@ use libp2p::{gossipsub, request_response};
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_ed25519_public_key_from_peer_id, peer_is_blocked,
+        build_routable_relay_addrs, extract_ed25519_public_key_from_peer_id, peer_is_blocked,
         should_apply_delivery_convergence_marker, validate_delivery_convergence_marker_shape,
         verify_registration_message, DeliveryConvergenceMarker, PendingCustodyDispatch,
         PendingMessage, RelayAbuseGuardrails, RELAY_DUPLICATE_WINDOW_MS,
@@ -7759,6 +7795,20 @@ mod tests {
         assert!(filtered[0]
             .to_string()
             .starts_with("/ip4/192.168.0.230/tcp/9101"));
+    }
+
+    #[test]
+    fn relay_filter_rejects_reflected_local_and_circuit_addresses() {
+        let reflected_local: Multiaddr = "/ip4/192.168.0.136/tcp/443".parse().unwrap();
+        let relay_lan: Multiaddr = "/ip4/192.168.0.142/tcp/80".parse().unwrap();
+        let nested: Multiaddr = "/ip4/192.168.0.142/tcp/80/p2p-circuit".parse().unwrap();
+
+        let filtered = build_routable_relay_addrs(
+            &[reflected_local, relay_lan.clone(), nested],
+            &["/ip4/192.168.0.136/tcp/443".to_string()],
+        );
+
+        assert_eq!(filtered, vec![relay_lan]);
     }
 }
 
