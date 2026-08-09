@@ -16,12 +16,15 @@ logging a full stack trace on every iteration.
 
 Measured on a Pixel 6a, per emitting process:
 
-| pid | window (HST) | duration | iterations | rate |
+| pid | listen established | accept failures | duration | rate |
 |---|---|---|---|---|
-| 30318 | 17:56:03 | -- | **1** | single failure, no spin |
-| 1358 | 18:27:10 -> 18:30:10 | 3m00s | 50,397 | ~280 iterations/sec |
-| 5157 | 18:30:14 -> 18:32:58 | 2m44s | 170,107 | **~1,037 iterations/sec** |
-| 6116 | 18:33:00 | -- | **1** | single failure, no spin |
+| 30318 | 17:56:03.167 (PSM 129) | **0** | -- | healthy |
+| 1358 | 18:27:10.564 (PSM 130) | 50,397 | 3m00s | ~280 iterations/sec |
+| 5157 | 18:30:14.069 (PSM 128) | 170,107 | 2m44s | **~1,037 iterations/sec** |
+| 6116 | 18:33:00.781 (PSM 128) | **0** | -- | healthy (still running) |
+
+There is no partial or intermittent case: two processes worked perfectly and two
+failed permanently from their very first `accept()`.
 
 Totals: **220,504 iterations** in two bursts of **5m44s** combined, emitting
 **2,866,556 log lines** -- **75.4% of the entire 3,802,158-line capture**. Peak
@@ -117,7 +120,41 @@ Three separate problems:
 | 18:32:58 | app proc 5157 killed; 18:32:59 proc 6116 starts (current) |
 | 18:33:00 | accept-spin ends (with the process that hosted it) |
 
+## The socket is born broken, not killed later
+
+In both affected processes the first `accept()` failure lands in the **same
+second** as the successful `listenUsingInsecureL2capChannel()` call, and every
+subsequent accept fails.
+
+The socket is therefore not a healthy socket that later dies -- it is returned
+already dead. `listenUsingInsecureL2capChannel()` reports success and allocates a
+PSM either way, so the failure is invisible at the call site. The question to
+investigate is why that call returns a socket that cannot accept, NOT what kills
+a live socket.
+
+Separate observation, **causality not established**: at 18:27:10 two
+`BluetoothGattServer.registerCallback()` / `onServerRegistered(0)` pairs occur
+106 ms apart -- one from MeshRepository via `TransportManager.setBleComponents()`
+and one from `initializeBle()` inside `TransportManager.initialize()`. Two GATT
+servers are registered for one process. This does NOT double-start L2CAP
+(`setBleComponents` never touches `bleL2capManager`, and `startListening()` has a
+single call site at `TransportManager.kt:115`; one PSM line per process confirms
+it). It is a real and separate defect worth its own ticket, and plausible BLE
+stack contention, but it has not been shown to cause the L2CAP failure.
+
+Also worth closing regardless: the `isListening` guard cannot prevent a
+concurrent double `startListening()`, because `isListening = true` is assigned
+**inside** the launched coroutine after the blocking channel call rather than at
+function entry.
+
 ## Trigger is NOT yet identified
+
+Ruled out by evidence:
+
+- **PSM value** -- pid 5157 (failed) and pid 6116 (healthy) both received PSM 128.
+- **App restart as a deterministic repro** -- two of four processes were fine.
+- **Screen wake alone** -- the screen cycled on/off repeatedly between 18:13:08
+  (pid 1358 start) and 18:27:10 without triggering anything.
 
 Two operator actions were initially suspected and both are ruled out by timing:
 
