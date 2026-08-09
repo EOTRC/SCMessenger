@@ -1887,12 +1887,18 @@ mod tests {
     #[test]
     fn request_key_prefers_authenticated_key_and_falls_back_to_legacy_identity_id() {
         let key = valid_key();
-        let identity_id =
-            scmessenger_core::identity::keys::identity_id_from_public_key_hex(&key).unwrap();
+        // A legacy identity ID has no authenticated envelope key. Use an
+        // off-curve value here so the test exercises the identity-ID fallback
+        // rather than the separate legacy-public-key compatibility path.
+        let identity_id = "7f".repeat(32);
 
         assert_eq!(
-            message_request_key(&Some(key), "legacy-sender-id"),
-            Some(identity_id.clone())
+            message_request_key(&Some(key.clone()), "legacy-sender-id"),
+            scmessenger_core::identity::keys::identity_id_from_public_key_hex(&key)
+        );
+        assert_eq!(
+            message_request_key(&None, &key),
+            scmessenger_core::identity::keys::identity_id_from_public_key_hex(&key)
         );
         assert_eq!(message_request_key(&None, &identity_id), Some(identity_id));
         assert_eq!(message_request_key(&None, "not-a-key"), None);
