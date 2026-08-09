@@ -208,3 +208,86 @@ when the real arms are at 4915 and 4930.
 Recorded because it is a reusable lesson: a confident analysis with precise-looking
 line numbers is not evidence. The crate source was on this machine the whole time
 and settled the question in one read.
+
+---
+
+## UPDATE 2026-08-09 ~15:10Z -- reproduced 3/3, trigger identified, fix dispatched
+
+### Reproduction is now reliable
+
+Three consecutive runs of the Windows desktop node, all on candidate
+`ebd723ab`, all debug builds, all against the existing data directory:
+
+| Run | Uptime to panic | Peers |
+|---|---|---|
+| 1 | 62 s | iPhone only |
+| 2 | 759 s (12.6 min) | iPhone, one more |
+| 3 | 152 s | iPhone only |
+
+**3 of 3 panicked** on the same assertion. Timing varies by an order of
+magnitude; the outcome does not. The earlier "93 minutes with a single peer"
+figure was not the floor -- 62 seconds is, so far.
+
+This supersedes any suggestion that the panic is rare or needs a large mesh.
+It needs one chatty peer.
+
+### Every run shows the same signature: 4 simultaneous connections to ONE peer
+
+Run 1, captured verbatim:
+
+```
+14:46:17.538  Connected to 12D3KooWJUJ1ko... via /ip4/192.168.0.142/tcp/443
+14:46:17.706  Connected to 12D3KooWJUJ1ko... via /ip4/192.168.0.142/tcp/51251
+14:46:17.723  Connected to 12D3KooWJUJ1ko... via /ip4/192.168.0.142/tcp/51251
+14:46:17.733  Connected to 12D3KooWJUJ1ko... via /ip4/192.168.0.142/tcp/51251
+```
+
+Three of the four are to the **byte-identical** multiaddr, opened within 30 ms.
+Runs 2 and 3 both show the same count of 4 connections to that single peer.
+
+### Root cause of the TRIGGER (distinct from the root cause of the assertion)
+
+`cli/src/ledger.rs` already has an in-flight dial guard, `try_begin_dial`. It
+does not fire here because of how the key is chosen:
+
+```rust
+pub enum DialKey {
+    Peer(PeerId),
+    Addr(String),
+}
+// for_target(): if a PeerId is known -> Peer(pid), and the address is ignored
+```
+
+This node's ledger holds many stale PeerIds for one physical host -- 20 distinct
+PeerIds for `192.168.0.136` within a single 8-minute run -- because peers on
+this fleet mint a fresh identity on every rebuild and stale entries are never
+reaped. N stale identities for one address produce N distinct `DialKey`s, so the
+guard sees N unrelated dials while the OS opens N concurrent connections to the
+same host:port.
+
+**The guard is keyed by identity; the contended resource is the address.**
+
+Full chain: identity churn -> ghost ledger entries -> dial dedup misses ->
+concurrent connections to one endpoint -> request-response connection-map drift
+-> `debug_assert` -> swarm event loop dies.
+
+### What is being fixed, and what is NOT
+
+Dispatched: an address-level in-flight guard alongside the existing per-peer
+guard, in `cli/src/ledger.rs`. Deliberately scoped to `cli/` so it does not
+touch merge-blocked `core/src/transport/`.
+
+Two ways to get that change wrong, both called out in the dispatch:
+- permanently banning an address (the existing "address-only dials must NEVER be
+  dropped" comment records a real prior bug)
+- leaking a half-claim, where one slot is claimed and the other is not, wedging
+  that address until process restart
+
+**This removes the trigger, NOT the defect.** The connection-map drift inside
+`libp2p-request-response` remains, and stays reachable by any other path that
+opens simultaneous connections to one peer -- direct plus relayed, for example.
+A quiet fleet after the dedup fix must NOT be recorded as this P0 being closed.
+
+Upstream of everything here is the identity churn itself. Even with dedup, every
+peer rebuild adds a fresh ghost to every other node's ledger. Tracked separately
+in the ledger-hygiene ticket.
