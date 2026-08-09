@@ -202,8 +202,8 @@ class MdnsServiceDiscovery(
         // Only notify disconnect for peers that were tracked under a valid
         // libp2p peer id. Fabricated ids are never actionable and should not
         // propagate to upper layers.
-        val cachedPeerIdRaw = cachedAttributes?.get("peer-id")?.let { String(it, Charsets.UTF_8) }
-            ?: cachedAttributes?.get("p2p")?.let { String(it, Charsets.UTF_8) }
+        val cachedPeerIdRaw = removed?.attributes?.get("peer-id")?.let { String(it, Charsets.UTF_8) }
+            ?: removed?.attributes?.get("p2p")?.let { String(it, Charsets.UTF_8) }
         val cachedPeerId = getValidatedLibp2pPeerId(cachedPeerIdRaw) ?: run {
             Timber.d("mDNS: ignoring service lost for $serviceName without valid peer id")
             return
