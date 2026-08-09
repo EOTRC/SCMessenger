@@ -4636,6 +4636,29 @@ pub async fn start_swarm_with_config(
                                         }
                                     }
 
+                                    // Keep only the relay's own direct Identify addresses for
+                                    // future circuit construction. Never use this node's
+                                    // external addresses as if they belonged to the relay:
+                                    // that creates self-returning and nested circuits as the
+                                    // mesh grows.
+                                    let routable_relay_addrs: Vec<Multiaddr> = info.listen_addrs
+                                        .iter()
+                                        .filter(|a| {
+                                            is_discoverable_multiaddr(a)
+                                                && !a.iter().any(|proto| matches!(
+                                                    proto,
+                                                    libp2p::multiaddr::Protocol::P2pCircuit
+                                                ))
+                                        })
+                                        .map(crate::transport::addr_filter::strip_peer_id_multiaddr)
+                                        .collect();
+                                    if !routable_relay_addrs.is_empty() {
+                                        circuit_relay_ladder.add_relay(
+                                            peer_id,
+                                            routable_relay_addrs.clone(),
+                                        );
+                                    }
+
                                     // P0.5B: Register a circuit relay reservation with this relay.
                                     // Guard: only register ONCE per relay peer — identify fires every 60s
                                     // and without this guard we accumulate unbounded ListenerIds, which
@@ -4643,12 +4666,6 @@ pub async fn start_swarm_with_config(
                                     let already_reserved = successful_relay_reservations.contains_key(&peer_id);
 
                                     if !already_reserved {
-                                        let routable_relay_addrs: Vec<Multiaddr> = info.listen_addrs
-                                            .iter()
-                                            .filter(|a| is_discoverable_multiaddr(a))
-                                            .cloned()
-                                            .collect();
-
                                         if !routable_relay_addrs.is_empty() {
                                             // Pick the first routable relay address and register a circuit reservation.
                                             // Format: /ip4/<relay-ip>/tcp/<port>/p2p/<relay-peer-id>/p2p-circuit
@@ -4735,12 +4752,6 @@ pub async fn start_swarm_with_config(
                                 // Complete the dial attempt since it succeeded
                                 dial_policy_manager.complete_dial_attempt(&addr_key);
 
-                                // P1 Item 4: Add this peer as a relay candidate for circuit-relay addresses
-                                let external_addrs: Vec<Multiaddr> = swarm.external_addresses().cloned().collect();
-                                if !external_addrs.is_empty() {
-                                    circuit_relay_ladder.add_relay(peer_id, external_addrs);
-                                }
-
                                 // Prune resolved_to_dns mappings for this peer / hostname
                                 let stripped_remote: Multiaddr = remote_addr.iter().filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_))).collect();
                                 let mut dns_to_prune = None;
@@ -4781,6 +4792,8 @@ pub async fn start_swarm_with_config(
                                             let _ = entry.reply.send(Ok(())).await;
                                         }
                                     }
+                                } else {
+                                    circuit_relay_ladder.remove_relay(&peer_id);
                                 }
 
                                 multi_path_delivery.record_recipient_seen_now(peer_id, peer_id);
@@ -4868,7 +4881,9 @@ pub async fn start_swarm_with_config(
                                 // This is CRITICAL for browser nodes: it tells other mesh members (like Android)
                                 // that this peer is reachable THROUGH us.
                                 let local_peer_id = *swarm.local_peer_id();
-                                for ext_addr in swarm.external_addresses().cloned() {
+                                let external_addrs: Vec<Multiaddr> =
+                                    swarm.external_addresses().cloned().collect();
+                                for ext_addr in build_mdns_advertised_addrs(&external_addrs) {
                                     // Construct: /.../p2p/<our-id>/p2p-circuit/p2p/<their-id>
                                     let mut circuit_addr: Multiaddr = ext_addr;
                                     circuit_addr.push(libp2p::multiaddr::Protocol::P2p(local_peer_id));
@@ -4945,12 +4960,14 @@ pub async fn start_swarm_with_config(
                             // is how many remain. If any remain, the peer is still
                             // connected and peer-level teardown must NOT run.
                             //
-                            // Without this guard the first close tore down all peer
+                            // Without this guard the first close tears down all peer
                             // state -- connection_tracker, ledger_exchanged_peers,
                             // the relay reservation via remove_listener, and pending
-                            // custody dispatches -- while other connections were live,
-                            // and libp2p-request-response then panicked on bookkeeping
-                            // we had removed underneath it:
+                            // custody dispatches -- while other connections are live.
+                            // This preserves SCMessenger's peer-level state. The
+                            // request-response assertion itself is raised inside
+                            // libp2p before this application event handler, so it
+                            // requires valid connection topology as well:
                             //
                             //   libp2p-request-response-0.29.0/src/lib.rs:678
                             //   assertion `left == right` failed (left: false, right: true)
@@ -5032,6 +5049,7 @@ pub async fn start_swarm_with_config(
                                     // but we remove it from swarm to be sure.
                                     let _ = swarm.remove_listener(listener_id);
                                 }
+                                circuit_relay_ladder.remove_relay(&peer_id);
 
                                 let stale_dispatches: Vec<libp2p::request_response::OutboundRequestId> =
                                     pending_custody_dispatches

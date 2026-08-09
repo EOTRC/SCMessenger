@@ -828,6 +828,49 @@ fn get_local_ipv4() -> Option<Ipv4Addr> {
     }
 }
 
+/// Return concrete local transport addresses for self-dial filtering.
+///
+/// libp2p commonly reports a wildcard listener (`0.0.0.0`) even though peers
+/// learn the concrete LAN address through Identify.  Comparing the wildcard
+/// against that learned address does not prevent a self-dial, so expand the
+/// wildcard using the active local interface and include any consensus
+/// external addresses the swarm has observed.
+async fn get_local_transport_addresses(swarm: &SwarmHandle) -> Vec<String> {
+    let bound = swarm.get_bound_addresses().await.unwrap_or_default();
+    let external = swarm.get_external_addresses().await.unwrap_or_default();
+    let local_ipv4 = get_local_ipv4();
+    let mut addresses: Vec<String> = Vec::new();
+
+    for address in bound {
+        let value = address.to_string();
+        if !addresses.contains(&value) {
+            addresses.push(value.clone());
+        }
+        if let Some(ip) = local_ipv4 {
+            let concrete = value.replacen("/ip4/0.0.0.0/", &format!("/ip4/{ip}/"), 1);
+            if concrete != value && !addresses.contains(&concrete) {
+                addresses.push(concrete);
+            }
+        }
+    }
+
+    for socket in external {
+        if socket.ip().is_unspecified() || socket.port() == 0 {
+            continue;
+        }
+        let protocol = match socket.ip() {
+            std::net::IpAddr::V4(ip) => format!("/ip4/{ip}"),
+            std::net::IpAddr::V6(ip) => format!("/ip6/{ip}"),
+        };
+        let value = format!("{protocol}/tcp/{}", socket.port());
+        if !addresses.contains(&value) {
+            addresses.push(value);
+        }
+    }
+
+    addresses
+}
+
 fn serve_apk_stream(stream: &mut TcpStream, file_path: &PathBuf, file_size: u64) -> Result<()> {
     let mut request = [0u8; 1024];
     let _ = stream.read(&mut request);
@@ -1855,19 +1898,15 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>, auto_reply: boo
                 let l = ledger_clone.lock().await;
                 l.dialable_addresses(Some(&local_peer_id.to_string()))
             };
-            let my_addrs: Vec<String> = swarm_clone
-                .get_bound_addresses()
-                .await
-                .unwrap_or_default()
-                .iter()
-                .map(|a| a.to_string())
-                .collect();
-            let addrs: Vec<_> = addrs
-                .into_iter()
-                .filter(|(m, _)| {
-                    ledger::is_dialable_for_this_node(m, ledger::NetworkMode::Local, &my_addrs)
-                })
-                .collect();
+            let my_addrs = get_local_transport_addresses(&swarm_clone).await;
+            let addrs = ledger::prioritize_dial_candidates(
+                addrs
+                    .into_iter()
+                    .filter(|(m, _)| {
+                        ledger::is_dialable_for_this_node(m, ledger::NetworkMode::Local, &my_addrs)
+                    })
+                    .collect(),
+            );
 
             // Dial all known addresses (bootstrap + discovered)
             for (i, (multiaddr_str, peer_id_opt)) in addrs.iter().enumerate() {
@@ -2130,24 +2169,20 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>, auto_reply: boo
                                     }
 
                                     // Dial newly discovered peers
-                                    let new_entries: Vec<(String, Option<String>)> = entries
+                                    let new_entries = ledger::prioritize_dial_candidates(
+                                        entries
                                         .iter()
                                         .map(|e| {
                                             (ledger::strip_peer_id(&e.multiaddr), e.last_peer_id.clone())
                                         })
-                                        .collect();
+                                        .collect(),
+                                    );
                                     drop(l); // release lock before dialing
 
                                     // Graceful-AF dial policy: know our own addresses
                                     // before promiscuously dialing whatever the ledger
                                     // handed us
-                                    let my_addrs: Vec<String> = swarm_handle
-                                        .get_bound_addresses()
-                                        .await
-                                        .unwrap_or_default()
-                                        .iter()
-                                        .map(|a| a.to_string())
-                                        .collect();
+                                    let my_addrs = get_local_transport_addresses(&swarm_handle).await;
 
                                     for (addr_str, peer_id_opt) in new_entries {
                                         // Skip non-routable addresses (loopback,
@@ -3008,19 +3043,15 @@ async fn cmd_relay(
                 let l = ledger_clone.lock().await;
                 l.dialable_addresses(Some(&local_peer_id.to_string()))
             };
-            let my_addrs: Vec<String> = swarm_clone
-                .get_bound_addresses()
-                .await
-                .unwrap_or_default()
-                .iter()
-                .map(|a| a.to_string())
-                .collect();
-            let addrs: Vec<_> = addrs
-                .into_iter()
-                .filter(|(m, _)| {
-                    ledger::is_dialable_for_this_node(m, ledger::NetworkMode::Local, &my_addrs)
-                })
-                .collect();
+            let my_addrs = get_local_transport_addresses(&swarm_clone).await;
+            let addrs = ledger::prioritize_dial_candidates(
+                addrs
+                    .into_iter()
+                    .filter(|(m, _)| {
+                        ledger::is_dialable_for_this_node(m, ledger::NetworkMode::Local, &my_addrs)
+                    })
+                    .collect(),
+            );
             for (i, (multiaddr_str, peer_id_opt)) in addrs.iter().enumerate() {
                 let label =
                     ledger::extract_ip_port(multiaddr_str).unwrap_or_else(|| multiaddr_str.clone());
@@ -3046,19 +3077,19 @@ async fn cmd_relay(
                     let l = ledger_clone.lock().await;
                     l.dialable_addresses(Some(&local_peer_id.to_string()))
                 };
-                let my_addrs: Vec<String> = swarm_clone
-                    .get_bound_addresses()
-                    .await
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|a| a.to_string())
-                    .collect();
-                let addrs: Vec<_> = addrs
-                    .into_iter()
-                    .filter(|(m, _)| {
-                        ledger::is_dialable_for_this_node(m, ledger::NetworkMode::Local, &my_addrs)
-                    })
-                    .collect();
+                let my_addrs = get_local_transport_addresses(&swarm_clone).await;
+                let addrs = ledger::prioritize_dial_candidates(
+                    addrs
+                        .into_iter()
+                        .filter(|(m, _)| {
+                            ledger::is_dialable_for_this_node(
+                                m,
+                                ledger::NetworkMode::Local,
+                                &my_addrs,
+                            )
+                        })
+                        .collect(),
+                );
                 for (multiaddr_str, peer_id_opt) in &addrs {
                     let peer_id = peer_id_opt.as_ref().and_then(|s| s.parse::<PeerId>().ok());
                     scheduler.dial(multiaddr_str.clone(), peer_id);
@@ -3195,13 +3226,7 @@ async fn cmd_relay(
 
                             // Graceful-AF dial policy: know our own addresses before
                             // promiscuously dialing whatever the ledger handed us
-                            let my_addrs: Vec<String> = swarm_handle
-                                .get_bound_addresses()
-                                .await
-                                .unwrap_or_default()
-                                .iter()
-                                .map(|a| a.to_string())
-                                .collect();
+                            let my_addrs = get_local_transport_addresses(&swarm_handle).await;
 
                             for (addr_str, peer_id_opt) in new_entries {
                                 // Skip non-routable addresses (loopback, link-local,

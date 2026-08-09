@@ -831,6 +831,48 @@ pub fn is_dialable_for_this_node(multiaddr: &str, mode: NetworkMode, my_addrs: &
     true
 }
 
+/// Prefer directly useful local candidates without discarding global
+/// fallbacks. Phones often advertise carrier IPv6 addresses alongside their
+/// Wi-Fi address; those global addresses can consume the dial budget before a
+/// same-LAN path is attempted.
+pub fn prioritize_dial_candidates(
+    mut candidates: Vec<(String, Option<String>)>,
+) -> Vec<(String, Option<String>)> {
+    candidates.sort_by_key(|(multiaddr, _)| {
+        let priority = multiaddr
+            .parse::<libp2p::Multiaddr>()
+            .ok()
+            .and_then(|addr| {
+                addr.iter().find_map(|protocol| match protocol {
+                    libp2p::multiaddr::Protocol::Ip4(ip) => {
+                        Some(if ip.is_private() || is_cgnat(&ip) {
+                            0u8
+                        } else {
+                            1u8
+                        })
+                    }
+                    libp2p::multiaddr::Protocol::Ip6(ip) => {
+                        Some(if is_ula(&ip) { 0u8 } else { 2u8 })
+                    }
+                    _ => None,
+                })
+            })
+            .unwrap_or(3);
+        (priority, multiaddr.clone())
+    });
+    candidates
+}
+
+fn is_cgnat(ip: &std::net::Ipv4Addr) -> bool {
+    let value = u32::from_be_bytes(ip.octets());
+    (u32::from_be_bytes([100, 64, 0, 0])..=u32::from_be_bytes([100, 127, 255, 255]))
+        .contains(&value)
+}
+
+fn is_ula(ip: &std::net::Ipv6Addr) -> bool {
+    (ip.segments()[0] & 0xfe00) == 0xfc00
+}
+
 /// Extract IP:Port from a multiaddr string for human-readable display
 pub fn extract_ip_port(multiaddr: &str) -> Option<String> {
     // Parse /ip4/1.2.3.4/tcp/9001 -> 1.2.3.4:9001
@@ -1211,6 +1253,23 @@ mod tests {
             Local,
             &my_addrs
         ));
+    }
+
+    #[test]
+    fn local_candidates_precede_carrier_ipv6_candidates() {
+        let candidates = vec![
+            (
+                "/ip6/2600:381:9b57:6b48:e125:d55a:4e95:7896/tcp/8080".to_string(),
+                None,
+            ),
+            ("/ip4/192.168.0.136/tcp/9001".to_string(), None),
+            ("/ip4/198.51.100.10/tcp/443".to_string(), None),
+        ];
+
+        let ordered = prioritize_dial_candidates(candidates);
+        assert!(ordered[0].0.starts_with("/ip4/192.168."));
+        assert!(ordered[1].0.starts_with("/ip4/198.51."));
+        assert!(ordered[2].0.starts_with("/ip6/2600:"));
     }
 
     #[test]
