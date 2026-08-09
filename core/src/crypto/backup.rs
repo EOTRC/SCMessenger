@@ -173,7 +173,7 @@ fn encrypt_backup_inner(
     // Use caller-provided salt for deterministic/test or compatibility flows;
     // otherwise obtain fresh CSPRNG material. Avoid a zero-initialized buffer
     // that static analyzers can mistake for cryptographic salt.
-    let salt_bytes: [u8; 16] = custom_salt.copied().unwrap_or_else(|| rand::random());
+    let salt_bytes: [u8; 16] = custom_salt.copied().unwrap_or_else(rand::random);
 
     // Generate a cryptographically secure random 24-byte nonce
     let mut nonce_bytes = [0u8; NONCE_LEN];
