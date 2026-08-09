@@ -3373,11 +3373,21 @@ impl IronCore {
         let any_blocked = {
             let blocked_guard = self.blocked_manager.read();
 
+            // The envelope key is authenticated, so tag it explicitly before
+            // asking the block store to resolve its identity alias. Without
+            // the tag, an unprefixed 64-hex value is intentionally opaque and
+            // an identity-ID-only block would not match this ingress path.
+            let authenticated_sender_key = format!(
+                "{}{}",
+                crate::identity::keys::PUBLIC_KEY_PREFIX,
+                sender_public_key_hex
+            );
+
             // FAIL CLOSED for blocked+deleted: the manager resolves both
             // public-key and identity_id flavors under one policy. On a
             // block-store read error we cannot prove the sender is safe, so
             // drop at ingress instead of processing the payload.
-            match blocked_guard.is_blocked_and_deleted_resolved(&sender_public_key_hex) {
+            match blocked_guard.is_blocked_and_deleted_resolved(&authenticated_sender_key) {
                 Ok(true) => return Err(IronCoreError::Blocked),
                 Ok(false) => {}
                 Err(e) => {
@@ -3396,7 +3406,7 @@ impl IronCore {
             // is unblocked, so hide it; the message is still retained, not dropped,
             // so nothing is lost if the store recovers.
             match blocked_guard
-                .is_blocked_resolved(&sender_public_key_hex, sender_device_id.as_deref())
+                .is_blocked_resolved(&authenticated_sender_key, sender_device_id.as_deref())
             {
                 Ok(blocked) => blocked,
                 Err(e) => {
