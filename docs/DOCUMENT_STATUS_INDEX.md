@@ -69,6 +69,19 @@ Purpose: classify documentation by lifecycle state so execution decisions use au
 | `docs/releases/RELEASE_NOTES_V0.2.0_DRAFT.md`         | Active | v0.2.0 draft release notes                                     |
 | `docs/releases/RELEASE_NOTES_V0.1.2_GH.md`            | Active | v0.1.2 GitHub release notes draft                              |
 | `android/IMPLEMENTATION_STATUS.md`                     | Active | Android implementation status with privacy features section   |
+| `CLAUDE.md`                                           | Active | Tier 0 agent instructions: invariants + routing table (keep under 2 KB) |
+| `docs/rules/BUILD_AND_CI.md`                          | Active | Tier 1: build gates, Windows parallelism, clean traps, path governance |
+| `docs/rules/RUST_CONVENTIONS.md`                      | Active | Tier 1: core crate module boundaries, platform cfg gates, testing       |
+| `docs/rules/SECURITY_PROTOCOL.md`                     | Active | Tier 1: adversarial review protocol, supply chain, sandbox safety       |
+| `docs/rules/ANDROID.md`                               | Active | Tier 1: Android build env, cross-compilation targets, pre-merge checks  |
+| `docs/rules/DELEGATION.md`                            | Active | Tier 1: worker dispatch SOP, lane economics, verification discipline    |
+| `docs/rules/NO_EMOJIS.md`                             | Active | Tier 1: repo-wide no-emoji rule and plain-text tag vocabulary           |
+
+Agent instruction tiering (2026-08-08): `CLAUDE.md` is the only always-loaded
+file and is re-paid uncached by every subagent and `claude -p` spawn. Detail
+lives in `docs/rules/` and loads on demand. `.claude/rules/*.md` are stubs
+retained so pre-existing cross-references resolve -- do not re-inline detail
+there, since that directory auto-loads into every spawn.
 
 ---
 
