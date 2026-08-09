@@ -3488,6 +3488,14 @@ pub async fn start_swarm_with_config(
                             )) => {
                                 match message {
                                     request_response::Message::Request { request, channel, .. } => {
+                                        if peer_is_blocked(&core_handle, peer) {
+                                            tracing::warn!(
+                                                "Blocked peer {} attempted address reflection; refusing",
+                                                peer
+                                            );
+                                            drop(channel);
+                                            continue;
+                                        }
                                         // Peer is requesting address reflection
                                         let observed_addr = connection_tracker
                                             .get_connection_by_id(&peer, &connection_id.to_string())
@@ -3500,6 +3508,16 @@ pub async fn start_swarm_with_config(
                                         let _ = swarm.behaviour_mut().address_reflection.send_response(channel, response);
                                     }
                                     request_response::Message::Response { request_id, response } => {
+                                        if peer_is_blocked(&core_handle, peer) {
+                                            tracing::warn!(
+                                                "Ignoring address reflection response from blocked peer {}",
+                                                peer
+                                            );
+                                            if let Some(reply_tx) = pending_reflections.remove(&request_id) {
+                                                let _ = reply_tx.send(Err("blocked".to_string())).await;
+                                            }
+                                            continue;
+                                        }
                                         tracing::info!("Address reflection from {}: {}", peer, response.observed_address);
 
                                         if let Ok(observed_addr) = response.observed_address.parse::<SocketAddr>() {
@@ -3536,6 +3554,20 @@ pub async fn start_swarm_with_config(
                             ) => {
                                 match message {
                                     request_response::Message::Request { request, channel, .. } => {
+                                        if peer_is_blocked(&core_handle, peer) {
+                                            tracing::warn!(
+                                                "Blocked peer {} attempted registration mutation; refusing",
+                                                peer
+                                            );
+                                            let _ = swarm.behaviour_mut().registration.send_response(
+                                                channel,
+                                                RegistrationResponse {
+                                                    accepted: false,
+                                                    error: Some("blocked".to_string()),
+                                                },
+                                            );
+                                            continue;
+                                        }
                                         let response = match verify_registration_message(&peer, &request) {
                                             Ok(()) => {
                                                 apply_verified_registration_message(
@@ -3561,6 +3593,16 @@ pub async fn start_swarm_with_config(
                                             .send_response(channel, response);
                                     }
                                     request_response::Message::Response { request_id, response } => {
+                                        if peer_is_blocked(&core_handle, peer) {
+                                            tracing::warn!(
+                                                "Ignoring registration response from blocked peer {}",
+                                                peer
+                                            );
+                                            if let Some(reply_tx) = pending_registration_replies.remove(&request_id) {
+                                                let _ = reply_tx.send(Err("blocked".to_string())).await;
+                                            }
+                                            continue;
+                                        }
                                         if let Some(reply_tx) =
                                             pending_registration_replies.remove(&request_id)
                                         {
@@ -6503,6 +6545,20 @@ pub async fn start_swarm_with_config(
                                 match ev {
                                     request_response::Event::Message { peer, message, .. } => match message {
                                         request_response::Message::Request { request, channel, .. } => {
+                                            if peer_is_blocked(&core_handle, peer) {
+                                                tracing::warn!(
+                                                    "Blocked peer {} attempted registration mutation (WASM); refusing",
+                                                    peer
+                                                );
+                                                let _ = swarm.behaviour_mut().registration.send_response(
+                                                    channel,
+                                                    RegistrationResponse {
+                                                        accepted: false,
+                                                        error: Some("blocked".to_string()),
+                                                    },
+                                                );
+                                                continue;
+                                            }
                                             let response = match verify_registration_message(&peer, &request) {
                                                 Ok(()) => apply_verified_registration_message(
                                                     &relay_custody_store,
@@ -6519,6 +6575,16 @@ pub async fn start_swarm_with_config(
                                                 .send_response(channel, response);
                                         }
                                         request_response::Message::Response { request_id, response } => {
+                                            if peer_is_blocked(&core_handle, peer) {
+                                                tracing::warn!(
+                                                    "Ignoring registration response from blocked peer {} (WASM)",
+                                                    peer
+                                                );
+                                                if let Some(reply_tx) = pending_registration_replies.remove(&request_id) {
+                                                    let _ = reply_tx.send(Err("blocked".to_string())).await;
+                                                }
+                                                continue;
+                                            }
                                             if let Some(reply_tx) =
                                                 pending_registration_replies.remove(&request_id)
                                             {
@@ -6547,6 +6613,14 @@ pub async fn start_swarm_with_config(
                                 match ev {
                                     request_response::Event::Message { peer, connection_id, message } => match message {
                                         request_response::Message::Request { request, channel, .. } => {
+                                            if peer_is_blocked(&core_handle, peer) {
+                                                tracing::warn!(
+                                                    "Blocked peer {} attempted address reflection (WASM); refusing",
+                                                    peer
+                                                );
+                                                drop(channel);
+                                                continue;
+                                            }
                                             let observed_addr = connection_tracker
                                                 .get_connection_by_id(&peer, &connection_id.to_string())
                                                 .and_then(|conn| ConnectionTracker::extract_socket_addr(&conn.remote_addr))
@@ -6556,6 +6630,16 @@ pub async fn start_swarm_with_config(
                                             let _ = swarm.behaviour_mut().address_reflection.send_response(channel, response);
                                         }
                                         request_response::Message::Response { request_id, response } => {
+                                            if peer_is_blocked(&core_handle, peer) {
+                                                tracing::warn!(
+                                                    "Ignoring address reflection response from blocked peer {} (WASM)",
+                                                    peer
+                                                );
+                                                if let Some(reply_tx) = pending_reflections.remove(&request_id) {
+                                                    let _ = reply_tx.send(Err("blocked".to_string())).await;
+                                                }
+                                                continue;
+                                            }
                                             if let Ok(observed_addr) = response.observed_address.parse::<SocketAddr>() {
                                                 address_observer.record_observation(peer, observed_addr);
                                             }
