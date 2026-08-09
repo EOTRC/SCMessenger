@@ -594,6 +594,10 @@ struct RelayAbuseGuardrails {
     per_peer_buckets: HashMap<String, TokenBucketState>,
     recent_duplicates: HashMap<String, u64>,
     global_exchange_bucket: TokenBucketState,
+    /// Monotonic cooldowns for failover-triggered ledger exchanges. A peer can
+    /// churn several authenticated connections without being able to turn
+    /// every close into a full ledger scan and request emission.
+    failover_reexchange_at: HashMap<PeerId, Instant>,
 }
 
 impl RelayAbuseGuardrails {
@@ -605,7 +609,36 @@ impl RelayAbuseGuardrails {
                 tokens: LEDGER_EXCHANGE_GLOBAL_BUCKET_BURST_CAPACITY,
                 last_refill_ms: 0,
             },
+            failover_reexchange_at: HashMap::new(),
         }
+    }
+
+    /// Allow at most one failover re-exchange per peer in the cooldown
+    /// interval. This is deliberately separate from the inbound request
+    /// bucket: the close event is locally generated, so an inbound token
+    /// cannot be consumed as its admission control.
+    fn allow_failover_reexchange(&mut self, peer_id: PeerId) -> bool {
+        const FAILOVER_REEXCHANGE_COOLDOWN: Duration = Duration::from_secs(3);
+        const FAILOVER_REEXCHANGE_RETENTION: Duration = Duration::from_secs(300);
+
+        let now = Instant::now();
+        self.failover_reexchange_at
+            .retain(|_, last| last.elapsed() <= FAILOVER_REEXCHANGE_RETENTION);
+
+        if self
+            .failover_reexchange_at
+            .get(&peer_id)
+            .is_some_and(|last| last.elapsed() < FAILOVER_REEXCHANGE_COOLDOWN)
+        {
+            return false;
+        }
+
+        self.failover_reexchange_at.insert(peer_id, now);
+        true
+    }
+
+    fn forget_peer(&mut self, peer_id: &PeerId) {
+        self.failover_reexchange_at.remove(peer_id);
     }
 
     fn should_reject_cheap_heuristics(
@@ -4941,7 +4974,10 @@ pub async fn start_swarm_with_config(
                                 // fresh ledger exchange so failover cannot leave this
                                 // peer with stale topology knowledge.
                                 ledger_exchanged_peers.remove(&peer_id);
-                                if !peer_is_blocked(&core_handle, peer_id) {
+                                if !peer_is_blocked(&core_handle, peer_id)
+                                    && ledger_exchange_guardrails
+                                        .allow_failover_reexchange(peer_id)
+                                {
                                     let entries = core_handle
                                         .as_ref()
                                         .and_then(|weak| weak.upgrade())
@@ -4968,6 +5004,11 @@ pub async fn start_swarm_with_config(
                                         "Re-exchanged public ledger with {} after one path closed",
                                         peer_id
                                     );
+                                } else {
+                                    tracing::debug!(
+                                        "Skipped failover ledger re-exchange for {} because the peer is blocked or the cooldown is active",
+                                        peer_id
+                                    );
                                 }
                                 tracing::debug!(
                                     "Connection to {} closed, {} still established; skipping peer teardown",
@@ -4980,6 +5021,7 @@ pub async fn start_swarm_with_config(
                                 connection_tracker.remove_connection(&peer_id);
                                 // Allow re-exchange if they reconnect
                                 ledger_exchanged_peers.remove(&peer_id);
+                                ledger_exchange_guardrails.forget_peer(&peer_id);
                                 reported_peer_discoveries.remove(&peer_id);
                                 reported_peer_info.remove(&peer_id);
 
@@ -7135,7 +7177,10 @@ pub async fn start_swarm_with_config(
                                     &connection_id.to_string(),
                                 );
                                 ledger_exchanged_peers.remove(&peer_id);
-                                if !peer_is_blocked(&core_handle, peer_id) {
+                                if !peer_is_blocked(&core_handle, peer_id)
+                                    && ledger_exchange_guardrails
+                                        .allow_failover_reexchange(peer_id)
+                                {
                                     let request = LedgerExchangeRequest {
                                         version_tag: 1,
                                         peers: Vec::new(),
@@ -7151,6 +7196,11 @@ pub async fn start_swarm_with_config(
                                         "Re-exchanged empty ledger with {} after one path closed (WASM)",
                                         peer_id
                                     );
+                                } else {
+                                    tracing::debug!(
+                                        "Skipped failover ledger re-exchange for {} because the peer is blocked or the cooldown is active (WASM)",
+                                        peer_id
+                                    );
                                 }
                                 tracing::debug!(
                                     "Connection to {} closed, {} still established; skipping peer teardown (WASM)",
@@ -7162,6 +7212,7 @@ pub async fn start_swarm_with_config(
                                 tracing::info!("[ERROR] Disconnected from {} (WASM)", peer_id);
                                 connection_tracker.remove_connection(&peer_id);
                                 ledger_exchanged_peers.remove(&peer_id);
+                                ledger_exchange_guardrails.forget_peer(&peer_id);
                                 let stale_dispatches: Vec<libp2p::request_response::OutboundRequestId> =
                                     pending_custody_dispatches
                                         .iter()
@@ -7848,7 +7899,7 @@ mod ledger_seeding_hardening_tests {
     };
     use crate::store::ledger_entry::LedgerEntry;
     use crate::transport::addr_filter::NetworkMode;
-    use libp2p::Multiaddr;
+    use libp2p::{Multiaddr, PeerId};
 
     fn entry(multiaddr: &str, success_count: u32) -> LedgerEntry {
         LedgerEntry {
@@ -8030,6 +8081,22 @@ mod ledger_seeding_hardening_tests {
             now_ms,
             LEDGER_EXCHANGE_BUCKET_MULTIPLIER
         ));
+    }
+
+    /// A flapping multi-path peer must not turn every partial connection close
+    /// into a full ledger scan and outbound request. The cooldown is cleared
+    /// only when the peer fully disconnects, so a surviving path can still
+    /// converge again after a later reconnect.
+    #[test]
+    fn failover_ledger_reexchange_is_rate_limited_until_peer_teardown() {
+        let mut guardrails = RelayAbuseGuardrails::new();
+        let peer = PeerId::random();
+
+        assert!(guardrails.allow_failover_reexchange(peer));
+        assert!(!guardrails.allow_failover_reexchange(peer));
+
+        guardrails.forget_peer(&peer);
+        assert!(guardrails.allow_failover_reexchange(peer));
     }
 
     /// F3 follow-up: `is_discoverable_multiaddr` gates Kademlia insertion and is
