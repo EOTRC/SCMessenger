@@ -288,7 +288,11 @@ jobs:
         run: |
           cd wasm
           ORIG_SIZE=$(stat -c%s pkg/scmessenger_wasm_bg.wasm)
-          wasm-opt -Oz pkg/scmessenger_wasm_bg.wasm -o pkg/scmessenger_wasm_bg.wasm
+          # Rust/wasm-bindgen emits these standard WebAssembly features. Binaryen's
+          # optimizer otherwise rejects the module during validation instead of
+          # preserving the feature declarations.
+          wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int \
+            pkg/scmessenger_wasm_bg.wasm -o pkg/scmessenger_wasm_bg.wasm
           echo "Original size: $ORIG_SIZE bytes"
           echo "Optimized size: $(stat -c%s pkg/scmessenger_wasm_bg.wasm) bytes"
 
