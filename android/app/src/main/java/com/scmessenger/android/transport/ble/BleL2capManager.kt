@@ -10,9 +10,8 @@ import java.io.OutputStream
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.*
 
-internal const val L2CAP_ACCEPT_MAX_RECOVERY_ATTEMPTS = 5
 internal const val L2CAP_ACCEPT_INITIAL_BACKOFF_MS = 250L
-internal const val L2CAP_ACCEPT_MAX_BACKOFF_MS = 5_000L
+internal const val L2CAP_ACCEPT_MAX_BACKOFF_MS = 30_000L
 
 /**
  * L2CAP Connection-Oriented Channel manager for high-throughput BLE.
@@ -129,19 +128,11 @@ class BleL2capManager(
                     }
 
                     val retryDelayMs = recovery.recordFailure()
-                    if (retryDelayMs == null) {
-                        Timber.e(
-                            "L2CAP listener stopped after " +
-                                "${recovery.failureCount} consecutive accept failures " +
-                                "(${describeFailure(e)})"
-                        )
-                        break
-                    }
 
                     Timber.w(
                         "L2CAP accept failed; recreating listener in ${retryDelayMs}ms " +
-                            "(attempt ${recovery.failureCount}/" +
-                            "$L2CAP_ACCEPT_MAX_RECOVERY_ATTEMPTS, ${describeFailure(e)})"
+                            "(consecutive failure ${recovery.failureCount}, " +
+                            "${describeFailure(e)})"
                     )
                     delay(retryDelayMs)
                     continue
@@ -422,17 +413,16 @@ class BleL2capManager(
 /**
  * Keeps a failed L2CAP listener from retrying at CPU speed forever.
  *
- * A successful accept resets the budget because a live socket has demonstrated
- * that the platform can recover. Once the bounded failure budget is exhausted,
- * the caller stops listening and leaves a later startListening() call to retry.
+ * A successful accept resets the backoff because a live socket has demonstrated
+ * that the platform can recover. Failed listeners are retried indefinitely with
+ * a bounded delay; stopping permanently would turn a transient Bluetooth stack
+ * recovery into a process-lifetime inbound-delivery outage.
  */
 internal class BleL2capAcceptRecoveryPolicy(
-    private val maxAttempts: Int = L2CAP_ACCEPT_MAX_RECOVERY_ATTEMPTS,
     private val initialBackoffMs: Long = L2CAP_ACCEPT_INITIAL_BACKOFF_MS,
     private val maxBackoffMs: Long = L2CAP_ACCEPT_MAX_BACKOFF_MS
 ) {
     init {
-        require(maxAttempts > 0) { "maxAttempts must be positive" }
         require(initialBackoffMs > 0) { "initialBackoffMs must be positive" }
         require(maxBackoffMs >= initialBackoffMs) {
             "maxBackoffMs must not be smaller than initialBackoffMs"
@@ -442,14 +432,11 @@ internal class BleL2capAcceptRecoveryPolicy(
     var failureCount: Int = 0
         private set
 
-    fun recordFailure(): Long? {
-        failureCount++
-        if (failureCount >= maxAttempts) {
-            return null
-        }
+    fun recordFailure(): Long {
+        failureCount = (failureCount + 1).coerceAtMost(Int.MAX_VALUE)
 
         var backoffMs = initialBackoffMs
-        repeat(failureCount - 1) {
+        repeat((failureCount - 1).coerceAtMost(20)) {
             backoffMs = minOf(maxBackoffMs, backoffMs * 2)
         }
         return backoffMs

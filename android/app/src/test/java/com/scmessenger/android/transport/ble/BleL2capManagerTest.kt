@@ -1,30 +1,28 @@
 package com.scmessenger.android.transport.ble
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Test
 
 class BleL2capManagerTest {
 
     @Test
-    fun acceptRecoveryBacksOffAndStopsAtFailureCeiling() {
+    fun acceptRecoveryBacksOffWithoutAProcessLifetimeFailureCeiling() {
         val policy = BleL2capAcceptRecoveryPolicy()
 
         assertEquals(250L, policy.recordFailure())
         assertEquals(500L, policy.recordFailure())
         assertEquals(1_000L, policy.recordFailure())
         assertEquals(2_000L, policy.recordFailure())
-        assertNull(policy.recordFailure())
-        assertEquals(L2CAP_ACCEPT_MAX_RECOVERY_ATTEMPTS, policy.failureCount)
-
-        // A terminal policy remains terminal until a successful accept is
-        // observed; callers must not accidentally re-enter a tight retry loop.
-        assertNull(policy.recordFailure())
+        assertEquals(4_000L, policy.recordFailure())
+        repeat(100) {
+            assertEquals(L2CAP_ACCEPT_MAX_BACKOFF_MS, policy.recordFailure())
+        }
+        assertEquals(105, policy.failureCount)
     }
 
     @Test
     fun acceptRecoveryDelayIsCapped() {
-        val policy = BleL2capAcceptRecoveryPolicy(maxAttempts = 8)
+        val policy = BleL2capAcceptRecoveryPolicy()
 
         repeat(5) { policy.recordFailure() }
 
