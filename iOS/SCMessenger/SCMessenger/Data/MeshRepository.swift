@@ -948,8 +948,12 @@ final class MeshRepository {
         discovery.onLanPeerResolved = { [weak self] peerId, host, port in
             Task { @MainActor [weak self] in
                 guard let self, let bridge = self.swarmBridge else { return }
+                guard self.isLibp2pPeerId(peerId) else {
+                    self.logger.warning("mDNS: refusing to dial unresolved peer ID \(peerId)")
+                    return
+                }
                 let ipProto = host.contains(":") ? "ip6" : "ip4"
-                let multiaddr = "/\(ipProto)/\(host)/tcp/\(port)"
+                let multiaddr = "/\(ipProto)/\(host)/tcp/\(port)/p2p/\(peerId)"
                 self.logger.info("mDNS: Dialing resolved LAN peer \(peerId) at \(multiaddr)")
                 do {
                     try await bridge.dial(multiaddr: multiaddr)

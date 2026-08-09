@@ -83,6 +83,39 @@ fn empty_ledger_exchange_response() -> LedgerExchangeResponse {
     }
 }
 
+/// Re-arm a peer after its current outbound ledger request fails.
+///
+/// Request IDs make this safe in the presence of path churn: a delayed failure
+/// from an older path must not clear the dedupe state established by a newer
+/// request or reciprocal exchange.
+fn rearm_ledger_exchange_after_failure<K, V>(
+    pending: &mut HashMap<K, V>,
+    exchanged: &mut HashSet<K>,
+    peer: &K,
+    request_id: &V,
+) -> bool
+where
+    K: Eq + Hash,
+    V: PartialEq,
+{
+    if pending.get(peer) != Some(request_id) {
+        return false;
+    }
+
+    pending.remove(peer);
+    exchanged.remove(peer);
+    true
+}
+
+fn is_ledger_exchange_path_failure(error: &request_response::OutboundFailure) -> bool {
+    matches!(
+        error,
+        request_response::OutboundFailure::DialFailure
+            | request_response::OutboundFailure::ConnectionClosed
+            | request_response::OutboundFailure::Io(_)
+    )
+}
+
 /// Returns true if a Multiaddr is suitable for discovery (local or global).
 ///
 /// We exclude:
@@ -360,6 +393,51 @@ pub fn build_mdns_advertised_addrs(all_listeners: &[Multiaddr]) -> Vec<Multiaddr
         })
         .cloned()
         .collect()
+}
+
+/// Return the target peer encoded by a multiaddr.
+///
+/// Relay addresses contain the relay's `/p2p/` component before
+/// `/p2p-circuit`; only a peer component after the last circuit hop is the
+/// dial target. Direct addresses use their final `/p2p/` component.
+fn target_peer_id_from_multiaddr(addr: &Multiaddr) -> Option<PeerId> {
+    let protocols: Vec<_> = addr.iter().collect();
+    let after_last_circuit = protocols
+        .iter()
+        .rposition(|protocol| matches!(protocol, libp2p::multiaddr::Protocol::P2pCircuit))
+        .map(|index| index + 1)
+        .unwrap_or(0);
+
+    protocols[after_last_circuit..]
+        .iter()
+        .rev()
+        .find_map(|protocol| {
+            if let libp2p::multiaddr::Protocol::P2p(peer_id) = protocol {
+                Some(*peer_id)
+            } else {
+                None
+            }
+        })
+}
+
+/// Resolve an explicit dial target against any peer identity encoded in the
+/// address. A caller-provided identity is needed when a normalized circuit
+/// address no longer contains the final `/p2p/<target>` component, but it must
+/// never override a conflicting encoded target.
+fn resolve_dial_target(
+    addr: &Multiaddr,
+    explicit_peer_id: Option<PeerId>,
+) -> Result<Option<PeerId>, String> {
+    let embedded_peer_id = target_peer_id_from_multiaddr(addr);
+    if let (Some(explicit), Some(embedded)) = (explicit_peer_id, embedded_peer_id) {
+        if explicit != embedded {
+            return Err(format!(
+                "dial target identity mismatch: requested {} but address targets {}",
+                explicit, embedded
+            ));
+        }
+    }
+    Ok(explicit_peer_id.or(embedded_peer_id))
 }
 
 /// Turn one trusted mDNS discovery result into a direct dial target.
@@ -1776,6 +1854,10 @@ pub enum SwarmCommand {
     Dial {
         addr: Multiaddr,
         trusted: bool,
+        /// Optional target identity supplied separately from the address.
+        /// This is needed when a caller normalized a circuit address and
+        /// removed its final `/p2p/<target>` component.
+        peer_id: Option<PeerId>,
         reply: mpsc::Sender<Result<(), String>>,
     },
     /// Dial a discovered address (with rate-limiting)
@@ -2068,11 +2150,27 @@ impl SwarmHandle {
 
     /// Dial a peer at a multiaddress
     pub async fn dial(&self, addr: Multiaddr) -> Result<()> {
+        self.dial_with_peer(addr, None, false).await
+    }
+
+    /// Dial a peer at a multiaddress while preserving the caller's target
+    /// identity even when the address was normalized without `/p2p/<target>`.
+    pub async fn dial_peer(&self, peer_id: PeerId, addr: Multiaddr) -> Result<()> {
+        self.dial_with_peer(addr, Some(peer_id), false).await
+    }
+
+    async fn dial_with_peer(
+        &self,
+        addr: Multiaddr,
+        peer_id: Option<PeerId>,
+        trusted: bool,
+    ) -> Result<()> {
         let (reply_tx, mut reply_rx) = mpsc::channel(1);
         self.command_tx
             .send(SwarmCommand::Dial {
                 addr,
-                trusted: false,
+                trusted,
+                peer_id,
                 reply: reply_tx,
             })
             .await
@@ -2088,21 +2186,7 @@ impl SwarmHandle {
     /// Dial an address this process created (the Wi-Fi Aware loopback proxy).
     /// Do NOT use for peer-supplied addresses.
     pub async fn dial_trusted_local_proxy(&self, addr: Multiaddr) -> Result<()> {
-        let (reply_tx, mut reply_rx) = mpsc::channel(1);
-        self.command_tx
-            .send(SwarmCommand::Dial {
-                addr,
-                trusted: true,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| anyhow::anyhow!("Swarm task not running"))?;
-
-        reply_rx
-            .recv()
-            .await
-            .ok_or_else(|| anyhow::anyhow!("No reply from swarm"))?
-            .map_err(|e| anyhow::anyhow!(e))
+        self.dial_with_peer(addr, None, true).await
     }
 
     /// Get connected peers
@@ -2801,6 +2885,12 @@ pub async fn start_swarm_with_config(
 
         // Track peers we've already exchanged ledgers with (avoid spamming)
         let mut ledger_exchanged_peers: HashSet<PeerId> = HashSet::new();
+        // Keep the current request ID per peer so a stale failure from an
+        // earlier path cannot re-arm a newer, successful exchange.
+        let mut pending_ledger_exchanges: HashMap<
+            PeerId,
+            libp2p::request_response::OutboundRequestId,
+        > = HashMap::new();
 
         // Track connected peers for relay peer discovery broadcasting
         let mut peer_broadcaster = crate::transport::PeerBroadcaster::new();
@@ -3149,7 +3239,28 @@ pub async fn start_swarm_with_config(
                                             "Attempting to re-dial relay {} (Attempt {}): {}",
                                             peer_id, attempts + 1, addr
                                         );
-                                        match swarm.dial(addr.clone()) {
+                                        let mut relay_dial_addr = addr.clone();
+                                        match target_peer_id_from_multiaddr(&relay_dial_addr) {
+                                            Some(target) if target != peer_id => {
+                                                tracing::warn!(
+                                                    "Skipping relay redial for {}: address targets {}",
+                                                    peer_id,
+                                                    target
+                                                );
+                                                continue;
+                                            }
+                                            None => relay_dial_addr.push(
+                                                libp2p::multiaddr::Protocol::P2p(peer_id),
+                                            ),
+                                            Some(_) => {}
+                                        }
+                                        let relay_dial_opts = libp2p::swarm::dial_opts::DialOpts::peer_id(peer_id)
+                                            .addresses(vec![relay_dial_addr])
+                                            .condition(
+                                                libp2p::swarm::dial_opts::PeerCondition::DisconnectedAndNotDialing,
+                                            )
+                                            .build();
+                                        match swarm.dial(relay_dial_opts) {
                                             Ok(_) => {
                                                 // Re-enqueue with backoff for next attempt if this fails.
                                                 // Backoff: 10s -> 30s -> 60s
@@ -4260,7 +4371,7 @@ pub async fn start_swarm_with_config(
                                             response_peers.len()
                                         );
 
-                                        let _ = swarm.behaviour_mut().ledger_exchange.send_response(
+                                        let response_queued = swarm.behaviour_mut().ledger_exchange.send_response(
                                             channel,
                                             LedgerExchangeResponse {
                                                 version_tag: 1,
@@ -4268,11 +4379,21 @@ pub async fn start_swarm_with_config(
                                                 new_peers_learned: new_count,
                                                 version: 1,
                                             },
-                                        );
+                                        ).is_ok();
 
-                                        ledger_exchanged_peers.insert(peer);
+                                        if response_queued {
+                                            // A reciprocal response completes the peer-level
+                                            // exchange even if our simultaneous request later
+                                            // fails on an older path.
+                                            pending_ledger_exchanges.remove(&peer);
+                                            ledger_exchanged_peers.insert(peer);
+                                        }
                                     }
-                                    request_response::Message::Response { response, .. } => {
+                                    request_response::Message::Response { request_id, response } => {
+                                        if pending_ledger_exchanges.get(&peer) == Some(&request_id) {
+                                            pending_ledger_exchanges.remove(&peer);
+                                        }
+                                        ledger_exchanged_peers.insert(peer);
                                         tracing::info!(
                                             "Ledger exchange response from {}: they learned {} new peers, sent {} back",
                                             peer,
@@ -4320,6 +4441,28 @@ pub async fn start_swarm_with_config(
                                             }
                                         }
                                     }
+                                }
+                            }
+                            SwarmEvent::Behaviour(super::behaviour::IronCoreBehaviourEvent::LedgerExchange(
+                                request_response::Event::OutboundFailure { peer, request_id, error, .. }
+                            )) => {
+                                // Only the current request may re-arm this peer. A request from
+                                // a closed path can fail after a newer path has already exchanged
+                                // successfully; clearing the guard for that stale failure would
+                                // defeat deduplication.
+                                if is_ledger_exchange_path_failure(&error)
+                                    && rearm_ledger_exchange_after_failure(
+                                    &mut pending_ledger_exchanges,
+                                    &mut ledger_exchanged_peers,
+                                    &peer,
+                                    &request_id,
+                                )
+                                {
+                                    tracing::debug!(
+                                        "Ledger exchange with {} re-armed after outbound failure: {}",
+                                        peer,
+                                        error
+                                    );
                                 }
                             }
 
@@ -4620,7 +4763,13 @@ pub async fn start_swarm_with_config(
                                             peer_id,
                                             &addr,
                                         ) {
-                                            match swarm.dial(dial_addr.clone()) {
+                                            let dial_opts = libp2p::swarm::dial_opts::DialOpts::peer_id(peer_id)
+                                                .addresses(vec![dial_addr.clone()])
+                                                .condition(
+                                                    libp2p::swarm::dial_opts::PeerCondition::DisconnectedAndNotDialing,
+                                                )
+                                                .build();
+                                            match swarm.dial(dial_opts) {
                                                 Ok(_) => tracing::info!(
                                                     "mDNS auto-connect queued for {} via {}",
                                                     peer_id,
@@ -5065,6 +5214,47 @@ pub async fn start_swarm_with_config(
                                     tracing::info!("Sent peer list ({} peers) to {}", peer_broadcaster.peer_count(), peer_id);
                                 }
 
+                                // Start ledger convergence from the core after a real
+                                // connection exists. This keeps the protocol platform-neutral:
+                                // CLI, Android and iOS no longer depend on their application
+                                // event handler remembering to call `share_ledger`.
+                                //
+                                // Multiple direct/relay paths to the same peer emit separate
+                                // ConnectionEstablished events, so retain the existing peer-level
+                                // dedupe. Both ConnectionClosed paths below clear/re-arm this set,
+                                // allowing a fresh exchange after path loss or reconnection.
+                                if !peer_is_blocked(&core_handle, peer_id)
+                                    && !ledger_exchanged_peers.contains(&peer_id)
+                                {
+                                    let entries = core_handle
+                                        .as_ref()
+                                        .and_then(|weak| weak.upgrade())
+                                        .map(|core| {
+                                            core.ledger_manager.exchange_response_entries(
+                                                LEDGER_EXCHANGE_MAX_RESPONSE_PEERS,
+                                                &peer_id.to_string(),
+                                                &[],
+                                            )
+                                        })
+                                        .unwrap_or_default();
+                                    let request = LedgerExchangeRequest {
+                                        version_tag: 1,
+                                        peers: entries,
+                                        sender_peer_id: local_peer_id.to_string(),
+                                        version: 1,
+                                    };
+                                    let request_id = swarm
+                                        .behaviour_mut()
+                                        .ledger_exchange
+                                        .send_request(&peer_id, request);
+                                    pending_ledger_exchanges.insert(peer_id, request_id);
+                                    ledger_exchanged_peers.insert(peer_id);
+                                    tracing::debug!(
+                                        "Started core ledger exchange with newly connected peer {}",
+                                        peer_id
+                                    );
+                                }
+
                                 if reported_peer_discoveries.insert(peer_id) {
                                     let _ = event_tx.send(SwarmEvent2::PeerDiscovered(peer_id)).await;
 
@@ -5076,11 +5266,9 @@ pub async fn start_swarm_with_config(
                                     );
                                 }
 
-                                // AUTO LEDGER EXCHANGE: On every new connection, share our
-                                // known peers. The application layer will receive
-                                // SwarmEvent2::PeerDiscovered and trigger ShareLedger.
-                                // This is handled in main.rs to keep swarm.rs agnostic
-                                // about the persistent ledger format.
+                                // The core initiates ledger exchange above. Application-layer
+                                // ShareLedger calls remain compatible and are deduped by
+                                // `ledger_exchanged_peers`.
 
                                 // Reset bootstrap backoff for any addr that matches this peer.
                                 // On successful connection, the backoff should reset so
@@ -5134,11 +5322,11 @@ pub async fn start_swarm_with_config(
                                 // A different live path may now be selected. Force a
                                 // fresh ledger exchange so failover cannot leave this
                                 // peer with stale topology knowledge.
-                                ledger_exchanged_peers.remove(&peer_id);
                                 if !peer_is_blocked(&core_handle, peer_id)
                                     && ledger_exchange_guardrails
                                         .allow_failover_reexchange(peer_id)
                                 {
+                                    ledger_exchanged_peers.remove(&peer_id);
                                     let entries = core_handle
                                         .as_ref()
                                         .and_then(|weak| weak.upgrade())
@@ -5156,10 +5344,11 @@ pub async fn start_swarm_with_config(
                                         sender_peer_id: local_peer_id.to_string(),
                                         version: 1,
                                     };
-                                    let _ = swarm
+                                    let request_id = swarm
                                         .behaviour_mut()
                                         .ledger_exchange
                                         .send_request(&peer_id, request);
+                                    pending_ledger_exchanges.insert(peer_id, request_id);
                                     ledger_exchanged_peers.insert(peer_id);
                                     tracing::debug!(
                                         "Re-exchanged public ledger with {} after one path closed",
@@ -5185,6 +5374,7 @@ pub async fn start_swarm_with_config(
                                 connection_tracker.remove_connection(&peer_id);
                                 // Allow re-exchange if they reconnect
                                 ledger_exchanged_peers.remove(&peer_id);
+                                pending_ledger_exchanges.remove(&peer_id);
                                 ledger_exchange_guardrails.forget_peer(&peer_id);
                                 reported_peer_discoveries.remove(&peer_id);
                                 reported_peer_info.remove(&peer_id);
@@ -5672,10 +5862,31 @@ pub async fn start_swarm_with_config(
                                                     continue;
                                                 }
                                                 tracing::debug!("Processing off-loop discovery dial to {} for peer {}", addr, peer_id);
-                                                let _ = swarm.dial(addr);
+                                                // `peer_id` is the announcing source for
+                                                // PeerJoined/DiscoveryDial. A circuit address may
+                                                // name a different target after `/p2p-circuit`.
+                                                let target_peer_id =
+                                                    target_peer_id_from_multiaddr(&addr).unwrap_or(peer_id);
+                                                let dial_result = {
+                                                        let dial_opts = libp2p::swarm::dial_opts::DialOpts::peer_id(target_peer_id)
+                                                            .addresses(vec![addr.clone()])
+                                                            .condition(
+                                                                libp2p::swarm::dial_opts::PeerCondition::DisconnectedAndNotDialing,
+                                                            )
+                                                            .build();
+                                                        swarm.dial(dial_opts)
+                                                };
+                                                if let Err(error) = dial_result {
+                                                    tracing::debug!("Discovery dial to {} was not queued: {}", addr, error);
+                                                }
                                             }
 
-                                            SwarmCommand::Dial { addr, trusted, reply } => {
+                                            SwarmCommand::Dial {
+                                                addr,
+                                                trusted,
+                                                peer_id: requested_peer_id,
+                                                reply,
+                                            } => {
                                 let dialable = if trusted {
                                     crate::transport::addr_filter::is_dialable_trusted_local_proxy_parsed(
                                         &addr, crate::transport::addr_filter::DnsPolicy::Reject)
@@ -5694,14 +5905,20 @@ pub async fn start_swarm_with_config(
                                 let s = addr.to_string();
                                 let is_direct = !s.contains("/p2p-circuit/") && !s.contains("/ws/") && !s.contains("/wss/");
 
-                                let mut target_peer_id = None;
+                                let target_peer_id = match resolve_dial_target(&addr, requested_peer_id) {
+                                    Ok(peer_id) => peer_id,
+                                    Err(error) => {
+                                        let _ = reply.send(Err(error)).await;
+                                        continue;
+                                    }
+                                };
                                 let mut base_prefix = Multiaddr::empty();
                                 let mut found_ip = false;
 
                                 if is_direct {
                                     for p in addr.iter() {
                                         match p {
-                                            libp2p::multiaddr::Protocol::P2p(pid) => target_peer_id = Some(pid),
+                                            libp2p::multiaddr::Protocol::P2p(_) => {}
                                             libp2p::multiaddr::Protocol::Ip4(_) | libp2p::multiaddr::Protocol::Ip6(_) => {
                                                 found_ip = true;
                                                 base_prefix.push(p);
@@ -5858,6 +6075,9 @@ pub async fn start_swarm_with_config(
                                             tracing::debug!("Dialing candidate ladder for {}: {:?}", pid, candidates);
                                             let opts = libp2p::swarm::dial_opts::DialOpts::peer_id(pid)
                                                 .addresses(candidates)
+                                                .condition(
+                                                    libp2p::swarm::dial_opts::PeerCondition::DisconnectedAndNotDialing,
+                                                )
                                                 .build();
                                             swarm.dial(opts)
                                         }
@@ -5872,7 +6092,17 @@ pub async fn start_swarm_with_config(
                                     dial_candidate_addrs.push(
                                         addr.iter().filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_))).collect(),
                                     );
-                                    swarm.dial(addr.clone())
+                                    if let Some(pid) = target_peer_id {
+                                        let opts = libp2p::swarm::dial_opts::DialOpts::peer_id(pid)
+                                            .addresses(vec![addr.clone()])
+                                            .condition(
+                                                libp2p::swarm::dial_opts::PeerCondition::DisconnectedAndNotDialing,
+                                            )
+                                            .build();
+                                        swarm.dial(opts)
+                                    } else {
+                                        swarm.dial(addr.clone())
+                                    }
                                 };
 
                                 match dial_res {
@@ -6079,11 +6309,12 @@ pub async fn start_swarm_with_config(
                                         version: 1,
                                     };
 
-                                    let _request_id = swarm.behaviour_mut().ledger_exchange.send_request(
+                                    let request_id = swarm.behaviour_mut().ledger_exchange.send_request(
                                         &peer_id,
                                         request,
                                     );
 
+                                    pending_ledger_exchanges.insert(peer_id, request_id);
                                     ledger_exchanged_peers.insert(peer_id);
                                 } else {
                                     tracing::debug!("Already exchanged ledger with {}, skipping", peer_id);
@@ -6408,6 +6639,10 @@ pub async fn start_swarm_with_config(
         subscribed_topics.insert(DELIVERY_CONVERGENCE_TOPIC.to_string());
 
         let mut ledger_exchanged_peers: HashSet<PeerId> = HashSet::new();
+        let mut pending_ledger_exchanges: HashMap<
+            PeerId,
+            libp2p::request_response::OutboundRequestId,
+        > = HashMap::new();
 
         // Keep observational parity where possible on wasm.
         let reflection_service = AddressReflectionService::new();
@@ -6522,9 +6757,29 @@ pub async fn start_swarm_with_config(
                                     continue;
                                 }
                                 tracing::debug!("Processing off-loop discovery dial to {} for peer {}", addr, peer_id);
-                                let _ = swarm.dial(addr);
+                                // `peer_id` identifies the announcing source, not
+                                // necessarily the circuit destination.
+                                let target_peer_id =
+                                    target_peer_id_from_multiaddr(&addr).unwrap_or(peer_id);
+                                let dial_result = {
+                                        let dial_opts = libp2p::swarm::dial_opts::DialOpts::peer_id(target_peer_id)
+                                            .addresses(vec![addr.clone()])
+                                            .condition(
+                                                libp2p::swarm::dial_opts::PeerCondition::DisconnectedAndNotDialing,
+                                            )
+                                            .build();
+                                        swarm.dial(dial_opts)
+                                };
+                                if let Err(error) = dial_result {
+                                    tracing::debug!("Discovery dial to {} was not queued: {}", addr, error);
+                                }
                             }
-                            SwarmCommand::Dial { addr, trusted, reply } => {
+                            SwarmCommand::Dial {
+                                addr,
+                                trusted,
+                                peer_id: requested_peer_id,
+                                reply,
+                            } => {
                                 let dialable = if trusted {
                                     crate::transport::addr_filter::is_dialable_trusted_local_proxy_parsed(
                                         &addr, crate::transport::addr_filter::DnsPolicy::Reject)
@@ -6538,7 +6793,23 @@ pub async fn start_swarm_with_config(
                                     let _ = reply.send(Err("Address rejected by dial filter".to_string())).await;
                                     continue;
                                 }
-                                match swarm.dial(addr) {
+                                let dial_result = match resolve_dial_target(&addr, requested_peer_id) {
+                                    Ok(Some(target_peer_id)) => {
+                                        let dial_opts = libp2p::swarm::dial_opts::DialOpts::peer_id(target_peer_id)
+                                            .addresses(vec![addr])
+                                            .condition(
+                                                libp2p::swarm::dial_opts::PeerCondition::DisconnectedAndNotDialing,
+                                            )
+                                            .build();
+                                        swarm.dial(dial_opts)
+                                    }
+                                    Ok(None) => swarm.dial(addr),
+                                    Err(error) => {
+                                        let _ = reply.send(Err(error)).await;
+                                        continue;
+                                    }
+                                };
+                                match dial_result {
                                     Ok(_) => { let _ = reply.send(Ok(())).await; }
                                     Err(e) => {
                                         let err_msg: String = e.to_string();
@@ -6636,7 +6907,11 @@ pub async fn start_swarm_with_config(
                                         sender_peer_id: local_peer_id.to_string(),
                                         version: 1,
                                     };
-                                    let _ = swarm.behaviour_mut().ledger_exchange.send_request(&peer_id, request);
+                                    let request_id = swarm
+                                        .behaviour_mut()
+                                        .ledger_exchange
+                                        .send_request(&peer_id, request);
+                                    pending_ledger_exchanges.insert(peer_id, request_id);
                                     ledger_exchanged_peers.insert(peer_id);
                                 }
                             }
@@ -7141,7 +7416,8 @@ pub async fn start_swarm_with_config(
                                 }
                             }
                             SwarmEvent::Behaviour(super::behaviour::IronCoreBehaviourEvent::LedgerExchange(ev)) => {
-                                if let request_response::Event::Message { peer, message, .. } = ev {
+                                match ev {
+                                    request_response::Event::Message { peer, message, .. } => {
                                     if peer_is_blocked(&core_handle, peer) {
                                         tracing::warn!(
                                             "Blocked peer {} attempted ledger exchange (WASM); refusing",
@@ -7176,7 +7452,7 @@ pub async fn start_swarm_with_config(
                                                 from_peer: peer,
                                                 entries,
                                             }).await;
-                                            let _ = swarm.behaviour_mut().ledger_exchange.send_response(
+                                            let response_queued = swarm.behaviour_mut().ledger_exchange.send_response(
                                                 channel,
                                                 LedgerExchangeResponse {
                                                     version_tag: 1,
@@ -7184,10 +7460,17 @@ pub async fn start_swarm_with_config(
                                                     new_peers_learned: 0,
                                                     version: 1,
                                                 },
-                                            );
-                                            ledger_exchanged_peers.insert(peer);
+                                            ).is_ok();
+                                            if response_queued {
+                                                pending_ledger_exchanges.remove(&peer);
+                                                ledger_exchanged_peers.insert(peer);
+                                            }
                                         }
-                                        request_response::Message::Response { response, .. } => {
+                                        request_response::Message::Response { request_id, response } => {
+                                            if pending_ledger_exchanges.get(&peer) == Some(&request_id) {
+                                                pending_ledger_exchanges.remove(&peer);
+                                            }
+                                            ledger_exchanged_peers.insert(peer);
                                             let entries: Vec<_> = response
                                                 .peers
                                                 .into_iter()
@@ -7201,6 +7484,29 @@ pub async fn start_swarm_with_config(
                                             }
                                         }
                                     }
+                                    }
+                                    request_response::Event::OutboundFailure {
+                                        peer,
+                                        request_id,
+                                        error,
+                                        ..
+                                    } => {
+                                        if is_ledger_exchange_path_failure(&error)
+                                            && rearm_ledger_exchange_after_failure(
+                                            &mut pending_ledger_exchanges,
+                                            &mut ledger_exchanged_peers,
+                                            &peer,
+                                            &request_id,
+                                        )
+                                        {
+                                            tracing::debug!(
+                                                "Ledger exchange with {} re-armed after outbound failure (WASM): {}",
+                                                peer,
+                                                error
+                                            );
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
                             SwarmEvent::Behaviour(super::behaviour::IronCoreBehaviourEvent::Gossipsub(
@@ -7307,6 +7613,33 @@ pub async fn start_swarm_with_config(
                                     RELAY_MAX_INFLIGHT_DISPATCHES,
                                     "peer_reconnect",
                                 );
+
+                                // Browser nodes have no persistent core ledger, but they must
+                                // still open the exchange so the connected peer reciprocates
+                                // with its filtered ledger. The empty request is the existing
+                                // wasm disclosure policy, now triggered by the core connection
+                                // event instead of an application-specific ShareLedger call.
+                                if !peer_is_blocked(&core_handle, peer_id)
+                                    && !ledger_exchanged_peers.contains(&peer_id)
+                                {
+                                    let request = LedgerExchangeRequest {
+                                        version_tag: 1,
+                                        peers: Vec::new(),
+                                        sender_peer_id: local_peer_id.to_string(),
+                                        version: 1,
+                                    };
+                                    let request_id = swarm
+                                        .behaviour_mut()
+                                        .ledger_exchange
+                                        .send_request(&peer_id, request);
+                                    pending_ledger_exchanges.insert(peer_id, request_id);
+                                    ledger_exchanged_peers.insert(peer_id);
+                                    tracing::debug!(
+                                        "Started core ledger exchange with newly connected peer {} (WASM)",
+                                        peer_id
+                                    );
+                                }
+
                                 if reported_peer_discoveries.insert(peer_id) {
                                     let _ = event_tx.send(SwarmEvent2::PeerDiscovered(peer_id)).await;
 
@@ -7345,21 +7678,22 @@ pub async fn start_swarm_with_config(
                                     &peer_id,
                                     &connection_id.to_string(),
                                 );
-                                ledger_exchanged_peers.remove(&peer_id);
                                 if !peer_is_blocked(&core_handle, peer_id)
                                     && ledger_exchange_guardrails
                                         .allow_failover_reexchange(peer_id)
                                 {
+                                    ledger_exchanged_peers.remove(&peer_id);
                                     let request = LedgerExchangeRequest {
                                         version_tag: 1,
                                         peers: Vec::new(),
                                         sender_peer_id: local_peer_id.to_string(),
                                         version: 1,
                                     };
-                                    let _ = swarm
+                                    let request_id = swarm
                                         .behaviour_mut()
                                         .ledger_exchange
                                         .send_request(&peer_id, request);
+                                    pending_ledger_exchanges.insert(peer_id, request_id);
                                     ledger_exchanged_peers.insert(peer_id);
                                     tracing::debug!(
                                         "Re-exchanged empty ledger with {} after one path closed (WASM)",
@@ -7381,6 +7715,7 @@ pub async fn start_swarm_with_config(
                                 tracing::info!("[ERROR] Disconnected from {} (WASM)", peer_id);
                                 connection_tracker.remove_connection(&peer_id);
                                 ledger_exchanged_peers.remove(&peer_id);
+                                pending_ledger_exchanges.remove(&peer_id);
                                 ledger_exchange_guardrails.forget_peer(&peer_id);
                                 let stale_dispatches: Vec<libp2p::request_response::OutboundRequestId> =
                                     pending_custody_dispatches
@@ -7632,18 +7967,60 @@ use libp2p::{gossipsub, request_response};
 mod tests {
     use super::{
         build_mdns_dial_addr, build_routable_relay_addrs, extract_ed25519_public_key_from_peer_id,
-        peer_is_blocked, should_apply_delivery_convergence_marker,
-        validate_delivery_convergence_marker_shape, verify_registration_message,
-        DeliveryConvergenceMarker, PendingCustodyDispatch, PendingMessage, RelayAbuseGuardrails,
-        RELAY_DUPLICATE_WINDOW_MS, RELAY_PEER_BUCKET_BURST_CAPACITY,
-        RELAY_PEER_BUCKET_REFILL_PER_SEC,
+        is_ledger_exchange_path_failure, peer_is_blocked, rearm_ledger_exchange_after_failure,
+        resolve_dial_target, should_apply_delivery_convergence_marker,
+        target_peer_id_from_multiaddr, validate_delivery_convergence_marker_shape,
+        verify_registration_message, DeliveryConvergenceMarker, PendingCustodyDispatch,
+        PendingMessage, RelayAbuseGuardrails, RELAY_DUPLICATE_WINDOW_MS,
+        RELAY_PEER_BUCKET_BURST_CAPACITY, RELAY_PEER_BUCKET_REFILL_PER_SEC,
     };
     use crate::identity::IdentityKeys;
     use crate::store::relay_custody::RelayCustodyStore;
     use crate::transport::RegistrationMessage;
     use libp2p::{Multiaddr, PeerId};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
+
+    #[test]
+    fn ledger_exchange_failure_rearms_only_the_current_request() {
+        let peer = "peer-a";
+        let mut pending = HashMap::from([(peer, 22_u64)]);
+        let mut exchanged = HashSet::from([peer]);
+
+        assert!(!rearm_ledger_exchange_after_failure(
+            &mut pending,
+            &mut exchanged,
+            &peer,
+            &21,
+        ));
+        assert_eq!(pending.get(peer), Some(&22));
+        assert!(exchanged.contains(peer));
+
+        assert!(rearm_ledger_exchange_after_failure(
+            &mut pending,
+            &mut exchanged,
+            &peer,
+            &22,
+        ));
+        assert!(!pending.contains_key(peer));
+        assert!(!exchanged.contains(peer));
+    }
+
+    #[test]
+    fn ledger_exchange_retries_only_after_real_path_failure() {
+        use libp2p::request_response::OutboundFailure;
+
+        assert!(is_ledger_exchange_path_failure(
+            &OutboundFailure::DialFailure
+        ));
+        assert!(is_ledger_exchange_path_failure(
+            &OutboundFailure::ConnectionClosed
+        ));
+        assert!(!is_ledger_exchange_path_failure(&OutboundFailure::Timeout));
+        assert!(!is_ledger_exchange_path_failure(
+            &OutboundFailure::UnsupportedProtocols
+        ));
+    }
 
     #[test]
     fn protocol_admission_fails_closed_and_honors_blocked_peer() {
@@ -7945,6 +8322,36 @@ mod tests {
 
         assert!(build_mdns_dial_addr(local, discovered, &relay).is_none());
         assert!(build_mdns_dial_addr(local, discovered, &loopback).is_none());
+    }
+
+    #[test]
+    fn target_peer_id_from_multiaddr_uses_circuit_target_not_relay_source() {
+        let relay = PeerId::random();
+        let target = PeerId::random();
+        let addr: Multiaddr =
+            format!("/ip4/192.0.2.1/tcp/443/p2p/{relay}/p2p-circuit/p2p/{target}")
+                .parse()
+                .unwrap();
+
+        assert_eq!(target_peer_id_from_multiaddr(&addr), Some(target));
+        assert_eq!(resolve_dial_target(&addr, Some(target)), Ok(Some(target)));
+        assert_eq!(
+            resolve_dial_target(&addr, Some(relay)),
+            Err(format!(
+                "dial target identity mismatch: requested {relay} but address targets {target}"
+            ))
+        );
+    }
+
+    #[test]
+    fn target_peer_id_from_multiaddr_returns_none_for_relay_source_only() {
+        let relay = PeerId::random();
+        let addr: Multiaddr = format!("/ip4/192.0.2.1/tcp/443/p2p/{relay}/p2p-circuit")
+            .parse()
+            .unwrap();
+
+        assert_eq!(target_peer_id_from_multiaddr(&addr), None);
+        assert_eq!(resolve_dial_target(&addr, Some(relay)), Ok(Some(relay)));
     }
 
     #[test]

@@ -508,6 +508,18 @@ fn relay_healthy_from_ts(established_at: u64, now: u64) -> bool {
     established_at != 0 && now.saturating_sub(established_at) < RELAY_HEALTHY_TTL_SECS
 }
 
+/// Keep relay fallback eligible even when the ledger knows the circuit's
+/// target PeerId. A `DialKey::Peer` is intentionally suppressed while a relay
+/// is healthy; circuit paths must instead retain their circuit classification
+/// because they are the fallback path being selected.
+fn scheduler_dial_key(addr_str: &str, peer_id: Option<PeerId>) -> ledger::DialKey {
+    if addr_str.contains("/p2p-circuit") {
+        ledger::DialKey::Addr(ledger::strip_peer_id(addr_str))
+    } else {
+        ledger::DialKey::for_target(addr_str, peer_id)
+    }
+}
+
 /// Fire-and-forget outbound dial scheduler.
 ///
 /// Enforces per-peer backoff and limits concurrent outbound dials to unknown
@@ -554,7 +566,7 @@ impl DialScheduler {
         let scheduler = self.clone();
 
         tokio::spawn(async move {
-            let key = ledger::DialKey::for_target(&addr_str, peer_id_opt);
+            let key = scheduler_dial_key(&addr_str, peer_id_opt);
 
             // Optimistic unknown-class check without holding the ledger lock.
             let is_unknown = {
@@ -590,11 +602,14 @@ impl DialScheduler {
                 return;
             }
 
-            let stripped = ledger::strip_peer_id(&addr_str);
-            let addr = match stripped.parse::<Multiaddr>() {
+            // Preserve the complete address, especially the target component
+            // after `/p2p-circuit`. The core needs the relay hop and explicit
+            // target identity to apply known-peer dial conditions without
+            // turning a relay path into an address-only/Always dial.
+            let addr = match addr_str.parse::<Multiaddr>() {
                 Ok(a) => a,
                 Err(e) => {
-                    tracing::error!("Invalid multiaddr: {} - {}", stripped, e);
+                    tracing::error!("Invalid multiaddr: {} - {}", addr_str, e);
                     let mut l = ledger.lock().await;
                     l.complete_dial(&key, false, now, None);
                     drop(permit);
@@ -603,7 +618,10 @@ impl DialScheduler {
             };
 
             tokio::spawn(async move {
-                let result = swarm.dial(addr).await;
+                let result = match peer_id_opt {
+                    Some(peer_id) => swarm.dial_peer(peer_id, addr).await,
+                    None => swarm.dial(addr).await,
+                };
                 let now2 = now_secs();
                 let mut l = ledger.lock().await;
                 match result {
@@ -638,6 +656,21 @@ mod dial_scheduler_tests {
     #[test]
     fn test_relay_healthy_from_ts_stale() {
         assert!(!relay_healthy_from_ts(1_000_000, 1_000_601));
+    }
+
+    #[test]
+    fn circuit_scheduler_key_retains_relay_fallback_classification() {
+        let target = PeerId::random();
+        let addr = format!(
+            "/ip4/192.0.2.1/tcp/443/p2p/{}/p2p-circuit/p2p/{}",
+            PeerId::random(),
+            target
+        );
+
+        assert!(matches!(
+            scheduler_dial_key(&addr, Some(target)),
+            ledger::DialKey::Addr(key) if key.contains("/p2p-circuit")
+        ));
     }
 }
 
