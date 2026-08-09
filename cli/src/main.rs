@@ -3306,7 +3306,7 @@ async fn cmd_send_offline(recipient: String, message: String) -> Result<()> {
     // Start a temporary swarm to send the message directly (not just queue)
     let data_dir = config::Config::data_dir()?;
     let storage_path = data_dir.join("storage");
-    let core = IronCore::with_storage(path_to_string(&storage_path)?);
+    let core = Arc::new(IronCore::with_storage(path_to_string(&storage_path)?));
     core.initialize_identity()
         .context("Failed to load identity")?;
 
@@ -3329,14 +3329,37 @@ async fn cmd_send_offline(recipient: String, message: String) -> Result<()> {
         "{} Starting temporary swarm for immediate send...",
         "".yellow()
     );
-    let (event_tx, mut _event_rx) = tokio::sync::mpsc::channel(16);
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(16);
+    let core_for_events = Arc::clone(&core);
+    tokio::spawn(async move {
+        while let Some(event) = event_rx.recv().await {
+            if let SwarmEvent::MessageReceived {
+                peer_id,
+                envelope_data,
+            } = event
+            {
+                match core_for_events.receive_message(envelope_data) {
+                    Ok(message) => tracing::debug!(
+                        "Temporary CLI swarm processed {:?} from {}",
+                        message.message_type,
+                        peer_id
+                    ),
+                    Err(error) => tracing::warn!(
+                        "Temporary CLI swarm failed to process message from {}: {}",
+                        peer_id,
+                        error
+                    ),
+                }
+            }
+        }
+    });
     let routing_handle = scmessenger_core::transport::default_routing_engine_handle();
 
     let swarm_handle = match scmessenger_core::transport::start_swarm(
         network_keypair,
         None, // Let swarm auto-select port
         event_tx,
-        None,
+        Some(Arc::downgrade(&core)),
         true, // headless mode for CLI send
         Some(discovery_config),
         routing_handle,
