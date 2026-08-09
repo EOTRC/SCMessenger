@@ -9,7 +9,7 @@
 // but are never deleted — they may come back.
 
 use anyhow::{Context, Result};
-use libp2p::PeerId;
+use libp2p::{Multiaddr, PeerId};
 use scmessenger_core::transport::dial_policy::DialPolicyManager;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -471,7 +471,9 @@ impl ConnectionLedger {
             })
             .filter(|e| {
                 if let (Some(local), Some(last)) = (local_peer_id, &e.last_peer_id) {
-                    local != last
+                    local != last && !contains_peer_id_component(&e.multiaddr, local)
+                } else if let Some(local) = local_peer_id {
+                    !contains_peer_id_component(&e.multiaddr, local)
                 } else {
                     true
                 }
@@ -829,6 +831,22 @@ pub fn is_dialable_for_this_node(multiaddr: &str, mode: NetworkMode, my_addrs: &
         }
     }
     true
+}
+
+/// Returns true when a multiaddr contains the local PeerId in any `/p2p/`
+/// component. This catches self-targeted and self-relayed circuit paths that
+/// cannot be detected by comparing the transport socket alone.
+pub fn contains_peer_id_component(multiaddr: &str, peer_id: &str) -> bool {
+    let Ok(local_peer_id) = peer_id.parse::<PeerId>() else {
+        return false;
+    };
+    let Ok(addr) = multiaddr.parse::<Multiaddr>() else {
+        return false;
+    };
+
+    addr.iter().any(|protocol| {
+        matches!(protocol, libp2p::multiaddr::Protocol::P2p(candidate) if candidate == local_peer_id)
+    })
 }
 
 /// Prefer directly useful local candidates without discarding global
@@ -1253,6 +1271,19 @@ mod tests {
             Local,
             &my_addrs
         ));
+    }
+
+    #[test]
+    fn self_peer_components_are_rejected_from_ledger_dials() {
+        let local = test_peer_id();
+        let self_target = format!("/ip4/192.168.0.121/tcp/9001/p2p-circuit/p2p/{local}");
+        let remote_target = format!(
+            "/ip4/192.168.0.121/tcp/9001/p2p-circuit/p2p/{}",
+            PeerId::random()
+        );
+
+        assert!(contains_peer_id_component(&self_target, &local));
+        assert!(!contains_peer_id_component(&remote_target, &local));
     }
 
     #[test]

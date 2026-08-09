@@ -2173,7 +2173,7 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>, auto_reply: boo
                                         entries
                                         .iter()
                                         .map(|e| {
-                                            (ledger::strip_peer_id(&e.multiaddr), e.last_peer_id.clone())
+                                            (e.multiaddr.clone(), e.last_peer_id.clone())
                                         })
                                         .collect(),
                                     );
@@ -2185,6 +2185,19 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>, auto_reply: boo
                                     let my_addrs = get_local_transport_addresses(&swarm_handle).await;
 
                                     for (addr_str, peer_id_opt) in new_entries {
+                                        let local_peer_id_string = local_peer_id.to_string();
+                                        if peer_id_opt.as_deref() == Some(local_peer_id_string.as_str())
+                                            || ledger::contains_peer_id_component(
+                                                &addr_str,
+                                                &local_peer_id_string,
+                                            )
+                                        {
+                                            tracing::debug!(
+                                                "Skipping self-targeted ledger address: {}",
+                                                addr_str
+                                            );
+                                            continue;
+                                        }
                                         // Skip non-routable addresses (loopback,
                                         // link-local, site-local) a peer may
                                         // advertise -- dialing them fails forever
@@ -3219,7 +3232,7 @@ async fn cmd_relay(
                             let new_entries: Vec<(String, Option<String>)> = entries
                                 .iter()
                                 .map(|e| {
-                                    (ledger::strip_peer_id(&e.multiaddr), e.last_peer_id.clone())
+                                    (e.multiaddr.clone(), e.last_peer_id.clone())
                                 })
                                 .collect();
                             drop(l);
@@ -3229,6 +3242,19 @@ async fn cmd_relay(
                             let my_addrs = get_local_transport_addresses(&swarm_handle).await;
 
                             for (addr_str, peer_id_opt) in new_entries {
+                                let local_peer_id_string = local_peer_id.to_string();
+                                if peer_id_opt.as_deref() == Some(local_peer_id_string.as_str())
+                                    || ledger::contains_peer_id_component(
+                                        &addr_str,
+                                        &local_peer_id_string,
+                                    )
+                                {
+                                    tracing::debug!(
+                                        "Skipping self-targeted ledger address: {}",
+                                        addr_str
+                                    );
+                                    continue;
+                                }
                                 // Skip non-routable addresses (loopback, link-local,
                                 // site-local) a peer may advertise
                                 if !ledger::is_dialable_multiaddr(&addr_str, ledger::NetworkMode::Local, ledger::DnsPolicy::Reject) {
