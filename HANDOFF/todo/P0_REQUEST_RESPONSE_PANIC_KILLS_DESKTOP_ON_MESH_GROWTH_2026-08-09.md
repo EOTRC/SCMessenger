@@ -129,3 +129,82 @@ Capture stderr separately or the root cause is invisible.
 2. Reproduction attempted twice; both clean.
 3. If the fix is upstream, the version bump is verified to contain it -- do not
    assume a version number fixes a panic without reading its changelog.
+
+---
+
+## ROOT CAUSE IDENTIFIED (2026-08-09, from the actual crate source)
+
+Read directly from
+`~/.cargo/registry/src/index.crates.io-*/libp2p-request-response-0.29.0/src/lib.rs`.
+The assertion is **not** about pending requests. Line 678, inside
+`on_connection_closed`:
+
+```rust
+debug_assert_eq!(connections.is_empty(), remaining_established == 0);
+```
+
+Our panic reported `left: false, right: true`, so:
+
+- `connections.is_empty()` == **false** -- request-response still tracks one or
+  more connections to that peer,
+- `remaining_established == 0` == **true** -- the swarm says no connections to
+  that peer remain.
+
+**The behaviour's internal `connected` map has drifted out of sync with the
+swarm's connection accounting.** It is holding at least one stale connection
+entry for which it never received a `ConnectionClosed`. This is a
+connection-bookkeeping drift, not an outbound-request leak.
+
+Consequence in the same function: because `connections.is_empty()` is false, the
+peer is **not** removed from `self.connected`, so the stale entry persists.
+
+### This is a `debug_assert_eq!` -- profile changes the symptom
+
+**Debug builds panic. Release builds do not.** In release the assertion is
+compiled out and the node continues with drifted state: a stale connection entry
+retained indefinitely, and a peer never cleared from `connected`.
+
+The node that crashed was `target/debug`. So:
+
+- A five-node run using **debug** desktop binaries will see nodes die.
+- A five-node run using **release** desktop binaries will NOT crash, but will
+  accumulate inconsistent request-response state, with unclear effects on
+  response routing and memory over a long run.
+
+Neither is "fine". Choosing release to make the crash disappear would be hiding
+the defect, not fixing it, and it must not be presented as a pass.
+
+### No upstream fix available
+
+`libp2p-request-response` tops out at **0.29.0** on crates.io (0.27.0, 0.28.0,
+0.28.1, 0.29.0). There is no newer release to bump to, unlike the `libp2p-upnp`
+path. Any fix has to be ours: stop generating the drift, or work around it.
+
+### Corrected investigation direction
+
+The question is no longer "which pending request leaked". It is: **how does a
+connection get registered in request-response and never produce a matching
+`ConnectionClosed`?** Candidates, in order:
+
+1. Multiple simultaneous connections to one peer (direct + relayed + circuit),
+   where one path is torn down by a route other than a `ConnectionClosed` event
+   the behaviour observes.
+2. Circuit/relay listener teardown (`swarm.remove_listener` on relay reservation
+   cleanup) removing a transport underneath an established connection.
+3. The self-referential circuit listeners noted above producing a connection
+   whose peer is this node, which request-response may account differently.
+
+### Note on a delegated analysis that was wrong
+
+A THINK-tier worker analysis claimed the assertion checks
+`self.outbound.pending.is_empty()`, and asserted that no code path drops an
+inbound channel without responding. **Both claims are false.** The assertion is
+the connection/`remaining_established` comparison quoted above, and
+`core/src/transport/swarm.rs:3540` and `:6731` both call `drop(channel)` on the
+blocked-peer address-reflection path without sending a response. Its file:line
+citations were also fabricated -- it cited `ConnectionClosed` at lines 2682-2724
+when the real arms are at 4915 and 4930.
+
+Recorded because it is a reusable lesson: a confident analysis with precise-looking
+line numbers is not evidence. The crate source was on this machine the whole time
+and settled the question in one read.
