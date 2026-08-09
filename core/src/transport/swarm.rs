@@ -440,6 +440,25 @@ fn resolve_dial_target(
     Ok(explicit_peer_id.or(embedded_peer_id))
 }
 
+/// Direct port-ladder synthesis is only valid before a relay circuit marker.
+/// Once `/p2p-circuit` is present, appending another transport component after
+/// it produces an invalid multiaddr (`.../p2p-circuit/tcp/...`) and libp2p
+/// reports a missing relay peer id. Inspect protocol components structurally;
+/// a string suffix check misses relay-source-only addresses ending at the
+/// marker.
+fn is_direct_dial_addr(addr: &Multiaddr) -> bool {
+    let has_circuit = addr
+        .iter()
+        .any(|protocol| matches!(protocol, libp2p::multiaddr::Protocol::P2pCircuit));
+    let has_websocket = addr.iter().any(|protocol| {
+        matches!(
+            protocol,
+            libp2p::multiaddr::Protocol::Ws(_) | libp2p::multiaddr::Protocol::Wss(_)
+        )
+    });
+    !has_circuit && !has_websocket
+}
+
 /// Turn one trusted mDNS discovery result into a direct dial target.
 ///
 /// mDNS supplies the peer identity separately from the socket address.  The
@@ -5909,8 +5928,7 @@ pub async fn start_swarm_with_config(
                                     continue;
                                 }
                                 tracing::debug!("Dialing {} (synthesizing port ladder if applicable)", addr);
-                                let s = addr.to_string();
-                                let is_direct = !s.contains("/p2p-circuit/") && !s.contains("/ws/") && !s.contains("/wss/");
+                                let is_direct = is_direct_dial_addr(&addr);
 
                                 let target_peer_id = match resolve_dial_target(&addr, requested_peer_id) {
                                     Ok(peer_id) => peer_id,
@@ -8359,6 +8377,24 @@ mod tests {
 
         assert_eq!(target_peer_id_from_multiaddr(&addr), None);
         assert_eq!(resolve_dial_target(&addr, Some(relay)), Ok(Some(relay)));
+    }
+
+    #[test]
+    fn relay_circuit_addresses_skip_direct_port_ladder() {
+        let relay = PeerId::random();
+        let target = PeerId::random();
+        let direct: Multiaddr = "/ip4/192.0.2.1/tcp/443".parse().unwrap();
+        let relay_source: Multiaddr = format!("/ip4/192.0.2.1/tcp/443/p2p/{relay}/p2p-circuit")
+            .parse()
+            .unwrap();
+        let relayed_target: Multiaddr =
+            format!("/ip4/192.0.2.1/tcp/443/p2p/{relay}/p2p-circuit/p2p/{target}")
+                .parse()
+                .unwrap();
+
+        assert!(super::is_direct_dial_addr(&direct));
+        assert!(!super::is_direct_dial_addr(&relay_source));
+        assert!(!super::is_direct_dial_addr(&relayed_target));
     }
 
     #[test]
