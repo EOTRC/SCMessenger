@@ -115,3 +115,95 @@ losslessly and be resolvable in both directions.
 **Queued behind the five-node anchor rollout** per operator direction. Do not
 start this while nodes are being re-anchored to `68fcc3f1`; a moving target
 during a receipt investigation would waste the run.
+
+---
+
+## ROOT CAUSE FOUND AND VERIFIED 2026-08-10 ~03:25Z
+
+**The receipt loop is open. Receipts arrive, are decoded, notify the UI delegate,
+and are then dropped without ever touching the outbox.**
+
+My identifier-mismatch hypothesis above was **WRONG**. Recorded rather than
+deleted, because the wrong theory shaped two comments to the other lane.
+
+### The code, verified by reading it (not inferred)
+
+`core/src/iron_core.rs:3423-3444`:
+
+```rust
+if message.message_type == crate::MessageType::Receipt {
+    if let Ok(receipt) = crate::message::types::decode_receipt(&message.payload) {
+        if let Some(delegate) = self.delegate.read().as_ref() {
+            let status_str = match receipt.status { ... };
+            delegate.on_receipt_received(receipt.message_id, status_str);
+        }
+    } else if let Err(e) = ... { /* parse error logging */ }
+    // Fall through to generic pipeline steps
+}
+```
+
+The receipt is decoded and handed to the delegate. **`mark_message_sent` is
+never called.** The function exists and does exactly the right thing --
+`core/src/iron_core.rs:1008`:
+
+```rust
+/// Mark a message as sent (remove from outbox after transport confirms delivery).
+pub fn mark_message_sent(&self, message_id: String) -> bool {
+    let outbox_removed = self.outbox.write().remove(&message_id);
+    ...
+    let drift_removed = ...;
+    outbox_removed || drift_removed
+}
+```
+
+Its callers are the local send path (`iron_core.rs:1048`), a test
+(`iron_core.rs:4903`), and the CLI (`cli/src/main.rs:3779`). **No caller on the
+receipt-handling path.**
+
+So an inbound delivery receipt updates the UI and nothing else. The outbox entry
+survives, `/api/send/:id` keeps reporting `pending`, and the retry machinery
+keeps re-sending a message the peer already has -- observed at
+`outbox_retry_attempt (attempt #1/12)` for a delivered message.
+
+### Why it presents symmetrically
+
+Both lanes run the same code. Nothing lane-specific is involved, which is why
+Windows and macOS showed the identical failure in opposite directions.
+
+### On the identifiers -- the question is answered, and it is not the bug
+
+`identity_id` (Blake3) and the libp2p `PeerId` are **both one-way hashes of the
+same `public_key`**, by different algorithms. Neither can be derived from the
+other; both can be derived from the public key. That is why neither 64-hex value
+matched a SHA-256 of anything I tried.
+
+So they are not redundant and they are not mismatched -- they are two valid
+projections of one root identity. **`public_key` is the unifying root.** Any
+mapping table should be built around it rather than trying to convert between
+the leaves.
+
+This still deserves documenting per the operator's unification request, but it
+is **not** the cause of the receipt failure and should not block the fix.
+
+### The fix
+
+Call `mark_message_sent(receipt.message_id)` on the receipt path, after the
+delegate callback, when `receipt.status` indicates delivery.
+
+Cautions for whoever implements it:
+- Only dequeue on a status that genuinely means delivered. `DeliveryStatus::Sent`
+  and `Delivered` are currently collapsed into the same string for the delegate;
+  do not collapse them for dequeuing.
+- The receipt path deliberately falls through to dedup/metrics/persistence. Do
+  not early-return and skip those.
+- `mark_message_sent` takes the outbox write lock. Check for a lock-ordering
+  hazard against the locks already held in this handler.
+- Verify the sender-side status endpoint then reports delivered, and that
+  `outbox_retry_attempt` stops climbing for that message id.
+
+### Regression test
+
+Enqueue, deliver, ACK, assert sender status converges to delivered AND the retry
+count stops. It must fail before the change. An in-process test alone is not
+sufficient -- this failed identically across two platforms, so verify on a real
+two-node pair.
