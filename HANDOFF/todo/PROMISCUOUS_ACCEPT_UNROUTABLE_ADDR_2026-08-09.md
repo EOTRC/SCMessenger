@@ -84,5 +84,13 @@ theoretical objection. This ticket supplies the concrete instance it lacked.
 ## Evidence location
 
 `tmp/logs/win_node_soak_49bc3f56.log` (soak from 2026-08-10T06:32:58Z,
-anchor `49bc3f56`). Note `tmp/` is gitignored -- copy the log before it is
-cleaned if this ticket is picked up later.
+anchor `49bc3f56`).
+
+**That path is gitignored and so is any `.log` copy** -- `.gitignore:10` is a
+global `*.log`, so copying it into `docs/fieldtest/` does NOT preserve it
+either (I tried; the copy was ignored too). The repo convention in
+`docs/fieldtest/` is `.md` writeups, not raw logs.
+
+Every log line this ticket depends on is therefore quoted inline above, which
+is the durable record. If you need the full log and this machine has been
+cleaned, it is gone -- re-run the soak rather than trusting a summary.
