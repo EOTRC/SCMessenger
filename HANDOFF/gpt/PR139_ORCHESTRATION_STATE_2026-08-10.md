@@ -98,6 +98,15 @@ and large circuit addresses being rejected by mDNS as `TxtRecordTooLong`. This
 old-run failure is confirmed and is not final-gate evidence. The candidate Mac
 was restarted after that failure with the preserved `WNC...` identity.
 
+The candidate Mac restart completed at 05:10:47Z. `/version` then reported
+`git_hash=acda09df`; at the 05:17Z checkpoint the process was still alive and no
+candidate request-response panic had been observed. It had only AWS relay in
+the authenticated peer table, with 40 listeners (38 direct, 2 circuit). Logs
+showed a DCUtR hole-punch failure to Windows followed by relay fallback, plus
+high negotiation-failure noise from stale/promiscuous addresses including old
+`192.168.0.111` entries. This is a live observation, not a green transport
+result or a five-node gate start.
+
 Windows previously confirmed receiver-side evidence for Mac probe
 `54501eea-95e5-4f6f-8624-642a59f98c3b`:
 
@@ -150,6 +159,9 @@ five-node run. Important findings:
   `/ip4/54.226.67.101/tcp/9001/ws` and Android relay/direct candidates. Public
   IPv6 candidates exist and must be tested for hole punch rather than blanket
   blacklisted.
+- The pulled `history.db` contains older identity-sync/auto-reply records and
+  stale Mac identities. Some historical rows also show `delivered=true` while
+  `status=Queued`; do not use that database snapshot as current delivery proof.
 
 When iOS is part of the next run, capture before, during, and after the test:
 
