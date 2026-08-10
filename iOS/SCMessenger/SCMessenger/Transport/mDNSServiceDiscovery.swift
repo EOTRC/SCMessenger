@@ -16,6 +16,7 @@ import Combine
 ///
 /// Browse both the libp2p service used by Android and the legacy iOS service.
 /// Keeping both avoids regressing iOS-to-iOS discovery while adding Android parity.
+@MainActor
 final class mDNSServiceDiscovery: NSObject {
     private let logger: Logger = Logger(subsystem: "com.scmessenger", category: "mDNS")
     private weak var meshRepository: MeshRepository?
