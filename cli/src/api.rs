@@ -626,11 +626,15 @@ fn resolve_api_recipient(
     })?;
 
     for contact in contact_list {
-        let identity_id =
-            scmessenger_core::identity::keys::identity_id_from_public_key_hex(&contact.public_key);
-        let peer_id = identity_id
+        // Older contact records can contain a PeerId or identity ID in the
+        // public_key column. They must not poison resolution for a sender
+        // whose authenticated envelope key is still available in the inbox.
+        let recipient = api_recipient_from_public_key(contact.public_key.clone()).ok();
+        let identity_id = recipient
             .as_ref()
-            .and_then(|_| api_recipient_from_public_key(contact.public_key.clone()).ok())
+            .map(|recipient| recipient.identity_id.clone());
+        let peer_id = recipient
+            .as_ref()
             .map(|recipient| recipient.peer_id.to_string());
         let nickname_match = contact
             .nickname
@@ -651,8 +655,14 @@ fn resolve_api_recipient(
                 .is_some_and(|peer| api_identifier_matches(query, peer))
             || nickname_match
         {
-            let recipient = api_recipient_from_public_key(contact.public_key)?;
-            return authorize_api_recipient(core, recipient);
+            if let Some(recipient) = recipient {
+                return authorize_api_recipient(core, recipient);
+            }
+
+            tracing::warn!(
+                contact_peer_id = %contact.peer_id,
+                "Ignoring contact with malformed public key during API recipient resolution"
+            );
         }
     }
 
@@ -1530,5 +1540,28 @@ mod tests {
         let error = resolve_api_recipient(&core, &recipient.peer_id.to_string())
             .expect_err("blocked recipient must not resolve");
         assert_eq!(error.0, axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn api_send_ignores_stale_contact_public_key() {
+        let core = scmessenger_core::IronCore::new();
+        core.grant_consent();
+        core.initialize_identity()
+            .expect("test core identity should initialize");
+        let recipient = test_recipient();
+
+        // This is the malformed shape reported by Windows: the contact's
+        // public_key field contains the base58 PeerId instead of Ed25519 hex.
+        core.contacts_store_manager()
+            .add(Contact::new(
+                recipient.peer_id.to_string(),
+                recipient.peer_id.to_string(),
+            ))
+            .expect("stale contact should persist");
+
+        let resolved = resolve_api_recipient(&core, &recipient.peer_id.to_string())
+            .expect("stale contact must not poison PeerId resolution");
+        assert_eq!(resolved.public_key, recipient.public_key);
+        assert_eq!(resolved.peer_id, recipient.peer_id);
     }
 }
