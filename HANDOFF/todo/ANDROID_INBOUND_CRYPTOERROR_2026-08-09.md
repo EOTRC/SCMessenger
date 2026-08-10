@@ -40,6 +40,41 @@ which frames legitimately fail.
 
 Do NOT close this on the marker fix alone -- confirm the count actually drops.
 
+### Controlled timing evidence for the retry->duplicate->CryptoError chain
+
+Single tracked message, both sides observed:
+
+```
+07:18:55.xxx  Windows  outbox_enqueue        c62c59b5
+07:18:56.362  Android  inbox_receive         c62c59b5   DECRYPTED, delivered
+07:19:30.xxx  Windows  outbox_retry_attempt  #1/12      re-sends what Android HAS
+07:19:51.978  Android  receive_message error from <Windows peer>: CryptoError
+07:20:33.350  Android  Failed to decrypt ratchet message  (x4 burst to 07:20:34.413)
+```
+
+The sender re-sent a message the receiver had already decrypted 34 seconds
+earlier, and the receiver logged a decrypt failure attributed to that same
+peer 21 seconds after the retry.
+
+**Strong but circumstantial, and it must be labelled as such:** the failure
+line carries no message id, so it cannot be tied to `c62c59b5` by id. That is
+not a logging oversight -- **a frame that fails to decrypt has no recoverable
+id by construction.** This is itself an important finding: it is precisely why
+cross-lane probes "vanish without trace", and it means any correlation here
+can only ever be by timing plus peer attribution.
+
+### Decisive test for whoever takes this
+
+Fix the receipt-marker matching first, then re-measure the CryptoError rate on
+an otherwise identical run. If the count collapses, this ticket is mostly a
+symptom and closes with it. If it does not, there is an independent decrypt
+defect and the ratchet path needs the adversarial pass on its own merits.
+
+Cheaper interim test: send ONE message to an idle peer with nothing else in
+flight and let exactly one retry fire. If a decrypt failure appears attributed
+to that peer within the retry window and at no other time, the chain is
+confirmed with a clean single-variable experiment.
+
 ## Original filing follows (severity claim superseded above)
 
 Severity as filed: P0 (delivery truth -- inbound messages arrive and are discarded)
