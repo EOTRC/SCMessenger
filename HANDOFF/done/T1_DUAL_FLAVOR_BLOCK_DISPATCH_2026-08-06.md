@@ -1,5 +1,34 @@
 # T1 Scoped Task: Dual-Flavor Block Storage (identifier-gate follow-up)
 
+## RESOLUTION 2026-08-09 -- ALREADY_WIRED, closed without dispatch
+
+Pre-dispatch validation (ORCHESTRATION.md Section 2.2 step 2) found this
+packet already implemented in the working tree. Not re-dispatched.
+
+Evidence, grep-confirmed at HEAD (not doc-claimed):
+
+- `core/src/store/blocked.rs:7` imports `identity_id_from_public_key_hex`.
+- Alias write path present at `blocked.rs:258-322` -- canonical alias resolved
+  before the first write, second `BlockedIdentity` written under the derived
+  identity_id, device-id expansion preserved (`write_block_entry` at :322).
+- Candidate expansion for the ingress gate at `blocked.rs:119-146`, including
+  the `id:` prefixed alias flavor.
+- Unblock/dedupe flavor matching at `blocked.rs:404` and `:424`.
+- All five required tests exist: `block_under_public_key_matches_inbound_identity_id`
+  (:1098), `block_under_identity_id_matches_inbound_public_key` (:1120),
+  `unblock_removes_both_flavor_entries` (:1192),
+  `list_blocked_peers_dedupes_both_flavors` (:1257),
+  `block_identity_id_writes_no_pk_alias` (:1287).
+
+Landing commits: `cabc0473` then `57c5d6a4` (identifier-gate T1-T4), with
+later hardening in `0ef4d6c7` (ledger disclosure + transport blocks).
+
+Remaining, NOT covered by this packet: the test suite has not been re-run at
+this session's HEAD -- the build gate is blocked on disk pressure (C: at 98%,
+6.6 GB free). Verification rides with the P0 UPnP soak build once
+`P1_PRUNE_CLAUDE_DATA_2026-08-08.md` reclaims space.
+
+
 You are dispatched as a FOREIGN WORKER in the SCMessenger repo at
 C:\Users\SCM\Documents\GitHub\SCMessenger. Implement ONLY the change below,
 report, and stop. DO NOT commit, DO NOT push, DO NOT run cargo/gradle (the
