@@ -1,5 +1,66 @@
 # Contact lookup misses the public-key flavor -- every send to a known contact takes the unknown-peer path
 
+## RESOLVED 2026-08-09 by `ed57d818` (macOS lane) -- with two corrections
+
+Fix landed as `ed57d818 fix(core): resolve contacts by public key`, touching
+exactly the two files this ticket named. Reviewed by the Windows lane:
+
+- Adds `ContactManager::get_by_public_key()` (`core/src/store/contacts.rs`),
+  case-insensitive match on `contact.public_key`.
+- Wires it as a fallback in the send path (`core/src/iron_core.rs:779-785`).
+- Adds `lookup_by_public_key_resolves_peer_keyed_contact` unit test.
+
+Functionally correct. It resolves the reported symptom.
+
+### CORRECTION 1 -- this ticket overstated the severity. It was not P1.
+
+Filed as "P1, delivery-truth, silently downgrades contact validation on every
+send". That was wrong and is corrected here rather than left to mislead.
+
+`known_by_pubkey` is referenced in exactly two places
+(`iron_core.rs:779` and `:787`, grep-confirmed) and gates ONLY the
+hash-confusion error check and the warning. Nothing downstream branches on
+it: encryption uses `recipient_id` directly, and unknown-peer sends were
+already permitted by design. So the real impact was a spurious WARN plus
+altered reachability of one diagnostic guard -- not a delivery, routing, or
+encryption defect. Accurate severity: **P3, diagnostic**.
+
+The finding was still worth filing -- the log line was actively misleading two
+lanes debugging delivery -- but it did not belong at the same tier as the
+receipt-marker defect, which does drop real deliveries.
+
+### CORRECTION 2 -- the fix trades an O(1) miss for an O(n) scan on EVERY send
+
+`get_by_public_key()` calls `list()`, and `list()` does `scan_prefix` plus a
+`serde_json::from_slice` per contact (`contacts.rs:309-321`). Because
+contacts are keyed by PeerId, the primary `get(public_key)` lookup ALWAYS
+misses, so the fallback scan now runs on **every send to every contact**, not
+just on a genuine miss.
+
+The comment still sitting directly above the call site says the opposite:
+"Only when that misses do we pay for a scan, so the common send path stays
+O(1) against the contact store". That comment is now inaccurate.
+
+This ticket's original fix sketch called for a `public_key -> peer_id` index
+maintained at write time, which keeps the send path O(1). The scan is a
+smaller and perfectly reversible change, and at current contact counts (7 on
+the Windows node) the cost is negligible -- but on a farm node with a large
+contact list this is a full deserialize of the contact store per message.
+
+Recommended follow-up (NOT urgent, not blocking the tag): either add the
+write-time index, or update that comment so the next reader is not misled
+about the cost. Filed as a note here rather than a new ticket to avoid
+backlog churn over a non-blocking performance point.
+
+### Soak impact: none
+
+`git diff --name-only 49bc3f56 ed57d818` returns only `core/src/iron_core.rs`
+and `core/src/store/contacts.rs`. Transport, CLI, and the Cargo manifests are
+byte-identical, so panic/connection-behaviour evidence gathered at
+`49bc3f56` transfers to `ed57d818` unchanged. A running soak does not need to
+be restarted for this fix.
+
+
 Status: Active
 Severity: P1 (delivery-truth; silently downgrades contact validation on every send)
 Discovered: 2026-08-09, Windows lane, live node run at anchor `49bc3f56`
