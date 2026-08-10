@@ -1,7 +1,48 @@
-# Android drops inbound messages with CryptoError -- 840 occurrences over 31 hours
+# Android drops SOME inbound messages with CryptoError -- 840 occurrences over 31 hours
 
 Status: Active
-Severity: P0 (delivery truth -- inbound messages arrive and are discarded)
+Severity: P1 (was filed P0 -- see the correction immediately below)
+
+## CORRECTION 2026-08-09, same session, before anyone acted on this
+
+This ticket originally said inbound messages "arrive and are discarded" and
+implied Android could not decrypt. **A control test refutes the strong form.**
+
+Sent a deliberate Windows -> Android probe and read the device log:
+
+```
+07:18:56.362346Z  inbox_receive  message_id=c62c59b5-4e99-44af-9e29-bbafd60824a7
+                                 sender_id=985a25f9505372de   [Windows]
+07:19:52.302275Z  inbox_receive  message_id=ec95877b-4afa-444d-8380-00d63269303d
+                                 sender_id=3854e44295c13848   [macOS]
+```
+
+Both decrypted and reached the inbox, on the CURRENT build, with no upgrade.
+So Windows -> Android AND macOS -> Android both work. The failure is a
+SUBSET of frames, not the channel.
+
+Second correction: the errors are **not per-pair**. `receive_message error`
+by source in a recent window: 7x Windows, 7x AWS relay, 4x macOS. A ratchet
+desync with one counterparty cannot produce that spread, so the
+ratchet-desync hypothesis below is weakened, not confirmed.
+
+**Revised leading hypothesis:** the retry storm is the upstream cause. The
+receipt-marker defect (`RECEIPT_MARKER_ID_FLAVOR_MISMATCH_2026-08-09.md`)
+makes the sender re-send messages the peer already processed, up to 12 times.
+Those duplicates then fail to decrypt against an already-advanced ratchet,
+which would produce exactly this: a high error count spread across every peer
+we talk to, while fresh first-delivery messages succeed. If that holds, much
+of this ticket's 840 is a SYMPTOM and fixing the marker matching removes it.
+
+Severity lowered P0 -> P1 accordingly: it is not blocking delivery, it is
+noise plus wasted traffic plus a real but narrower correctness question about
+which frames legitimately fail.
+
+Do NOT close this on the marker fix alone -- confirm the count actually drops.
+
+## Original filing follows (severity claim superseded above)
+
+Severity as filed: P0 (delivery truth -- inbound messages arrive and are discarded)
 Discovered: 2026-08-09, Windows lane, read-only ADB verification of the Pixel 6a
 Gate: crypto/ratchet path -- MANDATORY adversarial review (AGENTS.md rule 8)
 
