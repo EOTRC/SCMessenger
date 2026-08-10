@@ -179,3 +179,80 @@ Do not send a message until every Section 2 row is evidenced for all three.
   defect, not evidence of failure.
 - A node that died mid-window invalidates every delivery result attributed to
   it for that window.
+
+---
+
+## 8. Address churn is a TEST CONDITION, not a defect (operator direction, 2026-08-10)
+
+**Do not pin addresses. Do not allocate an Elastic IP for the AWS relay.**
+
+Changing public IPs are the realistic condition this product must survive: a home
+connection gets a new public IP regularly, and every peer must find its way back
+without human intervention. The mesh is required to reconcile that through
+**ledger sharing**, not through stable addressing.
+
+This inverts the usual instinct. An IP change is not something to eliminate from
+the test environment -- it is something to provoke and then verify recovery from.
+
+### The invariant being tested
+
+**Identity is stable. Addresses are fluid.**
+
+- A node's libp2p PeerId MUST survive restarts, rebuilds and reinstalls.
+- A node's multiaddrs are expected to change without warning.
+- Peers MUST learn new addresses for a known PeerId via ledger exchange and
+  re-establish, with no manual contact entry and no manual dial.
+
+A design that needs a fixed IP has failed this test even if every message
+delivers.
+
+### Evidence that this already partly works (2026-08-09/10 run)
+
+The Pixel's LAN address changed mid-session and the Windows node followed it
+without intervention:
+
+```
+16:31:10  Connected to 12D3KooWNnPi9w... via /ip4/192.168.0.111/tcp/44xxx
+16:48:15  Connected to 12D3KooWNnPi9w... via /ip4/192.168.0.107/tcp/44xxx
+```
+
+Same PeerId, new address, reconnected. Ledger exchange is active and repeats on
+every new connection (683 ledger-related events in one run; exchanges with the
+Pixel at 22:13, 00:12 and 00:34).
+
+Note what this reframes: the macOS "stale address" failures were most likely NOT
+staleness. They were the dual-transport advertisement -- `/ws` advertised for
+listeners that are plain TCP. Address churn was a red herring there.
+
+### What the five-node run must therefore exercise
+
+Add these to the protocol in Section 7:
+
+1. **Provoke an address change mid-run.** Force at least one node onto a new
+   address (toggle Wi-Fi on the Pixel, or let the AWS relay be replaced and
+   acquire a new ephemeral IP). Do not warn the other nodes.
+2. **Verify recovery without manual help.** Peers must re-establish to the same
+   PeerId at the new address via ledger propagation alone. No manual contact
+   entry, no manual dial command -- those invalidate the result.
+3. **Measure convergence time** from address change to re-established
+   connection. This is a real product metric: it is how long a user is
+   unreachable after their ISP renumbers them.
+4. **Confirm no ghost accumulation.** After the change, the old address should
+   stop being dialled within a bounded time. Peers holding many dead addresses
+   for one PeerId is the ledger-hygiene defect already filed, and address churn
+   is what feeds it.
+
+### Consequence for the AWS relay
+
+The relay's public IP is ephemeral and will change on any stop or rebuild. That
+is now **desirable**. Do not allocate an Elastic IP.
+
+It does mean `HANDOFF/gpt/AWS_RELAY_CURRENT_ADDRESS.md` must be updated
+immediately after any relay replacement, and that every lane must read it fresh
+at use time rather than caching an IP -- which is already that file's stated
+policy.
+
+Access to the relay should therefore be by **instance id**, not IP:
+EC2 Instance Connect (`ec2-instance-connect:SendSSHPublicKey`) is keyed to the
+instance and survives address changes, which is why it is the preferred access
+path over a pinned SSH endpoint.
