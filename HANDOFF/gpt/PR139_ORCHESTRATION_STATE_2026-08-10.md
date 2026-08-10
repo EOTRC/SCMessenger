@@ -1,6 +1,6 @@
 # PR 139 orchestration state — continue from here
 
-Updated: 2026-08-10 UTC
+Updated: 2026-08-10 05:24 UTC
 Pull request: https://github.com/Sovereign-Communication/SCMessenger/pull/139
 
 ## Resume instruction
@@ -29,7 +29,7 @@ send is not physical five-node parity.
 
 - PR 139 was re-anchored at `68fcc3f19124feea915de9603c5438b53e7e9c39`.
 - Candidate branch: `codex/pr139-five-node-gate-fixes`.
-- PR remote head is currently `acda09df` (`fix(api): skip malformed contact keys during reply resolution`).
+- PR remote head is currently `e873ed4a` (`docs: record candidate transport checkpoint`). The candidate runtime code head is `acda09df`; `e873ed4a` is documentation-only.
 - `4083e59b` is the runtime-gate candidate immediately before `acda09df`.
 - The Mac candidate was built and started from the isolated candidate worktree
   with the existing persistent data. Its current process identity is:
@@ -163,6 +163,21 @@ five-node run. Important findings:
   stale Mac identities. Some historical rows also show `delivered=true` while
   `status=Queued`; do not use that database snapshot as current delivery proof.
 
+A second targeted capture was pulled after launching the installed app from
+the paired device:
+
+`/Users/christylove/Documents/Codex/2026-08-09/ch/PR139_ios_capture_20260810T052145Z/`
+
+It covers 05:21:59Z through 05:22:09Z and contains `mesh_diagnostics.log`,
+`ledger.json`, and `history.db`. The Android target was still not connected;
+core direct dispatch remained `swarm_bridge_unavailable`; BLE remained
+accepted/transmitted but unconfirmed; and old iOS messages continued retrying
+(`retry_attempt=14`, `acked_without_receipt` above 500 for one message). This
+is an open iOS retry/outbox condition, not proof that Android alone is the
+sender failure. The next reproduction must use fresh message IDs and include
+Android logcat plus Android mesh diagnostics and receiver-side
+`inbox_receive`/ACK evidence.
+
 When iOS is part of the next run, capture before, during, and after the test:
 
 ```bash
@@ -200,9 +215,15 @@ receiver-side evidence. Mirror the exact result in PR 139 comments. If SCM CLI
 transport/routing degrades again, continue exclusively through PR comments for
 coordination while leaving the five-node gate closed.
 
+At the 05:23Z PR refresh there was no new Windows response for this message.
+Do not resend it or count it as delivered; use the PR thread as the fallback
+request for the exact Windows/Android evidence if the SCM route remains
+degraded.
+
 ## Next actions, in order
 
-1. Read the latest PR comments and refresh CI for `acda09df`.
+1. Read the latest PR comments and refresh CI for `e873ed4a` (runtime code is
+   still `acda09df`; the latest commit is documentation-only).
 2. Query the live Mac candidate `/version`, `/api/peers`, `/api/listeners`, and
    `/api/history`; confirm candidate provenance and that the swarm remains alive.
 3. Get Windows receiver evidence for SCM message
