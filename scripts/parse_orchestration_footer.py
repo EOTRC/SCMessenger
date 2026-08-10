@@ -29,8 +29,12 @@ much longer response:
 
     ---ORCHESTRATION_METADATA---
     RESULT: DONE
+    ROLE: IMPLEMENTER
+    TASK: P1
     VERIFICATION: CONTAINER(cargo check --workspace)
     FILES: ["core/src/transport/swarm.rs", "core/src/audit.rs"]
+    SPEC_STATUS: SATISFIED
+    ESCALATION: NONE
     NOTES: ["line 42: added observability_event() call", "48 tests pass"]
     ---END---
 
@@ -43,10 +47,8 @@ single quotes):
   - Tolerates a JSON list, a near-JSON list (single quotes / trailing
     commas), or bare AGENTS.md-style comma-separated free text for
     FILES/NOTES -- in that preference order.
-  - Missing footer is NOT an error by itself -- it is reported as
-    degraded=True with result='UNKNOWN' so the caller MUST fall back to
-    the pre-existing grep/diff-block extraction path, never silently
-    treated as success.
+  - Missing or incomplete metadata is a non-success state. v2 callers must
+    re-dispatch or escalate; prose/diff extraction is never completion proof.
 
 Usage:
     python scripts/parse_orchestration_footer.py <response_file>
@@ -70,6 +72,9 @@ LIST_FIELD_BRACKET_RE = re.compile(r"\[(.*?)\]", re.DOTALL)
 QUOTED_ITEM_RE = re.compile(r"""["']([^"']+)["']""")
 
 VALID_RESULTS = {"DONE", "BLOCKED", "FAILED"}
+VALID_SPEC_STATUS = {"SATISFIED", "NOT_SATISFIED", "AMBIGUOUS"}
+VALID_ESCALATIONS = {"NONE", "PLANNER", "VALIDATOR", "CRITICAL_VALIDATOR", "SECOND_OPINION", "OPERATOR"}
+REQUIRED_FIELDS = {"RESULT", "ROLE", "TASK", "VERIFICATION", "FILES", "SPEC_STATUS", "ESCALATION", "NOTES"}
 
 
 def _strip_fence(block: str) -> str:
@@ -116,6 +121,8 @@ def parse_footer(response_text: str) -> dict:
     Returns a dict that ALWAYS has these keys, so callers never need
     defensive .get() chains:
       result:         'DONE' | 'BLOCKED' | 'FAILED' | 'UNKNOWN'
+      role/task:      worker identity matched to the dispatch packet
+      assignment_id:  reviewer-assignment identity when this is review evidence
       verification:   str (raw VERIFICATION value, '' if absent)
       files:          list[str]  (AGENTS.md's FILES field)
       notes:          list[str]  (AGENTS.md's NOTES field)
@@ -126,9 +133,14 @@ def parse_footer(response_text: str) -> dict:
     """
     result = {
         "result": "UNKNOWN",
+        "role": "",
+        "task": "",
         "verification": "",
         "files": [],
         "notes": [],
+        "spec_status": "",
+        "escalation": "",
+        "assignment_id": "",
         "degraded": True,
         "raw_footer": None,
     }
@@ -155,17 +167,33 @@ def parse_footer(response_text: str) -> dict:
         if key == "RESULT":
             candidate = value.upper()
             result["result"] = candidate if candidate in VALID_RESULTS else "UNKNOWN"
+        elif key == "ROLE":
+            result["role"] = value.upper()
+        elif key == "TASK":
+            result["task"] = value
         elif key == "VERIFICATION":
             result["verification"] = value
         elif key == "FILES":
             result["files"] = _parse_list_field(value)
         elif key == "NOTES":
             result["notes"] = _parse_list_field(value)
+        elif key == "SPEC_STATUS":
+            candidate = value.upper()
+            result["spec_status"] = candidate if candidate in VALID_SPEC_STATUS else ""
+        elif key == "ESCALATION":
+            candidate = value.upper()
+            result["escalation"] = candidate if candidate in VALID_ESCALATIONS else ""
+        elif key == "ASSIGNMENT_ID":
+            result["assignment_id"] = value
 
-    # A footer that parsed but never set RESULT to a valid value is still
-    # unsafe to treat as success -- keep degraded=False (structure WAS
-    # found) but 'UNKNOWN' already fails closed for any caller checking
-    # result == 'DONE' explicitly.
+    present = {
+        "RESULT": result["result"] != "UNKNOWN", "ROLE": bool(result["role"]),
+        "TASK": bool(result["task"]), "VERIFICATION": bool(result["verification"]),
+        "FILES": bool(result["files"]), "NOTES": bool(result["notes"]),
+        "SPEC_STATUS": bool(result["spec_status"]), "ESCALATION": bool(result["escalation"]),
+    }
+    if not all(present.get(field, False) for field in REQUIRED_FIELDS):
+        result["degraded"] = True
     return result
 
 

@@ -111,7 +111,8 @@ GPT's instruction.
 ## Conventions (binding, hook-enforced)
 No emojis anywhere. Worker contract (RESULT: DONE|BLOCKED|FAILED first
 line). Delegation discipline: orchestrators do not write application
-code (1-3 line surgical gate-unblocking fixes excepted). Commit
+code. Compile-error repairs require a fresh scoped worker under the active
+Orchestration Control Plane v2. Commit
 provenance prefixes (native:/swarm:/fix:/docs:). Never push unless the
 operator asks (Windows Claude executes merges/tags on instruction).
 CI-first gating. One build at a time on Windows.
