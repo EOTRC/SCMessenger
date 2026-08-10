@@ -291,3 +291,81 @@ A quiet fleet after the dedup fix must NOT be recorded as this P0 being closed.
 Upstream of everything here is the identity churn itself. Even with dedup, every
 peer rebuild adds a fresh ghost to every other node's ledger. Tracked separately
 in the ledger-hygiene ticket.
+
+---
+
+## UPDATE 2026-08-10 ~03:50Z -- REPRODUCED ON THE ANCHOR **WITH** THE DIAL-DEDUP FIX
+
+**The address-level dial dedup in PR #144 does NOT prevent this panic.** Negative
+result, recorded before anyone concludes otherwise from a quiet fleet.
+
+### The run
+
+```
+build   68fcc3f1  (anchor, includes the cli/src/ledger.rs address dedup)
+start   2026-08-10T03:35:53.914Z
+died    2026-08-10T03:49:16.078Z
+uptime  13m 23s
+panic   libp2p-request-response-0.29.0 lib.rs:678, left: false, right: true
+```
+
+### The connection count went UP, not down
+
+```
+6  Connected to 12D3KooWNnPi9w...   (Android)
+1  Connected to 12D3KooWPJK6Kg...   (AWS relay)
+```
+
+Six simultaneous connections to a single peer. Prior panicking runs peaked at
+four.
+
+### Why the fix did not fire, and the orchestrator's own contribution
+
+The dedup key is the **address**. During this run the node had, for the same
+Android peer:
+
+- two bootstrap entries deliberately added by the orchestrator to force ledger
+  propagation (`/ip4/192.168.0.111/tcp/33391` and `/ip4/192.168.0.111/tcp/80`)
+- stale ledger addresses for the same peer (`192.168.0.141`, `.131`, `.107`)
+
+Each is a **distinct address**, so each legitimately got its own in-flight slot.
+The guard behaved exactly as designed and still permitted six concurrent
+connections to one peer.
+
+Part of this instance is self-inflicted -- the two extra bootstrap entries were
+added by the orchestrator to solve a different problem (getting the relay into
+Android's ledger, which succeeded and is verified). That does not change the
+conclusion: the fleet reaches the same state on its own through address churn,
+because a peer that renumbers leaves its old addresses behind in every ledger.
+
+### The corrected model
+
+**The contended resource for this assertion is the PEER, not the address.**
+
+- Address-level dedup solves: N ghost identities hammering ONE endpoint.
+- It does NOT solve: ONE peer reachable at N addresses.
+
+Address churn produces exactly the second case, and this fleet renumbers
+constantly -- the Pixel was `.111 -> .107 -> .131 -> .111` in a single session.
+
+### What is actually needed
+
+1. **A per-peer concurrent-connection cap**, independent of address. If a peer is
+   already connected, additional dials to *other* addresses for that same PeerId
+   must be suppressed or must replace rather than add.
+2. Keep the address-level guard. It is still correct for the ghost-identity case
+   and its regression test still passes.
+3. **Reap stale addresses for a peer once a newer one is confirmed.** Leaving
+   `.141`, `.131` and `.107` in the ledger after the peer moved to `.111`
+   guarantees redundant dial paths forever.
+
+### Do not read this as the fix being useless
+
+The address guard was verified to catch the case it targets -- its regression
+test fails without it. This finding narrows the defect rather than reversing it:
+there are two distinct paths to redundant connections, and PR #144 closed one.
+
+### Standing caution, unchanged
+
+It remains a `debug_assert`. Release builds will not panic and will accumulate
+the drift silently. A green release-build run is not evidence of a fix.
