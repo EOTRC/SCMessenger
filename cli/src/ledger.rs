@@ -229,6 +229,52 @@ impl PeerDialState {
     }
 }
 
+/// Process-lifetime ADDRESS-level dial guard (NOT serialized to peers.json).
+///
+/// `peer_dial_states` alone is not enough to stop simultaneous connections to
+/// one physical host:port. It is keyed by `DialKey`, which is `Peer(pid)`
+/// whenever a PeerId is known (see `DialKey::for_target`) -- and this fleet's
+/// nodes mint a new identity on every rebuild, so one address can accumulate
+/// many stale PeerIds in `LedgerEntry::observed_peer_ids`. Each stale
+/// identity produces a DIFFERENT `DialKey::Peer`, so the peer-level guard
+/// sees N unrelated dials while the OS opens N concurrent connections to the
+/// same address -- which is exactly what tripped a `debug_assert_eq!` inside
+/// `libp2p-request-response` in production (three simultaneous connections
+/// to the byte-identical multiaddr within 30ms).
+///
+/// This guard is keyed on the normalized address string instead (see
+/// `ConnectionLedger::key_to_policy_args`, which resolves a `DialKey::Peer`
+/// back to its known address via `find_by_peer_id` and already reuses
+/// `strip_peer_id` for normalization), so it catches the collision
+/// regardless of which PeerId a given dial attempt happens to be keyed on.
+#[derive(Debug, Clone, Default)]
+pub struct AddrDialState {
+    /// An address-level dial is currently in flight.
+    pub in_flight: bool,
+
+    /// Unix ts the in-flight claim was made. Used only to expire a claim
+    /// that never got released via `complete_dial` (see `STALE_CLAIM_SECS`).
+    /// This is a concurrency guard, not a ban list -- an address must never
+    /// be permanently unreachable because one dial attempt never completed.
+    pub claimed_at: u64,
+}
+
+impl AddrDialState {
+    /// A claim older than this is treated as abandoned. There is no existing
+    /// timeout/expiry mechanism on the in-flight bit this guard mirrors
+    /// (`PeerDialState::in_flight` has none either), so this is new: without
+    /// it, a dial that starts and never calls `complete_dial` (panic, task
+    /// drop, etc.) would wedge the address closed for the rest of the
+    /// process's life, reproducing exactly the "address-only dials must
+    /// never be dropped" bug this file already warns about elsewhere.
+    pub const STALE_CLAIM_SECS: u64 = 120;
+
+    /// Whether a new dial may claim this address now.
+    fn ready(&self, now: u64) -> bool {
+        !self.in_flight || now.saturating_sub(self.claimed_at) >= Self::STALE_CLAIM_SECS
+    }
+}
+
 /// The Connection Ledger — persistent storage for all known peers
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionLedger {
@@ -245,6 +291,12 @@ pub struct ConnectionLedger {
     #[serde(skip)]
     pub peer_dial_states: HashMap<DialKey, PeerDialState>,
 
+    /// Process-lifetime per-address dial state, keyed by the normalized
+    /// (stripped) address string. See `AddrDialState` for why this exists
+    /// alongside `peer_dial_states`. Never persisted to peers.json.
+    #[serde(skip)]
+    pub addr_dial_states: HashMap<String, AddrDialState>,
+
     /// Global dial policy manager enforcing per-peer backoff and concurrent dial limits.
     #[serde(skip)]
     pub dial_policy: DialPolicyManager,
@@ -257,6 +309,7 @@ impl Default for ConnectionLedger {
             version: 1,
             last_saved: 0,
             peer_dial_states: HashMap::new(),
+            addr_dial_states: HashMap::new(),
             dial_policy: DialPolicyManager::new(),
         }
     }
@@ -607,6 +660,16 @@ impl ConnectionLedger {
     /// Returns true only when the key is ready, backoff eligible, under concurrent limit,
     /// and the dial is not suppressed by a healthy relay path. When the key is new, it is seeded
     /// from the persistent ledger so known-good peers are never suppressed.
+    ///
+    /// Claims TWO slots on success: the per-peer slot in `peer_dial_states`
+    /// (unchanged from before this guard existed) and the per-address slot in
+    /// `addr_dial_states` (see `AddrDialState`). Returns `false` if EITHER is
+    /// already claimed. The peer-level slot is claimed first and the
+    /// DialPolicyManager registration before it; if the address-level check
+    /// then finds the address already in flight under a DIFFERENT `DialKey`,
+    /// both of those provisional claims are released before returning `false`
+    /// -- this function must never leak a half-claim, or the address is
+    /// wedged closed until process restart.
     pub fn try_begin_dial(&mut self, key: DialKey, now: u64, relay_healthy: bool) -> bool {
         let is_circuit = Self::is_circuit_key(&key);
         let is_bootstrap = self.is_bootstrap_key(&key);
@@ -625,7 +688,9 @@ impl ConnectionLedger {
             }
         }
 
-        // Enforce DialPolicyManager backoff and concurrent dial limits
+        // Enforce DialPolicyManager backoff and concurrent dial limits. This
+        // is the first provisional claim; every early return below it must
+        // release it via `complete_dial_attempt`.
         let (addr_key, pid_opt) = self.key_to_policy_args(&key);
         if !self.dial_policy.register_dial_attempt(&addr_key, pid_opt) {
             return false;
@@ -645,19 +710,78 @@ impl ConnectionLedger {
             }
         }
 
+        // Claim the peer-level slot (second provisional claim). Track
+        // whether we mutated a pre-existing entry or inserted a fresh one,
+        // so a rollback below restores exactly the prior state instead of
+        // leaving a stale entry behind.
+        let peer_slot_pre_existed = self.peer_dial_states.contains_key(&key);
         let is_known_good = self.is_known_good_key(&key);
-        let state = self
-            .peer_dial_states
-            .entry(key.clone())
-            .or_insert_with(|| PeerDialState {
-                is_known_good,
-                ..Default::default()
-            });
-        state.in_flight = true;
+        {
+            let state = self
+                .peer_dial_states
+                .entry(key.clone())
+                .or_insert_with(|| PeerDialState {
+                    is_known_good,
+                    ..Default::default()
+                });
+            state.in_flight = true;
+        }
+
+        // Claim the address-level slot -- the actual fix for the crash. Two
+        // `DialKey::Peer` values for different (often stale) PeerIds can
+        // resolve to the SAME `addr_key` above via `key_to_policy_args`,
+        // which is exactly the fleet scenario that produced N simultaneous
+        // connections to one host:port.
+        let addr_already_in_flight = self
+            .addr_dial_states
+            .get(&addr_key)
+            .is_some_and(|s| !s.ready(now));
+        if addr_already_in_flight {
+            // Release both provisional claims made above. Do not leak a
+            // half-claim: the DialPolicyManager slot must be returned, and
+            // the peer-level slot must go back to exactly what it was
+            // before this call (removed if it did not exist, or left
+            // `in_flight = false` if it did -- it could not have been
+            // `in_flight = true` already, since the readiness check at the
+            // top of this function would have returned `false` before we
+            // ever reached here).
+            self.dial_policy.complete_dial_attempt(&addr_key);
+            if peer_slot_pre_existed {
+                if let Some(state) = self.peer_dial_states.get_mut(&key) {
+                    state.in_flight = false;
+                }
+            } else {
+                self.peer_dial_states.remove(&key);
+            }
+            return false;
+        }
+
+        // Cap process-lifetime address dial state at 4096 keys too, mirroring
+        // the peer_dial_states eviction above (least-recently-claimed entry).
+        if self.addr_dial_states.len() >= 4096 {
+            if let Some(evict_key) = self
+                .addr_dial_states
+                .iter()
+                .min_by_key(|(_, state)| state.claimed_at)
+                .map(|(k, _)| k.clone())
+            {
+                self.addr_dial_states.remove(&evict_key);
+            }
+        }
+
+        let addr_state = self.addr_dial_states.entry(addr_key).or_default();
+        addr_state.in_flight = true;
+        addr_state.claimed_at = now;
+
         true
     }
 
     /// Record the outcome of a dial previously started with `try_begin_dial`.
+    ///
+    /// Releases BOTH slots claimed by `try_begin_dial` on every path through
+    /// this function -- success and failure alike -- because the
+    /// address-level release happens once, unconditionally, before the
+    /// success/failure branch below.
     pub fn complete_dial(
         &mut self,
         key: &DialKey,
@@ -667,6 +791,12 @@ impl ConnectionLedger {
     ) {
         let (addr_key, pid_opt) = self.key_to_policy_args(key);
         self.dial_policy.complete_dial_attempt(&addr_key);
+
+        // Release the address-level slot claimed in try_begin_dial. Runs on
+        // every path through this function (see doc comment above).
+        if let Some(addr_state) = self.addr_dial_states.get_mut(&addr_key) {
+            addr_state.in_flight = false;
+        }
 
         if success {
             let target_pid = learned_peer_id.or(pid_opt);
@@ -1430,6 +1560,162 @@ mod tests {
         let peer_key = DialKey::Peer(peer_id);
         let state = ledger.dial_state(&peer_key).unwrap();
         assert!(state.is_known_good);
+    }
+
+    // ------------------------------------------------------------------
+    // Address-level dial guard (crash fix). Live evidence: three
+    // simultaneous connections to the byte-identical multiaddr
+    // /ip4/192.168.0.142/tcp/51251 within 30ms, tripping a
+    // `debug_assert_eq!` inside libp2p-request-response. Root cause: nodes
+    // on this fleet mint a new PeerId on every rebuild, so a single address
+    // accumulates many stale PeerIds in `LedgerEntry::observed_peer_ids`.
+    // Each stale identity produces a different `DialKey::Peer`, so the
+    // peer-level guard alone sees N unrelated dials while the OS opens N
+    // concurrent connections to the same host:port.
+    // ------------------------------------------------------------------
+
+    /// REGRESSION TEST for the crash. Two dials to the same address under
+    /// DIFFERENT PeerIds -- exactly the fleet scenario -- must not both be
+    /// allowed in flight simultaneously, even though the peer-level guard
+    /// alone (pre-fix) sees them as two unrelated keys and allows both.
+    #[test]
+    fn test_try_begin_dial_blocks_same_address_different_peer_ids() {
+        let mut ledger = ConnectionLedger::default();
+        let addr = "/ip4/192.168.0.142/tcp/51251";
+        let peer_a = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        let peer_b = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+
+        // Simulate the fleet scenario: this node connected to the same
+        // address under two different (stale) identities, so both PeerIds
+        // land in `observed_peer_ids` on the SAME ledger entry.
+        ledger.record_connection(addr, &peer_a.to_string(), DnsPolicy::Reject);
+        ledger.record_connection(addr, &peer_b.to_string(), DnsPolicy::Reject);
+
+        let key_a = DialKey::for_target(addr, Some(peer_a));
+        let key_b = DialKey::for_target(addr, Some(peer_b));
+        assert_ne!(key_a, key_b, "test setup must use two distinct DialKeys");
+
+        assert!(ledger.try_begin_dial(key_a, 0, false));
+        assert!(!ledger.try_begin_dial(key_b, 0, false));
+    }
+
+    /// After `complete_dial` releases the first dial, a dial to the SAME
+    /// address under a THIRD PeerId must succeed. Proves the release path
+    /// works and the address is a concurrency guard, not a permanent ban --
+    /// the existing "address-only dials must NEVER be dropped" comment
+    /// documents a real prior bug this must not reintroduce.
+    #[test]
+    fn test_try_begin_dial_address_guard_releases_after_complete_dial() {
+        let mut ledger = ConnectionLedger::default();
+        let addr = "/ip4/192.168.0.142/tcp/51251";
+        let peer_a = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        let peer_b = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        let peer_c = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+
+        ledger.record_connection(addr, &peer_a.to_string(), DnsPolicy::Reject);
+        ledger.record_connection(addr, &peer_b.to_string(), DnsPolicy::Reject);
+        ledger.record_connection(addr, &peer_c.to_string(), DnsPolicy::Reject);
+
+        let key_a = DialKey::for_target(addr, Some(peer_a));
+        let key_b = DialKey::for_target(addr, Some(peer_b));
+        let key_c = DialKey::for_target(addr, Some(peer_c));
+
+        assert!(ledger.try_begin_dial(key_a.clone(), 0, false));
+        assert!(!ledger.try_begin_dial(key_b, 0, false));
+
+        ledger.complete_dial(&key_a, true, 0, Some(peer_a));
+
+        assert!(ledger.try_begin_dial(key_c, 0, false));
+    }
+
+    /// Dials to two DIFFERENT addresses under different PeerIds must both
+    /// succeed. Proves the address-level guard did not collapse into a
+    /// global dial lock.
+    #[test]
+    fn test_try_begin_dial_allows_concurrent_dials_to_different_addresses() {
+        let mut ledger = ConnectionLedger::default();
+        let addr_x = "/ip4/192.168.0.10/tcp/9001";
+        let addr_y = "/ip4/192.168.0.20/tcp/9001";
+        let peer_x = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        let peer_y = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+
+        ledger.record_connection(addr_x, &peer_x.to_string(), DnsPolicy::Reject);
+        ledger.record_connection(addr_y, &peer_y.to_string(), DnsPolicy::Reject);
+
+        let key_x = DialKey::for_target(addr_x, Some(peer_x));
+        let key_y = DialKey::for_target(addr_y, Some(peer_y));
+
+        assert!(ledger.try_begin_dial(key_x, 0, false));
+        assert!(ledger.try_begin_dial(key_y, 0, false));
+    }
+
+    /// Half-claim case: `key_b`'s peer-level slot is fresh (no prior state),
+    /// so `try_begin_dial` provisionally claims it before the address-level
+    /// check discovers `addr` is already in flight under `key_a` and
+    /// rejects the dial. That provisional peer-level claim (and the
+    /// DialPolicyManager registration made just before it) must be released,
+    /// not leaked -- a leaked claim would wedge `key_b` at
+    /// `in_flight = true` forever, which is indistinguishable from the
+    /// address being permanently dead. Assert both: the half-claim is not
+    /// left dangling immediately, and `key_b` itself can still dial once the
+    /// address frees up.
+    #[test]
+    fn test_try_begin_dial_releases_half_claim_when_address_already_in_flight() {
+        let mut ledger = ConnectionLedger::default();
+        let addr = "/ip4/192.168.0.142/tcp/51251";
+        let peer_a = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        let peer_b = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+
+        ledger.record_connection(addr, &peer_a.to_string(), DnsPolicy::Reject);
+        ledger.record_connection(addr, &peer_b.to_string(), DnsPolicy::Reject);
+
+        let key_a = DialKey::for_target(addr, Some(peer_a));
+        let key_b = DialKey::for_target(addr, Some(peer_b));
+
+        assert!(ledger.try_begin_dial(key_a.clone(), 0, false));
+        assert!(!ledger.try_begin_dial(key_b.clone(), 0, false));
+
+        // The half-claim must not be left dangling: key_b's peer-level slot
+        // must not still report in_flight after the address-level guard
+        // rejected it.
+        match ledger.dial_state(&key_b) {
+            Some(state) => assert!(
+                !state.in_flight,
+                "half-claimed peer-level slot was left in_flight after rejection"
+            ),
+            None => {}
+        }
+
+        // Once the address frees up, key_b -- the one that was
+        // half-claimed and released -- must still be able to dial. If the
+        // release above had not happened, key_b's peer-level slot would
+        // report ready() == false forever and this would fail.
+        //
+        // complete_dial(..., success = true, ...) here, not false: a false
+        // completion runs DialPolicyManager::record_dial_failure, which
+        // applies a real wall-clock backoff to `addr_key` (unrelated to
+        // this guard) that would then block the very next attempt on its
+        // own and produce a false failure here.
+        ledger.complete_dial(&key_a, true, 0, Some(peer_a));
+        assert!(ledger.try_begin_dial(key_b, 0, false));
     }
 
     #[test]

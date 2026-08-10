@@ -49,10 +49,17 @@ pub fn init_file_tracing(log_directory: &str) -> Result<(), Box<dyn std::error::
 
     // ENV-based filter. RUST_LOG is unavailable on mobile (there is no shell
     // to export it from before the app process starts), so this fallback is
-    // the only lever mobile builds have. Debug/dev cargo profiles get richer
-    // delivery diagnostics; optimized/release profiles keep the quieter
-    // default to bound on-device log growth. RUST_LOG, when available, still
-    // takes precedence over this fallback.
+    // the only lever mobile builds have. Debug/dev cargo profiles (Android
+    // `assembleDebug`, built via cargo-ndk WITHOUT `--release` per
+    // android/app/build.gradle's `rustProfile`; and local `cargo build`) get
+    // a richer default so a field test captures enough to debug message
+    // delivery end to end. Optimized/release profiles (Android
+    // `assembleRelease`, and the iOS xcframework -- which scripts/
+    // rebuild_ios_core.sh ALWAYS builds with `--release`, independent of the
+    // Xcode scheme -- so this richer default never applies to iOS) keep the
+    // quieter "info" default to bound on-device log file growth and avoid
+    // ever writing chat content to disk. RUST_LOG, when settable (desktop
+    // CLI), always takes precedence over this fallback either way.
     #[cfg(debug_assertions)]
     let default_filter = "info,scmessenger_core::transport=debug,scmessenger_core::store::outbox=debug,scmessenger_core::store::inbox=debug,scmessenger_core::relay=debug";
     #[cfg(not(debug_assertions))]
