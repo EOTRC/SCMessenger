@@ -29,7 +29,7 @@ send is not physical five-node parity.
 
 - PR 139 was re-anchored at `68fcc3f19124feea915de9603c5438b53e7e9c39`.
 - Candidate branch: `codex/pr139-five-node-gate-fixes`.
-- PR remote head is currently `e873ed4a` (`docs: record candidate transport checkpoint`). The candidate runtime code head is `acda09df`; `e873ed4a` is documentation-only.
+- PR remote head is currently `c6420b3a` (`docs: record candidate dial backoff`). The candidate runtime code head is `acda09df`; commits after it are documentation-only.
 - `4083e59b` is the runtime-gate candidate immediately before `acda09df`.
 - The Mac candidate was built and started from the isolated candidate worktree
   with the existing persistent data. Its current process identity is:
