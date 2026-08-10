@@ -776,12 +776,12 @@ impl IronCore {
         // PUBLIC KEY, it is the right kind of value and we are done. Only when
         // that misses do we pay for a scan, so the common send path stays O(1)
         // against the contact store rather than hashing every contact.
-        let known_by_pubkey = self
-            .contact_manager
-            .read()
+        let contacts = self.contact_manager.read();
+        let known_by_pubkey = contacts
             .get(recipient_id.to_string())
             .ok()
             .flatten()
+            .or_else(|| contacts.get_by_public_key(recipient_id).ok().flatten())
             .is_some();
 
         if !known_by_pubkey {
