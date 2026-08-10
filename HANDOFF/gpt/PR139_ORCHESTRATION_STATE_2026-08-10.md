@@ -1,6 +1,6 @@
 # PR 139 orchestration state — continue from here
 
-Updated: 2026-08-10 05:24 UTC
+Updated: 2026-08-10 05:29 UTC
 Pull request: https://github.com/Sovereign-Communication/SCMessenger/pull/139
 
 ## Resume instruction
@@ -106,6 +106,14 @@ showed a DCUtR hole-punch failure to Windows followed by relay fallback, plus
 high negotiation-failure noise from stale/promiscuous addresses including old
 `192.168.0.111` entries. This is a live observation, not a green transport
 result or a five-node gate start.
+
+The 05:27Z live poll still showed the candidate process alive with no new
+request-response panic, but repeated `[DIAL-BACKOFF]` marking the Android
+target dead after three failed attempts and later marking the AWS node dead as
+well. Stale-address negotiation failures continued, including old local
+addresses and loopback candidates. This confirms that the candidate has not
+converged on a usable five-node peer set; investigate address/route selection
+with Windows and Android evidence before changing further transport code.
 
 Windows previously confirmed receiver-side evidence for Mac probe
 `54501eea-95e5-4f6f-8624-642a59f98c3b`:
