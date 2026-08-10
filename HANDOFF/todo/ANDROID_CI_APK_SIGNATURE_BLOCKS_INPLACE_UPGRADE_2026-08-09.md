@@ -1,6 +1,52 @@
 # BLOCKER: the CI Android APK cannot upgrade an installed app in place -- signature mismatch
 
-Status: BLOCKED, needs an operator/release decision
+Status: UNBLOCKED 2026-08-09 without data loss -- see RESOLUTION below.
+        The RELEASE-PROCESS concern in this ticket is still open.
+
+## RESOLUTION -- the local debug keystore matches the installed app
+
+No operator decision was needed and no data is at risk. Certificate
+comparison (`apksigner verify --print-certs`, `keytool -list -v`):
+
+| Source | SHA-256 |
+|---|---|
+| App installed on the Pixel 6a | `1cdef09cd3b80f9b686e5f9e7b760d360b1fd338c6720bcb59b15b233967835f` |
+| `~/.android/debug.keystore` (this machine) | `1cdef09c...835f` **MATCH** |
+| CI `android-debug-apk` artifact | `1af85721d396ff22d071e351de480dc8dde291fdde2190074ef2a80270d7e014` |
+
+SHA-1 confirms it independently: installed `8044d284...7e3f` equals the local
+keystore's `80:44:D2:84:...:7E:3F`.
+
+So the app on the phone was built ON THIS MACHINE with the local debug key.
+Building `7e527df0` locally produces an APK signed with the same key, and
+`adb install -r` will then succeed **preserving identity, contacts, history
+and `firstInstallTime`**. That path was taken; options 3 (wipe) and 4 (defer)
+are moot.
+
+Both certificates are auto-generated "C=US, O=Android, CN=Android Debug"
+keys -- they merely happen to be DIFFERENT auto-generated keys. CI generates
+its own; this machine has its own.
+
+## The release-process concern this exposed is NOT resolved
+
+Keep this ticket open for that. A CI-built APK cannot upgrade a
+locally-built install, and vice versa, because each side signs with its own
+throwaway debug key. Consequences to settle before the tag:
+
+- Any tester who installs a CI artifact can never receive a locally-built
+  update (or the reverse) without a full data wipe.
+- Test-fleet devices can silently diverge into two incompatible signing
+  lineages, and the failure only surfaces at upgrade time.
+- The real fix for distribution is a stable, managed release keystore used by
+  CI, not per-builder debug keys. That is a release decision, not an agent's.
+
+Recommendation for the operator: decide the signing story before v0.4.0 is
+tagged and distributed, otherwise the first in-place update to a real tester
+fails exactly the way this did.
+
+## Original filing follows
+
+Status as filed: BLOCKED, needs an operator/release decision
 Severity: P1 release process (blocks the five-node gate at a matched SHA; also
 implies real users could not upgrade without losing data)
 Discovered: 2026-08-09, Windows lane, attempting the authorized in-place update
