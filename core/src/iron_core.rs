@@ -3428,7 +3428,26 @@ impl IronCore {
                         crate::DeliveryStatus::Delivered => "Delivered".to_string(),
                         _ => "Delivered".to_string(),
                     };
-                    delegate.on_receipt_received(receipt.message_id, status_str);
+                    delegate.on_receipt_received(receipt.message_id.clone(), status_str);
+                }
+
+                // A Delivered (or legacy Read) receipt is the application-level
+                // confirmation that releases the sender's retry state. The
+                // delegate callback updates platform history, but it does not
+                // remove the matching outbox/drift entry. Without this call,
+                // the retry loop keeps re-enqueuing an envelope the recipient
+                // already stored, creating duplicates during a long soak.
+                if matches!(
+                    &receipt.status,
+                    crate::DeliveryStatus::Delivered | crate::DeliveryStatus::Read
+                ) {
+                    let cleared = self.mark_message_sent(receipt.message_id.clone());
+                    tracing::info!(
+                        event = "receipt_outbox_cleared",
+                        message_id = %receipt.message_id,
+                        removed = cleared,
+                        "Processed application delivery receipt"
+                    );
                 }
             } else if let Err(e) = crate::message::types::decode_receipt(&message.payload) {
                 tracing::error!(
