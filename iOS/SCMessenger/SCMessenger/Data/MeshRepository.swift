@@ -34,6 +34,7 @@ private enum DefaultSettings {
 /// proper lifecycle and resource cleanup.
 @MainActor
 @Observable
+// swiftlint:disable:next type_body_length
 final class MeshRepository {
     enum LiveTransportAction: Equatable {
         case startBle
