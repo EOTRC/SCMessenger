@@ -2644,7 +2644,7 @@ final class MeshRepository {
               let messageId = json["message_id"] as? String,
               !messageId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let status = (json["status"] as? String)?.lowercased(),
-              ["delivered", "read", "failed"].contains(status),
+              ["sent", "delivered", "read", "failed"].contains(status),
               let timestamp = json["timestamp"] as? NSNumber,
               timestamp.int64Value >= 0
         else { return false }

@@ -7643,7 +7643,7 @@ open class MeshRepository(
             val status = json.optString("status", "").trim().lowercase()
             val timestamp = json.opt("timestamp")
             keys.isNotEmpty() && keys.all { it in allowedKeys } &&
-                messageId.isNotEmpty() && status in setOf("delivered", "read", "failed") &&
+                messageId.isNotEmpty() && status in setOf("sent", "delivered", "read", "failed") &&
                 (timestamp is Number || timestamp?.toString()?.toLongOrNull() != null)
         } catch (_: Exception) {
             false
