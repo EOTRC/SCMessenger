@@ -172,6 +172,77 @@ down, and because the Windows lane will not act on a scope held only in chat.
 - **Hold:** G1-G6 stays stopped until the new identity, bootstrap updates,
   health/version and all artifact provenance are re-verified.
 
+### EXECUTED 2026-08-11T19:20-19:26Z -- role transition complete
+
+Run under the operator's standing authorisation and GPT-MAC's recorded scope. Route 2
+is selected for the artifact anchor, but this role change is independent of it: the
+image was NOT rebuilt.
+
+| | Before | After |
+|---|---|---|
+| Invocation | `scm --http-bind 0.0.0.0:9876 relay --listen /ip4/0.0.0.0/tcp/9001 --http-port 9000 --name scm-always-on-node` | `scm --http-bind 0.0.0.0:9876 start --port 9000` |
+| Identity | `initialized: false`, all fields null | `initialized: true` |
+| PeerId | `12D3KooWPJK6KgKsafefLWeGs4kVbj7wBnU67yKe88ni3FHZ3Hr2` | `12D3KooWKMUXfjvWeodBUJbSwBuRXBU3d6XSbP1AJXL9WhaS3yKy` |
+| Health route | `/api/health` | `/health` |
+
+- `identity_id` `0b33200936f41deb55e674e1d798b5c2aac7494a8a95ea34cd59c3b013c226ad`
+- `public_key` `8db1612aa6330be410f7f181a43ee4743b23045bb1d3c69594d864c37b28f92c`
+- `device_id` `e7a76bf1-2742-43d1-9a97-bf12f90a4b61`, seniority `1786476044`
+- **New bootstrap multiaddr:**
+  `/ip4/54.226.67.101/tcp/9001/p2p/12D3KooWKMUXfjvWeodBUJbSwBuRXBU3d6XSbP1AJXL9WhaS3yKy`
+  IP and port are UNCHANGED; only the `/p2p/` suffix moves.
+- Listeners: p2p `0.0.0.0:9001` v4+v6 (same port as before), control API `0.0.0.0:9876`,
+  WS `127.0.0.1:9000`.
+- Image UNCHANGED: `sha-053fd13`, digest
+  `sha256:7e9e3d75490d83f24a8b3b4f553362b5b68fff1682fddaa3eab048ebe8d61e16`.
+- Data preserved: `/opt/scm-relay-data` intact (`relay_network_key.pb`, `ledger.json`,
+  `peers.json`, `outbox`, `relay_custody`). Pre-change backup
+  `/opt/scm-node-data-backup-20260811T1920Z.tar.gz`, 6593947 bytes, sha256
+  `aaa2f9fd7ef82715037a2439983157f2298403d32e170e07f007f93cfb680a2e`.
+- Exactly ONE live node: `scm-node`. Duplicate `scm-relay-old-6b2573fa` REMOVED as
+  approved. Former container retained STOPPED as `scm-relay-preroleswitch-20260811`;
+  GPT-MAC has directed that it be kept for rollback until parity is proven.
+
+**Health probe change -- action required for any monitoring.** Under `start` the health
+route is `/health`. `/api/health` now returns EMPTY. An empty `/api/health` must NOT be
+read as node failure; probes hardcoding it will silently report nothing.
+
+**Two errors made and corrected during execution**, recorded so they are not repeated:
+`--port` sets the WS port and p2p binds to port+1, so an initial `--port 9001` silently
+moved p2p to 9002; corrected to `--port 9000` to restore p2p on 9001. Separately, an
+initial claim that the node was "isolated" was wrong -- it came from grepping the wrong
+ports; p2p was bound to `0.0.0.0` throughout.
+
+### STOP CONDITION -- bootstrap mismatch, unresolved
+
+Halted here per GPT-MAC's instruction to stop on any bootstrap mismatch.
+
+Every node's bootstrap still names the OLD PeerId. The Windows-owned config has been
+updated (backup at `%APPDATA%\scmessenger\config.json.bak.preroleswitch-20260811`) but
+**does not take effect until the Windows node restarts, which has NOT been done** --
+that restarts the soak generation, and cascading restarts across the fleet is not the
+Windows lane's decision. Mac, Android and iOS configs are not Windows-owned and were
+not touched. GPT-MAC owns propagation to those three; Windows config activation will be
+coordinated afterwards as one bounded change.
+
+Observed mesh state at the stop point: Windows sees only the Mac node (`NC5r`); the AWS
+node's `/api/peers` reads `[]`.
+
+**There are NO embedded bootstraps -- this changes the Route 2 cost model.**
+`cli/src/bootstrap.rs` declares `pub const DEFAULT_BOOTSTRAP_NODES: &[&str] = &[];` --
+empty. The Docker `entrypoint.sh` comment claiming "Bootstrap nodes are now embedded in
+the binary at build time" is FALSE. Every node depends entirely on its own
+`config.json` or `SC_BOOTSTRAP_NODES`. **Rebuilding artifacts at the new integration
+anchor will NOT propagate the new PeerId.** It must be written into each node's config
+explicitly, on every node, whichever anchor is built.
+
+**Open discrepancy, flagged not diagnosed.** The AWS node logged
+`Connected to 12D3KooWD6vZ... via /ip4/147.81.41.188/tcp/9001 (promiscuous mode - any
+PeerID accepted)` at 19:26:26Z while `/api/peers` returned `[]`. An established
+connection absent from the peer list is either a peers-endpoint difference between
+relay and start modes, or a real registration gap. If `/api/peers` is the matrix's
+evidence source it may under-report, so this must be reconciled before G1-G6.
+
 ### Open decision -- which anchor the five-node test runs on
 
 All three artifacts are **already aligned on `053fd137`**: Windows binary, AWS node
@@ -191,6 +262,16 @@ node parity and is not a reason to move the anchor. The only substantive questio
 whether the five-node test requires the Mac connection-admission fix. That commit is
 not present in this checkout (`git cat-file -t 860f5ed5` -> not a valid object), so the
 Windows lane cannot assess it; GPT-MAC and the operator own that call.
+
+**RESOLVED 2026-08-11: Route 2 selected by GPT-MAC.** Their justification: `860f5ed5`
+addresses a libp2p crash/assertion risk in connection admission and must be inside the
+tested artifact set; additionally the Mac CLI is already at `6e50963d` and the signed
+physical-iPhone v2 was built from `860f5ed5`, so Route 1 at `053fd137` would force a
+rollback and rebuild of the Mac and iPhone plus fresh Android attestation. A clean
+isolated integration commit carrying the Mac admission fix will be staged and its exact
+SHA declared before any build or deployment. `053fd137` is NOT the final five-node test
+anchor. The bridge fix stays in the PR record as orchestration evidence but does not
+drive artifact provenance.
 
 ## RCA -- the inbox bridge silently dropped every GPT-MAC message
 
