@@ -7,13 +7,22 @@ Written for the GPT-MAC lane so both lanes hold the same record. Supplements
 `WINDOWS_PR139_RESUME_STATE_2026-08-11B.md`; corrections to that document are
 called out explicitly below.
 
+## Terminology -- there is no relay
+
+**This fleet has NO relay host. It has NODES only.** Operator correction, 2026-08-11.
+Earlier Windows-lane messages and docs (this one included, before this revision) called
+`54.226.67.101` "the AWS relay". That is wrong; it is the **AWS node**, nickname
+`scm-always-on-node`. The container is named `scm-relay` for historical reasons and that
+name should not be read as a role. Anywhere the older records say "relay", read "node",
+and re-weigh the evidence accordingly -- see the raised-severity finding below.
+
 ## Headline corrections to the record
 
 1. **The mesh-formation blocker is CLEARED.** `WINDOWS_PR139_RESUME_STATE_2026-08-11B.md`
    records Android at `0 peers (Core), 0 full, 0 headless`. A fresh logcat pull on
    2026-08-11T18:19:26Z shows all 20 `Mesh Stats` samples in the window reading
    **`3 peers (Core), 3 full, 0 headless`**. Android is forming p2p-circuit paths
-   through both the Mac node (`12D3KooWNC5r...`) and the relay (`12D3KooWPJK6...`).
+   through both the Mac node (`12D3KooWNC5r...`) and the AWS node (`12D3KooWPJK6...`).
    The device is still dual-homed (`192.168.0.135` LAN plus `10.8.223.228`), so the
    VPN lead did **not** have to be resolved for peers to form. That lead is no longer
    the blocker and should be de-prioritised.
@@ -23,7 +32,7 @@ called out explicitly below.
    `transport-acked message cannot be downgraded acked_count=1`, one message at
    `attempt=6`. Receiver-backed receipt evidence for Android is therefore still absent.
 
-3. **Relay SSH details in the record are wrong.** The live host is
+3. **AWS node SSH details in the record are wrong.** The live host is
    `ec2-user@54.226.67.101` and docker requires `sudo`. The documented
    `ubuntu@54.242.56.150` times out on port 22, and `ubuntu@` is rejected on the live
    host.
@@ -74,18 +83,25 @@ the artifact itself, so "APK built at head" in the resume doc is UNVERIFIED. Thi
 
 | Field | Value |
 |---|---|
-| Container | `scm-relay`, image `testbotz/scmessenger:sha-053fd13`, Up 8 hours |
+| Container | `scm-relay` (name only -- this host is a NODE, not a relay), image `testbotz/scmessenger:sha-053fd13`, Up 8 hours |
 | Repo digest | `testbotz/scmessenger@sha256:7e9e3d75490d83f24a8b3b4f553362b5b68fff1682fddaa3eab048ebe8d61e16` |
 | Local image id | `sha256:bddc67db4d801f631ac5ec8292a45ff3e2bfa123427f309f1165b6c68a1c2214` |
 | Health | `/api/health` -> `{"status":"healthy"}` |
 | Peers | 3 -- Windows, Mac, ChristyLove |
 
-**FINDING -- relay reports no identity.** `/api/identity` on the relay returns
+**BLOCKER -- this node reports no identity.** `/api/identity` on the AWS node returns
 `initialized: false` with `device_id`, `identity_id`, `libp2p_peer_id` and
 `public_key_hex` all `null`, nickname `scm-always-on-node`, while the container is
-healthy and actively relaying. GPT-MAC has ruled that **relay-side receipt evidence
-does not count toward the gate** until this identity is resolved or explicitly
-dispositioned.
+healthy and actively forwarding traffic. GPT-MAC initially ruled that receipt evidence
+from this host **does not count toward the gate** until the identity is resolved or
+explicitly dispositioned.
+
+**Severity raised 2026-08-11 on operator correction.** There is NO relay host in this
+fleet -- there are only NODES. The `scm-relay` container name is historical and
+misleading. Because this host is one of the five NODES, an identity of `null` is not a
+footnote about third-party receipt evidence: it is a **node-parity blocker**, since one
+of the five cannot present an identity at all. It must be provisioned with an identity,
+or that node must be explicitly excluded from the five-node set.
 
 ## RCA -- the inbox bridge silently dropped every GPT-MAC message
 
@@ -126,6 +142,50 @@ The traffic the bridge was silently discarding is now accepted.
 drops means any new lane joining the fleet is invisible to the bridge until someone
 notices the absence of replies. Consider surfacing `ignored_inbound_in_window > 0` as
 a health signal rather than a passive counter.
+
+## RCA 2 -- the allow-list fix triggered an unbounded ACK storm
+
+Fixing the allow-list immediately exposed a second, latent defect. Recorded in full
+because roughly 1400 junk messages were sent to the GPT-MAC lane as a result.
+
+**Symptom.** Within about three minutes of the restart, `acks_sent_total` went from 15
+to over 1400 and was still climbing at roughly 30 messages/second. Every one was a
+`[SEEN] <id> received (logged, not queued as a task)` ACK addressed to GPT-MAC.
+
+**Root cause.** `classify_content()` recognised only the `scm.message.*` envelope that
+the mobile apps wrap all outbound traffic in. The CLI and desktop lanes emit **bare**
+delivery receipts -- `{"message_id":..,"status":"Delivered","timestamp":..}` -- which
+carry neither `kind` nor a `schema`+`text` pair. That shape fell through to `"content"`,
+routed as `chat`, and was ACKed. The far node then emitted a delivery receipt *for that
+ACK*, which arrived as fresh allow-listed inbound and was ACKed in turn. Unbounded
+feedback loop.
+
+**Why it was latent.** Android was the only allow-listed peer, and it wraps every
+message -- receipts included -- in the envelope. The bare-receipt path had never been
+exercised. Allow-listing any non-mobile peer would have triggered it.
+
+**Fix (commit `11710cf3`).** `_is_delivery_receipt()` classifies a bare receipt as
+housekeeping, so no ACK is emitted. Strict by construction: exact key-set subset of
+`{message_id,status,timestamp}`, both required keys present, non-empty `status`, and any
+text-bearing field disqualifies the match. A human message therefore cannot be swallowed
+by this rule, preserving the conservative-by-construction invariant the classifier is
+built around.
+
+**Verification.**
+
+| Check | Result |
+|---|---|
+| Routing suite | 58/58 pass (6 new regressions) |
+| `acks_sent_total`, idle, 3 samples 40s apart | flat at 1466 |
+| `acks_sent_total`, per genuine inbound message | +1 exactly (1466 -> 1467 -> 1468) |
+
+Final bridge pid 2012, started 2026-08-11T18:54:20Z. The node soak was never touched
+across either restart (generation 8, started 17:26:14Z).
+
+**Note on ticket routing.** GPT-MAC's prose messages route as `chat`, not `handoff`, so
+they are logged and ACKed but do **not** produce `HANDOFF/todo/INBOX_*.md` tickets --
+only `/handoff`-prefixed messages do. Watching the ticket directory is therefore not a
+valid wake mechanism for that lane; poll `/api/history` instead.
 
 ## Evidence artifacts
 
