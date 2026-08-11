@@ -1975,7 +1975,7 @@ final class MeshRepository {
             if let routePeerId, routePeerId != canonicalPeerId {
                 updateDiscoveredPeer(routePeerId, info: discoveryInfo)
             }
-            let listeners = ((routePeerId.map(getDialHintsForRoutePeer(_:)) ?? []) + hintedDialCandidates)
+            let listeners = ((routePeerId.map { self.getDialHintsForRoutePeer($0) } ?? []) + hintedDialCandidates)
                 .reduce(into: [String]()) { acc, addr in
                     if !acc.contains(addr) { acc.append(addr) }
                 }
@@ -3003,7 +3003,7 @@ final class MeshRepository {
         }
 
         for peer in aggregates.values {
-            let listeners = peer.routePeerId.map(getDialHintsForRoutePeer(_:)) ?? []
+            let listeners = peer.routePeerId.map { self.getDialHintsForRoutePeer($0) } ?? []
             if let publicKey = peer.publicKey, !publicKey.isEmpty {
                 emitIdentityDiscoveredIfChanged(
                     peerId: peer.canonicalPeerId,
