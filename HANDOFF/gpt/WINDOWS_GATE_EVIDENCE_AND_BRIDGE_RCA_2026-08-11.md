@@ -71,11 +71,31 @@ parity pin, not as PR-head provenance.
 The hash was computed twice and agrees: device-side `toybox sha256sum`, and an
 `adb pull`ed copy hashed on Windows.
 
-**GAP -- build provenance.** The APK carries no recoverable commit SHA. Nothing in
-1359 lines of app-scoped logcat emits a build or commit identifier, and `dumpsys`
-exposes only `versionName`/`versionCode`. The APK **cannot** be bound to a commit from
-the artifact itself, so "APK built at head" in the resume doc is UNVERIFIED. This is
-`HANDOFF/todo/P1_STALE_BUILD_PROVENANCE_INVALIDATES_SHA_CLAIMS_2026-08-09.md`.
+**Build provenance: BOUND to `053fd137`.** Extracted from the APK itself:
+
+```
+053fd137:tracking/pre-v040-tag-work:1786442355
+```
+
+Build time `1786442355` = 2026-08-11T09:59:15Z.
+
+`core/build.rs` stamps `SCM_BUILD_STAMP` as `hash:ref:build-time` and
+`get_build_provenance()` in `core/src/lib.rs` exposes it via `option_env!`. The stamp
+is compiled into the native core, so it is recoverable from
+`lib/arm64-v8a/libscmessenger_core.so` inside the APK. Android also surfaces it live
+through the uniffi binding on the Settings screen, which is an independent on-device
+confirmation.
+
+**CORRECTION.** An earlier revision of this document, and the Windows-lane messages
+that fed it, stated the APK "cannot be bound to a commit". That was wrong. It was true
+only of `logcat` and `dumpsys`, which is where the Windows lane looked; the binding was
+in the artifact the whole time. `HANDOFF/todo/P1_STALE_BUILD_PROVENANCE_INVALIDATES_SHA_CLAIMS_2026-08-09.md`
+does **not** apply to this APK. Do not dispatch the Mobile workflow merely to recover
+provenance.
+
+**Caveat to carry into the manifest:** the stamp is self-attested by the build host's
+git at compile time, not cryptographically bound. It is the same class of evidence as
+the CLI provenance line accepted for the AWS node image -- no stronger.
 
 **GAP -- receiver-backed receipts.** Not available; see correction 2 above.
 
@@ -100,8 +120,77 @@ explicitly dispositioned.
 fleet -- there are only NODES. The `scm-relay` container name is historical and
 misleading. Because this host is one of the five NODES, an identity of `null` is not a
 footnote about third-party receipt evidence: it is a **node-parity blocker**, since one
-of the five cannot present an identity at all. It must be provisioned with an identity,
-or that node must be explicitly excluded from the five-node set.
+of the five cannot present an identity at all.
+
+### Root cause: the container runs the wrong subcommand
+
+Diagnosed 2026-08-11, read-only, nothing on the host was modified.
+
+```
+CMD = ["scm","--http-bind","0.0.0.0:9876","relay",
+       "--listen","/ip4/0.0.0.0/tcp/9001","--http-port","9000",
+       "--name","scm-always-on-node"]
+```
+
+Per `scm --help`: `relay` = "Run headless relay node (no interactive console)",
+`start` = "Start P2P messaging node", `init` = "Initialize new identity". Storage holds
+`relay_network_key.pb` and **no node identity**. `/api/identity` therefore reports
+`initialized: false` because this host was never initialised as a node -- it is running
+as a relay, using a relay network key in place of an identity.
+
+Nothing is corrupt. It is the wrong ROLE for a fleet the operator defines as nodes-only.
+
+### Host inventory (before any change)
+
+| Item | State |
+|---|---|
+| `scm-relay` | LIVE, `testbotz/scmessenger:sha-053fd13`, Up 8 h, created 2026-08-11T10:44:18Z |
+| `scm-relay-old-6b2573fa` | STOPPED duplicate, `:latest`, Exited(137) 42 h ago, created 2026-08-06 -- removal target |
+| Images | `sha-053fd13`, `sha-68fcc3f`, `sha-d48558a`, `latest` |
+| Data | `/opt/scm-relay-data` bind-mounted to `/root/.local/share/scmessenger`; `logs`, `outbox`, `peers.json` (564 KB), `relay_custody`, `storage/{db,ledger.json,relay_network_key.pb,conf}` |
+| Live nodes | exactly ONE |
+
+### Approved scope for the teardown and fresh install
+
+Recorded here because GPT-MAC gates execution on the anchor and scope being written
+down, and because the Windows lane will not act on a scope held only in chat.
+
+- **Operator authorisation:** granted directly in the operator channel 2026-08-11,
+  standing and in perpetuity, for teardown and fresh install of the AWS **node**. It
+  does not extend to any other destructive action.
+- **Role target, decided by GPT-MAC:** option (a) -- provision an identity (`init`) and
+  run `start` as a node. `initialized: false` is dispositioned as a **wrong-role
+  condition**, not a fault.
+- **Accepted consequence:** the PeerId WILL change. `12D3KooWPJK6...` is currently the
+  bootstrap address other nodes rely on, including Android's circuit paths, so
+  bootstrap/circuit configuration must be updated everywhere. This is a topology
+  change, not a redeploy.
+- **Preserve:** `/opt/scm-relay-data` identity/history and all unrelated host
+  resources.
+- **Remove:** only the identified stopped duplicate `scm-relay-old-6b2573fa`.
+- **Prove:** exactly one live node, before and after.
+- **Hold:** G1-G6 stays stopped until the new identity, bootstrap updates,
+  health/version and all artifact provenance are re-verified.
+
+### Open decision -- which anchor the five-node test runs on
+
+All three artifacts are **already aligned on `053fd137`**: Windows binary, AWS node
+image, and the Android APK (see the corrected Android section above). So there are two
+routes and they differ materially in cost:
+
+1. **Run on `053fd137`.** No rebuild, no CI dispatch. Parity already holds. Only the
+   AWS role switch is needed.
+2. **Move to a combined integration anchor** carrying the Mac connection-admission fix
+   (`860f5ed5`) plus the Windows bridge fix. This requires rebuilding and redeploying
+   **every** artifact on all five nodes.
+
+Worth noting before that cost is accepted: the Windows bridge fix is
+`scripts/inbox_bridge.py`, orchestration tooling that is **not compiled into any
+artifact** -- `cli/` and `core/` do not reference it. It therefore has no bearing on
+node parity and is not a reason to move the anchor. The only substantive question is
+whether the five-node test requires the Mac connection-admission fix. That commit is
+not present in this checkout (`git cat-file -t 860f5ed5` -> not a valid object), so the
+Windows lane cannot assess it; GPT-MAC and the operator own that call.
 
 ## RCA -- the inbox bridge silently dropped every GPT-MAC message
 
