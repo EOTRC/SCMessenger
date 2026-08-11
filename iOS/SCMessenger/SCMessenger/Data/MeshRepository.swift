@@ -2935,7 +2935,10 @@ final class MeshRepository {
         return String(multiaddr[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    func getDialHintsForRoutePeer(_ routePeerId: String) -> [String] {
+    func getDialHintsForRoutePeer(
+        _ routePeerId: String,
+        includeRelayCircuits: Bool = true
+    ) -> [String] {
         let normalizedRoute = routePeerId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard isLibp2pPeerId(normalizedRoute) else { return [] }
 
@@ -2945,7 +2948,7 @@ final class MeshRepository {
         return buildDialCandidatesForPeer(
             routePeerId: normalizedRoute,
             rawAddresses: fromLedger,
-            includeRelayCircuits: true
+            includeRelayCircuits: includeRelayCircuits
         )
     }
 
@@ -6072,7 +6075,7 @@ final class MeshRepository {
         let dynamicRelays = discoveredPeerMap.filter { $0.value.isRelay && !$0.value.isFull && $0.key != targetPeerId }
         for (relayPeerId, _) in dynamicRelays where isLibp2pPeerId(relayPeerId) {
             // If we have direct addresses for this relay, try using it
-            let directAddrs = getDialHintsForRoutePeer(relayPeerId)
+            let directAddrs = getDialHintsForRoutePeer(relayPeerId, includeRelayCircuits: false)
             for addr in directAddrs {
                 let circuit = "\(addr)/p2p/\(relayPeerId)/p2p-circuit/p2p/\(targetPeerId)"
                 if !relays.contains(circuit) { relays.append(circuit) }
