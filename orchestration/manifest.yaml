@@ -1,0 +1,87 @@
+{
+  "schema_version": "2.0.0",
+  "protocol_version": "2.0.0",
+  "canonical_document": "docs/ORCHESTRATION.md",
+  "kernel": "scripts/orchestrate_strict.py",
+  "state_schema_version": "1.0.0",
+  "semantic_roles": {
+    "CONTROLLER": {"authority": "coordinate", "writes": ["HANDOFF/", "tmp/orchestration/", "tmp/tasks/"], "forbidden": ["application_source", "test_implementation", "generated_source", "compile_fix", "architecture_adjudication"]},
+    "SCANNER": {"authority": "investigate", "writes": []},
+    "EVIDENCE": {"authority": "collect_evidence", "writes": ["tmp/orchestration/evidence/"]},
+    "IMPLEMENTER": {"authority": "implement_approved_scope", "writes": ["task_scoped"], "isolation_required": true},
+    "PLATFORM_IMPLEMENTER": {"authority": "implement_approved_platform_scope", "writes": ["task_scoped"], "isolation_required": true},
+    "PLANNER": {"authority": "propose_technical_direction", "writes": ["tmp/orchestration/plans/"]},
+    "VALIDATOR": {"authority": "validate_approved_requirements", "writes": ["tmp/orchestration/reviews/"]},
+    "CRITICAL_VALIDATOR": {"authority": "independent_consequential_review", "writes": ["tmp/orchestration/reviews/"], "independent": true},
+    "SECOND_OPINION": {"authority": "resolve_technical_disagreement", "writes": ["tmp/orchestration/reviews/"], "independent": true},
+    "RELEASE_GATEKEEPER": {"authority": "evaluate_gate_evidence", "writes": ["tmp/orchestration/reviews/"], "independent": true},
+    "OPERATOR": {"authority": "human_product_and_release_decision", "writes": ["*"]}
+  },
+  "lifecycle": {
+    "terminal": ["COMPLETE", "FAILED", "BLOCKED", "OPERATOR_REQUIRED"],
+    "transitions": {
+      "INTAKE": ["CLASSIFIED", "BLOCKED"],
+      "CLASSIFIED": ["PACKET_READY", "PLAN_REQUIRED", "OPERATOR_REQUIRED"],
+      "PACKET_READY": ["DISPATCHED", "BLOCKED"],
+      "DISPATCHED": ["WORKER_DONE", "RETRY", "BLOCKED"],
+      "WORKER_DONE": ["VERIFY", "RETRY", "PLAN_REQUIRED", "OPERATOR_REQUIRED"],
+      "VERIFY": ["REVIEW", "RETRY", "REVIEW_REQUIRED", "FAILED"],
+      "REVIEW": ["INTEGRATE", "RETRY", "PLAN_REQUIRED", "OPERATOR_REQUIRED"],
+      "REVIEW_REQUIRED": ["REVIEW", "OPERATOR_REQUIRED"],
+      "INTEGRATE": ["COMPLETE", "RETRY", "FAILED"],
+      "RETRY": ["PACKET_READY", "PLAN_REQUIRED", "OPERATOR_REQUIRED", "FAILED"],
+      "PLAN_REQUIRED": ["PACKET_READY", "OPERATOR_REQUIRED"],
+      "BLOCKED": [],
+      "FAILED": [],
+      "OPERATOR_REQUIRED": [],
+      "COMPLETE": []
+    }
+  },
+  "protected_prefixes": ["core/src/crypto/", "core/src/transport/", "core/src/routing/", "core/src/privacy/"],
+  "delivery_keywords": ["outbox", "receipt", "custody", "retry"],
+  "worker_result": {
+    "required": ["RESULT", "ROLE", "TASK", "FILES", "VERIFICATION", "SPEC_STATUS", "ESCALATION", "NOTES"],
+    "result_values": ["DONE", "BLOCKED", "FAILED"],
+    "spec_status_values": ["SATISFIED", "NOT_SATISFIED", "AMBIGUOUS"],
+    "escalation_values": ["NONE", "PLANNER", "VALIDATOR", "CRITICAL_VALIDATOR", "SECOND_OPINION", "OPERATOR"]
+  },
+  "adapters": {
+    "claude": ".claude/commands/orchestrate.md",
+    "codex": ".codex/agents/",
+    "qwen": ".qwen/commands/orchestrate.md",
+    "gemini": "GEMINI.md",
+    "bob": ".bob/skills/orchestrate/SKILL.md",
+    "opencode": ".opencode/agent/orchestrator.md",
+    "portable": ".agents/skills/orchestrate/SKILL.md",
+    "script": "scripts/orchestrate_strict.py"
+  },
+  "codex_profiles": {
+    "android-qa": {"semantic_role": "VALIDATOR", "review_capable": true, "path": ".codex/agents/android-qa.toml"},
+    "crypto-security-auditor": {"semantic_role": "CRITICAL_VALIDATOR", "review_capable": true, "path": ".codex/agents/crypto-security-auditor.toml"},
+    "docs-sync-auditor": {"semantic_role": "VALIDATOR", "review_capable": true, "path": ".codex/agents/docs-sync-auditor.toml"},
+    "orchestration-critical-validator": {"semantic_role": "CRITICAL_VALIDATOR", "review_capable": true, "path": ".codex/agents/orchestration-critical-validator.toml"},
+    "orchestration-dispatcher": {"semantic_role": "CONTROLLER", "path": ".codex/agents/orchestration-dispatcher.toml"},
+    "orchestration-evidence-worker": {"semantic_role": "EVIDENCE", "path": ".codex/agents/orchestration-evidence-worker.toml"},
+    "orchestration-implementer": {"semantic_role": "IMPLEMENTER", "path": ".codex/agents/orchestration-implementer.toml"},
+    "orchestration-planner": {"semantic_role": "PLANNER", "path": ".codex/agents/orchestration-planner.toml"},
+    "orchestration-scanner": {"semantic_role": "SCANNER", "path": ".codex/agents/orchestration-scanner.toml"},
+    "orchestration-second-opinion": {"semantic_role": "SECOND_OPINION", "review_capable": true, "path": ".codex/agents/orchestration-second-opinion.toml"},
+    "orchestration-validator": {"semantic_role": "VALIDATOR", "review_capable": true, "path": ".codex/agents/orchestration-validator.toml"},
+    "release-gatekeeper": {"semantic_role": "RELEASE_GATEKEEPER", "review_capable": true, "path": ".codex/agents/release-gatekeeper.toml"},
+    "rust-implementer": {"semantic_role": "IMPLEMENTER", "path": ".codex/agents/rust-implementer.toml"}
+  },
+  "model_capabilities": {
+    "codex": {
+      "CONTROLLER": {"preferred_model": "gpt-5.6-luna", "fallback_model": "gpt-5.6-terra", "reasoning": "medium"},
+      "SCANNER": {"preferred_model": "gpt-5.6-luna", "fallback_model": "gpt-5.6-terra", "reasoning": "low"},
+      "EVIDENCE": {"preferred_model": "gpt-5.6-luna", "fallback_model": "gpt-5.6-terra", "reasoning": "low"},
+      "MICRO_IMPLEMENTER": {"preferred_model": "gpt-5.6-luna", "fallback_model": "gpt-5.6-terra", "reasoning": "medium"},
+      "IMPLEMENTER": {"model": "gpt-5.6-terra", "reasoning": "medium"},
+      "COMPLEX_IMPLEMENTER": {"model": "gpt-5.6-terra", "reasoning": "high"},
+      "VALIDATOR": {"model": "gpt-5.6-terra", "reasoning": "high"},
+      "PLANNER": {"model": "gpt-5.6-sol", "reasoning": "high"},
+      "CRITICAL_VALIDATOR": {"model": "gpt-5.6-sol", "reasoning": "high"},
+      "SECOND_OPINION": {"model": "gpt-5.6-sol", "reasoning": "xhigh"}
+    }
+  }
+}

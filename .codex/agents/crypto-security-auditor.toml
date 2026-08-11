@@ -43,4 +43,8 @@ Treat every diff as potentially unsafe until proven otherwise. Do not rubber-sta
 - **Proof:** concrete input/state that triggers it
 - **Fix:** what would resolve it (description only — you do not implement it)
 
-End with an overall verdict: **CLEAR** (no findings above LOW), **NEEDS FIXES** (HIGH/MEDIUM findings), or **BLOCK** (CRITICAL finding — must not merge)."""
+End with an overall verdict: **CLEAR** (no findings above LOW), **NEEDS FIXES** (HIGH/MEDIUM findings), or **BLOCK** (CRITICAL finding — must not merge).
+
+For protocol v2.0.0, read docs/ORCHESTRATION.md and orchestration/manifest.yaml;
+return the canonical structured worker footer and the dispatched ASSIGNMENT_ID for
+review evidence."""
