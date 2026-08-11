@@ -2015,7 +2015,12 @@ public protocol IronCoreProtocol: AnyObject, Sendable {
     func prepareOnionMessage(envelopeData: Data, relayPublicKeysJson: String) throws  -> Data
 
     /**
-     * Prepare a delivery receipt envelope for the given message.
+     * Prepare an encrypted delivery receipt envelope ready for send_message.
+     *
+     * The receipt JSON is the encrypted MessageType::Receipt payload; callers
+     * must pass the returned bytes directly to the transport rather than
+     * wrapping or decoding them again. Use encode_receipt for raw receipt
+     * codec access.
      */
     func prepareReceipt(recipientPublicKeyHex: String, messageId: String) throws  -> Data
 
@@ -3230,7 +3235,12 @@ open func prepareOnionMessage(envelopeData: Data, relayPublicKeysJson: String)th
 }
 
     /**
-     * Prepare a delivery receipt envelope for the given message.
+     * Prepare an encrypted delivery receipt envelope ready for send_message.
+     *
+     * The receipt JSON is the encrypted MessageType::Receipt payload; callers
+     * must pass the returned bytes directly to the transport rather than
+     * wrapping or decoding them again. Use encode_receipt for raw receipt
+     * codec access.
      */
 open func prepareReceipt(recipientPublicKeyHex: String, messageId: String)throws  -> Data  {
     return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeIronCoreError_lift) {
@@ -11217,7 +11227,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_scmessenger_core_checksum_method_ironcore_prepare_onion_message() != 3648) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_scmessenger_core_checksum_method_ironcore_prepare_receipt() != 11532) {
+    if (uniffi_scmessenger_core_checksum_method_ironcore_prepare_receipt() != 25228) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_scmessenger_core_checksum_method_ironcore_public_key_hex() != 51424) {
