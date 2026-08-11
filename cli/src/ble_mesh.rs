@@ -52,6 +52,16 @@ fn get_active_peers() -> &'static std::sync::Mutex<HashMap<String, TrackingPerip
     ACTIVE_PEERS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
+#[cfg(target_os = "macos")]
+fn note_macos_btleplug_gatt_unavailable() {
+    static LOGGED: OnceLock<()> = OnceLock::new();
+    if LOGGED.set(()).is_ok() {
+        tracing::warn!(
+            "BLE: macOS CoreBluetooth GATT unavailable with btleplug 0.11.8; continuing scan-only with backoff"
+        );
+    }
+}
+
 fn scm_service_uuid() -> Uuid {
     Uuid::from_u128(GATT_SERVICE_UUID)
 }
@@ -321,6 +331,13 @@ async fn subscribe_ingress_for_peripheral(
 
 /// Send a SCMessenger message envelope over BLE to the registered peripheral
 pub async fn send_ble_message(recipient_peer_id: &str, data: &[u8]) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (recipient_peer_id, data);
+        note_macos_btleplug_gatt_unavailable();
+        return Err("BLE unavailable on macOS".to_string());
+    }
+
     #[cfg(target_os = "windows")]
     {
         if crate::ble_windows::get_message_characteristic().is_some() {
@@ -463,6 +480,9 @@ pub async fn run_ble_central_ingress(
     core: Arc<IronCore>,
     ui_tx: tokio::sync::broadcast::Sender<UiOutbound>,
 ) {
+    #[cfg(target_os = "macos")]
+    let _ = (&core, &ui_tx);
+
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         let _ = (core, ui_tx);
@@ -674,8 +694,13 @@ pub async fn run_ble_central_ingress(
                 }
             };
 
-            // In a background task, query properties so we don't block the main event stream
+            // In a background task, query properties so we don't block the main event stream.
+            // On macOS, keep the advertisement/discovery half of central operation, but do not
+            // enter btleplug's CoreBluetooth GATT connect path (0.11.8 can panic in its delegate
+            // after repeated service-discovery callbacks instead of returning an error).
+            #[cfg(not(target_os = "macos"))]
             let core_c = Arc::clone(&core);
+            #[cfg(not(target_os = "macos"))]
             let ui_c = ui_tx.clone();
             let track = Arc::clone(&tracked);
             let key = id_key.clone();
@@ -712,28 +737,37 @@ pub async fn run_ble_central_ingress(
 
                 let mut success = true;
                 if is_match {
-                    tracing::info!("BLE found matching peripheral: {}", key);
-                    let start_time = std::time::Instant::now();
-                    let session_result = AssertUnwindSafe(subscribe_ingress_for_peripheral(
-                        peripheral, core_c, ui_c,
-                    ))
-                    .catch_unwind()
-                    .await;
-                    if session_result.is_err() {
-                        tracing::error!(
-                            route = "ble_gatt_ingress",
-                            peer_suffix = %peer_suffix(&key),
-                            terminal_result = "session_panic_isolated",
-                            "BLE peripheral session ended with an isolated panic"
-                        );
-                    }
-                    // subscribe_ingress_for_peripheral returns only when the stream
-                    // ends or an error occurs. A session that stayed connected past a
-                    // threshold is a normal disconnect (peer out of range), not a
-                    // backoff-worthy failure; only rapid failures (< threshold) back off.
-                    let session_duration = start_time.elapsed();
-                    if session_duration < std::time::Duration::from_secs(10) {
+                    #[cfg(target_os = "macos")]
+                    {
+                        note_macos_btleplug_gatt_unavailable();
                         success = false;
+                    }
+
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        tracing::info!("BLE found matching peripheral: {}", key);
+                        let start_time = std::time::Instant::now();
+                        let session_result = AssertUnwindSafe(subscribe_ingress_for_peripheral(
+                            peripheral, core_c, ui_c,
+                        ))
+                        .catch_unwind()
+                        .await;
+                        if session_result.is_err() {
+                            tracing::error!(
+                                route = "ble_gatt_ingress",
+                                peer_suffix = %peer_suffix(&key),
+                                terminal_result = "session_panic_isolated",
+                                "BLE peripheral session ended with an isolated panic"
+                            );
+                        }
+                        // subscribe_ingress_for_peripheral returns only when the stream
+                        // ends or an error occurs. A session that stayed connected past a
+                        // threshold is a normal disconnect (peer out of range), not a
+                        // backoff-worthy failure; only rapid failures (< threshold) back off.
+                        let session_duration = start_time.elapsed();
+                        if session_duration < std::time::Duration::from_secs(10) {
+                            success = false;
+                        }
                     }
                 }
 
@@ -897,5 +931,14 @@ mod tests {
             "Peer should still be in registry"
         );
         assert_eq!(map.get(&peer_id).unwrap().address_string(), new_mac);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_ble_send_reports_unavailable() {
+        assert_eq!(
+            send_ble_message("ignored", &[]).await,
+            Err("BLE unavailable on macOS".to_string())
+        );
     }
 }
