@@ -220,15 +220,36 @@ def preflight_cost_estimate(prompt_text, panel_models, judge_model, max_tokens, 
     return total, breakdown
 
 
-def run_panel_call(api_key, model, prompt_text, max_tokens):
+def run_panel_call(api_key, model, prompt_text, max_tokens, reasoning_effort=None):
     payload = {"model": model, "messages": [{"role": "user", "content": prompt_text}], "max_tokens": max_tokens}
+    # Reasoning models spend the completion budget on hidden reasoning tokens
+    # before emitting any visible content. Without this, a panel of reasoning
+    # models returns finish_reason="length" and content="" -- the script
+    # reports success and writes an empty result. Confirmed 2026-08-09 against
+    # qwen3.7-max / qwen3.6-plus / qwen3.5-122b-a10b: three panel members and
+    # the judge all returned zero characters at max_tokens=300 AND at 1600.
+    # Raising max_tokens alone does not fix it; the token count needed to clear
+    # reasoning overhead pushed the pre-flight estimate past the cost ceiling.
+    # Capping reasoning effort is what actually leaves room for an answer.
+    if reasoning_effort and reasoning_effort != "none":
+        payload["reasoning"] = {"effort": reasoning_effort}
     enforce_no_tools_key(payload, model)
     return http_post(OPENROUTER_CHAT_URL, api_key, payload)
 
 
 def extract_content_and_cost(resp):
     try:
-        content = resp["choices"][0]["message"]["content"]
+        message = resp["choices"][0]["message"]
+        content = message.get("content")
+        # Fall back to the reasoning trace when a model emitted reasoning but no
+        # visible content. Without this the caller cannot distinguish "the model
+        # said nothing" from "the model thought hard and ran out of budget", and
+        # a paid call is discarded with nothing to show for it.
+        if not (content or "").strip():
+            reasoning = message.get("reasoning")
+            if (reasoning or "").strip():
+                content = ("[NOTE] model returned no content; showing reasoning trace instead.\n\n"
+                           + reasoning)
         finish_reason = resp["choices"][0].get("finish_reason", "unknown")
         cost = resp.get("usage", {}).get("cost", 0.0)
         is_byok = resp.get("usage", {}).get("is_byok", False)
@@ -251,6 +272,14 @@ def main():
                           "Falls back to FUSION_LITE_EXPECT_KEY_LABEL env var "
                           "if unset. Guards against OPENROUTER_API_KEY silently "
                           "resolving to an unintended key.")
+    ap.add_argument("--reasoning-effort", default="low",
+                     choices=["none", "low", "medium", "high"],
+                     help="Cap reasoning-token spend on reasoning models "
+                          "(default: low). Reasoning models otherwise consume "
+                          "the entire --max-tokens budget on hidden reasoning "
+                          "and return empty content with finish_reason=length. "
+                          "Use 'none' to omit the parameter entirely for "
+                          "providers that reject it.")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -296,7 +325,8 @@ def main():
     for model in panel_models:
         eprint(f"[panel] calling {model} ...")
         t0 = time.time()
-        status, resp = run_panel_call(api_key, model, prompt_text, args.max_tokens)
+        status, resp = run_panel_call(api_key, model, prompt_text, args.max_tokens,
+                                      args.reasoning_effort)
         elapsed = time.time() - t0
 
         if status != 200:
@@ -333,7 +363,8 @@ def main():
 
     eprint(f"[judge] calling {args.judge} ...")
     t0 = time.time()
-    status, resp = run_panel_call(api_key, args.judge, judge_prompt, args.max_tokens + 50)
+    status, resp = run_panel_call(api_key, args.judge, judge_prompt, args.max_tokens + 50,
+                                  args.reasoning_effort)
     elapsed = time.time() - t0
 
     judge_content = None

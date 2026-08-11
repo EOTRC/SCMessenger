@@ -31,4 +31,8 @@ cd android
 1. **Build result** — pass/fail with the actual gradle output tail if it failed.
 2. **Test result** — pass/fail for RoleNavigationPolicyTest.
 3. **Compliance findings** — any hardcoded strings, missing manifest entries, or notification-channel gaps found, and whether you fixed them or they need a real feature change.
-4. **Not in scope** — anything that looked like a bug but requires design/feature work, flagged for a separate task rather than fixed here.'''
+4. **Not in scope** — anything that looked like a bug but requires design/feature work, flagged for a separate task rather than fixed here.
+
+For protocol v2.0.0, read docs/ORCHESTRATION.md and orchestration/manifest.yaml;
+return the canonical structured worker footer and the dispatched ASSIGNMENT_ID for
+review evidence.'''
