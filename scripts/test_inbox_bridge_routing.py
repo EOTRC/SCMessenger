@@ -247,6 +247,56 @@ class ClassifyContentTests(unittest.TestCase):
         self.assertEqual(category, "content")
         self.assertEqual(text, "/handoff do the thing")
 
+    # -- bare delivery receipts (ACK-storm regression) ---------------------
+    #
+    # 2026-08-11: allow-listing a second peer that emits bare receipts caused
+    # an unbounded ACK loop -- the bridge ACKed each receipt, the far node
+    # emitted a receipt for that ACK, and round it went (~1400 messages in
+    # minutes). Receipts must classify as housekeeping so no ACK is sent.
+
+    def test_bare_delivery_receipt_is_housekeeping(self):
+        content = json.dumps(
+            {
+                "message_id": "ae31b5af-0ebc-4eb0-b09a-f26f684e24ab",
+                "status": "Delivered",
+                "timestamp": 1786472561,
+            }
+        )
+        category, _ = ib.classify_content(content)
+        self.assertEqual(category, "housekeeping")
+
+    def test_bare_delivery_receipt_without_timestamp_is_housekeeping(self):
+        content = json.dumps({"message_id": "abc", "status": "Delivered"})
+        category, _ = ib.classify_content(content)
+        self.assertEqual(category, "housekeeping")
+
+    def test_receipt_shape_carrying_text_is_content(self):
+        # A text-bearing field disqualifies the receipt match, so a human
+        # message can never be swallowed by this rule.
+        content = json.dumps(
+            {"message_id": "abc", "status": "Delivered", "text": "read this"}
+        )
+        category, _ = ib.classify_content(content)
+        self.assertEqual(category, "content")
+
+    def test_partial_receipt_shape_is_content(self):
+        content = json.dumps({"message_id": "abc"})
+        category, _ = ib.classify_content(content)
+        self.assertEqual(category, "content")
+
+    def test_receipt_with_unknown_extra_key_is_content(self):
+        content = json.dumps(
+            {"message_id": "abc", "status": "Delivered", "payload": "surprise"}
+        )
+        category, _ = ib.classify_content(content)
+        self.assertEqual(category, "content")
+
+    def test_human_message_mentioning_a_receipt_is_content(self):
+        content = "[PR139 RECEIPT ACK] chunks 1/87 through 87/87 verified"
+        category, text = ib.classify_content(content)
+        self.assertEqual(category, "content")
+        self.assertEqual(text, content)
+
 
 class RouteMessageTests(unittest.TestCase):
     ALLOWED = ["good-peer-1", "good-peer-2"]

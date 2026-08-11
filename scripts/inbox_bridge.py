@@ -445,6 +445,29 @@ def parse_command(content: str):
 # fallback below exists to avoid.
 CONTROL_KINDS = frozenset({"identity_sync", "history_sync", "history_sync_data"})
 
+# Keys that identify a bare transport delivery receipt, as emitted by peers
+# that do not wrap outbound traffic in the scm.message.* envelope (the CLI and
+# desktop lanes). Matched as an exact key-set subset with no text-bearing
+# field, so an ordinary message cannot be mistaken for one.
+RECEIPT_REQUIRED_KEYS = frozenset({"message_id", "status"})
+RECEIPT_ALLOWED_KEYS = frozenset({"message_id", "status", "timestamp"})
+
+
+def _is_delivery_receipt(candidate: dict) -> bool:
+    """True for {"message_id":..,"status":..[,"timestamp":..]} and nothing else.
+
+    Deliberately strict: every key must be known, both required keys must be
+    present, and any text-bearing field disqualifies it. A receipt carries no
+    human payload, so refusing to ACK one cannot swallow a human message --
+    which is the invariant classify_content() is built around.
+    """
+    keys = set(candidate)
+    if not RECEIPT_REQUIRED_KEYS.issubset(keys):
+        return False
+    if not keys.issubset(RECEIPT_ALLOWED_KEYS):
+        return False
+    return not str(candidate.get("status", "")).strip() == ""
+
 
 def classify_content(content) -> tuple:
     """Split raw /api/history `content` into (category, text).
@@ -499,6 +522,17 @@ def classify_content(content) -> tuple:
             "kind" in candidate or ("schema" in candidate and "text" in candidate)
         ):
             envelope = candidate
+        elif isinstance(candidate, dict) and _is_delivery_receipt(candidate):
+            # Rule 2b: a bare delivery receipt from a peer that does not wrap
+            # in the scm.message.* envelope (CLI/desktop lanes emit
+            # {"message_id":..,"status":"Delivered","timestamp":..}). This
+            # MUST be housekeeping: ACKing a receipt makes the far node emit a
+            # receipt for the ACK, which arrives as fresh allow-listed inbound
+            # and is ACKed in turn -- an unbounded feedback loop. Observed
+            # 2026-08-11: ~1400 [SEEN] ACKs emitted in minutes after a second
+            # peer was allow-listed. Narrow by construction: a human message
+            # is never exactly this key set with no text-bearing field.
+            return "housekeeping", raw
 
     if envelope is None:
         return "content", raw
