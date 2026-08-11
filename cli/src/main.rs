@@ -1946,7 +1946,12 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>, auto_reply: boo
 
     println!("{} Network started", "[OK]".green());
 
-    if config.enable_ble {
+    // btleplug's CoreBluetooth adapter starts a worker for each adapters()
+    // call. The central ingress below owns that lifecycle on macOS; a
+    // concurrent diagnostic probe can trigger a btleplug completion panic.
+    // Keep the probe on Windows/Linux, where the existing startup behavior is
+    // safe and remains useful for adapter diagnostics.
+    if config.enable_ble && !cfg!(target_os = "macos") {
         tokio::spawn(async move {
             ble_daemon::probe_and_log().await;
         });
@@ -3139,7 +3144,9 @@ async fn cmd_relay(
         format!("http://127.0.0.1:{}", api::API_PORT).dimmed()
     );
 
-    if config.enable_ble {
+    // The BLE central task is the sole CoreBluetooth manager owner on macOS;
+    // do not start a second probe worker in the headless startup path.
+    if config.enable_ble && !cfg!(target_os = "macos") {
         tokio::spawn(async move {
             ble_daemon::probe_and_log().await;
         });
