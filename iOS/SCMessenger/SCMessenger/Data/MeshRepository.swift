@@ -1777,6 +1777,11 @@ final class MeshRepository {
         let normalizedSenderKey = normalizePublicKey(senderPublicKeyHex)
         let rawContent = String(data: data, encoding: .utf8) ?? "[binary]"
         let decodedPayload = decodeMessageWithIdentityHints(rawContent)
+        let messageKind = decodedPayload.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if messageKind == "receipt" || isBareDeliveryReceiptPayload(decodedPayload.text) {
+            logDiagnostic("msg_rx_suppressed kind=receipt sender=\(senderId) msg=\(messageId)")
+            return
+        }
         let hintedIdentity = decodedPayload.hints
         let hintedKey = normalizePublicKey(hintedIdentity?.publicKey)
         let verifiedHints: MessageIdentityHints? = {
@@ -1826,7 +1831,6 @@ final class MeshRepository {
         }
 
         // Auto-upsert contact: senderPublicKeyHex is guaranteed valid (Rust verified it during decrypt)
-        let messageKind = decodedPayload.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let isChatEvent = messageKind == "text" || messageKind.isEmpty
 
         let existingContact = try? contactManager?.get(peerId: canonicalPeerId)
@@ -2628,6 +2632,23 @@ final class MeshRepository {
             return kind == "identity_sync" ? "" : content
         }
         return encoded
+    }
+
+    private func isBareDeliveryReceiptPayload(_ raw: String) -> Bool {
+        guard let data = raw.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+
+        let allowedKeys: Set<String> = ["message_id", "status", "timestamp"]
+        guard Set(json.keys).isSubset(of: allowedKeys),
+              let messageId = json["message_id"] as? String,
+              !messageId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let status = (json["status"] as? String)?.lowercased(),
+              ["delivered", "read", "failed"].contains(status),
+              let timestamp = json["timestamp"] as? NSNumber,
+              timestamp.int64Value >= 0
+        else { return false }
+        return true
     }
 
     private func decodeMessageWithIdentityHints(_ raw: String) -> DecodedMessagePayload {
