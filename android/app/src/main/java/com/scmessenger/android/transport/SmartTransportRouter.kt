@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * Smart transport selection with 500ms timeout fallback and transport health tracking.
  * Implements parallel transport racing for optimal message delivery latency.
- * 
+ *
  * Mirrors: iOS/SCMessenger/SCMessenger/Transport/SmartTransportRouter.swift
  */
 class SmartTransportRouter {
@@ -98,14 +98,14 @@ class SmartTransportRouter {
 
     // Transport health tracking per peer
     private val transportHealth = ConcurrentHashMap<String, ConcurrentHashMap<TransportType, TransportHealth>>()
-    
+
     // Message deduplication cache
     private val messageDedupCache = ConcurrentHashMap<String, MessageDedupEntry>()
     private val dedupMutex = Mutex()
-    
+
     // Last successful transport per peer (for "previously used/good path")
     private val lastSuccessfulTransport = ConcurrentHashMap<String, TransportType>()
-    
+
     // Mutex for health updates
     private val healthMutex = Mutex()
 

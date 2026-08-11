@@ -1,7 +1,35 @@
 # _QUEUE -- Dispatch Order for the Full v1.0.0 Backlog
 
 Status: Active
-Last updated: 2026-08-05 (Qwen Code takeover live; PR #136 unblock)
+Last updated: 2026-08-09 (Windows lane handoff; PR #139 five-node blockers)
+
+## >> START HERE (2026-08-09) -- PR #139 Windows lane
+
+Read `HANDOFF/ORCHESTRATOR_TAKEOVER_2026-08-09_WINDOWS_LANE.md` first. It carries
+the candidate status, live machine state, three completed-but-unapplied worker
+diffs, and the traps. Everything below this block predates it.
+
+Top of queue, in order:
+
+1. **P0** `P0_REQUEST_RESPONSE_PANIC_KILLS_DESKTOP_ON_MESH_GROWTH_2026-08-09.md`
+   -- desktop node dies ~2 min after the mesh reaches four nodes. Root cause
+   verified from crate source. It is a `debug_assert`, so release builds hide it
+   rather than fix it. No upstream version to bump to.
+2. **P1** `P1_PROMISCUOUS_DIAL_WASTES_BUDGET_ON_SELF_AND_CELLULAR_2026-08-09.md`
+   -- gates the Windows <-> macOS CLI link. Fix diff already written, unapplied:
+   `tmp/fix_self_dial_response.md`.
+3. **P1** `P1_CLI_CANNOT_REPLY_TO_UNSAVED_PEER_2026-08-09.md` -- three send-path
+   defects; B and C corrupt run scoring. Fix diff unapplied and unreviewed:
+   `tmp/fix_cli_send_path_response.md`.
+4. Android `no_route_candidates` + 94 consecutive bootstrap failures -- not yet
+   ticketed; confirm whether it is downstream of 1 and 2 first.
+5. **P2** `P2_RESTORE_UPNP_ON_0_7_0_2026-08-09.md` -- blocked upstream; the fix is
+   in 0.7.0, not 0.6.0, and 0.7.0 is unpublished.
+
+Two independent flawless five-node PASS runs remain required before merge.
+
+---
+
 
 ## 2026-08-05 ORCHESTRATOR STATUS -- QWEN CODE TAKEOVER LIVE (authoritative)
 

@@ -1,5 +1,5 @@
-Status: Active
-Last updated: 2026-07-24
+Status: Active -- MATRIX STALE, re-audit required before v0.4.0 sign-off
+Last updated: 2026-08-09
 
 # Feature Parity & Cross-Platform Function Audit
 
@@ -9,6 +9,32 @@ canonical parity audit and gap tracker.
 
 Canonical baseline references: docs/CURRENT_STATE.md, REMAINING_WORK_TRACKING.md,
 docs/REPO_CONTEXT.md, and DOCUMENTATION.md.
+
+## [WARNING] Do not read the matrix below as current (2026-08-09)
+
+The function matrix carries an internal date of **2026-03-27** and reports full
+parity except WASM WebSocket/WebRTC. That is contradicted by open, field-observed
+work. Treat the matrix as a historical snapshot until it is re-audited.
+
+Known open parity gaps at the time of writing:
+
+| Gap | Ticket | Priority |
+|---|---|---|
+| Android node does not see fleet nodes iOS sees (ledger visibility) | `HANDOFF/todo/LEDGER_SHARING_ANDROID_NODE_VISIBILITY_2026-08-05.md` | HIGH, field-observed |
+| Android mDNS discovery parity | `HANDOFF/todo/DISPATCH_IMPL_ANDROID_MDNS_PARITY_2026-08-05.md` | HIGH (implements the above) |
+| iOS receipt handling not unified via UniFFI | `HANDOFF/todo/U6_IOS_RECEIPT_UNIFICATION.md` | F2 gate |
+| App sharing / install hosting iOS parity | `HANDOFF/todo/APP_SHARING_IOS_PARITY_CROSS_INSTALL_2026-08-05.md` | MEDIUM |
+| CLI cannot reply to a peer it received and decrypted from; Android auto-creates contacts on discovery, CLI does not | `HANDOFF/todo/P1_CLI_CANNOT_REPLY_TO_UNSAVED_PEER_2026-08-09.md` | P1 |
+
+**Unresolved interaction with PR #139.** The ledger-visibility ticket is blocked
+"awaiting operator decision on disclosure policy". PR #139 has since *made*
+disclosure-policy decisions -- private-entry disclosure now requires an observed
+same-subnet requester, CGNAT is excluded from adjacency evidence, and
+peer-supplied reflected addresses no longer count as local proof. Nobody has
+reconciled the ticket against those changes. They could resolve it, supersede it,
+or make it worse; a peer that joins over a relay circuit now receives no private
+entries at all by design. This must be settled before the ticket is actioned.
+See `docs/security/PR139_REVIEW_15dbcde0_2026-08-09.md`.
 
 ---
 

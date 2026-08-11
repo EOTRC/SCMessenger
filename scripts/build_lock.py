@@ -44,54 +44,85 @@ import sys
 import time
 from pathlib import Path
 
-LOCK_PATH = Path("tmp/.build.lock")
+# This lock protects the shared repository's authoritative build resources.
+# A script file can be reached through any detached worktree, so its own path
+# is not a repository identity. Git's common directory is shared by every
+# linked worktree and lets standalone invocations find the one true root.
+def repository_root(cwd=None):
+    result = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=cwd, capture_output=True, text=True,
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "build_lock.py must run inside a git worktree")
+    common_dir = Path(result.stdout.strip()).resolve()
+    if common_dir.name != ".git":
+        raise RuntimeError("cannot derive repository root from git common directory")
+    return common_dir.parent
+
+
+def lock_path(cwd=None):
+    return repository_root(cwd) / "tmp" / ".build.lock"
+
+
+# Backwards-compatible import-time value for in-process callers. CLI actions
+# use lock_path() again so a standalone invocation from another worktree is
+# still tied to the shared repository identity.
+LOCK_PATH = lock_path()
 DEFAULT_STALE_AFTER = 1800  # seconds
 
 
-def _read_lock():
+def _read_lock(path=None):
+    path = path or lock_path()
     try:
-        with open(LOCK_PATH, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
 
 
-def _write_lock(payload):
-    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(LOCK_PATH, "w", encoding="utf-8") as f:
-        json.dump(payload, f)
+def _write_lock(payload, path=None):
+    """Create the shared lock atomically; return False when it is busy."""
+    path = path or lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return False
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    return True
 
 
-def acquire(holder="unknown", stale_after=DEFAULT_STALE_AFTER):
+def acquire(holder="unknown", stale_after=DEFAULT_STALE_AFTER, path=None):
     """Returns (True, None) if acquired, (False, existing_lock_dict) if busy."""
-    existing = _read_lock()
-    if existing is not None:
-        age = time.time() - existing.get("acquired_at", 0)
-        if age < stale_after:
-            return False, existing
-        print(
-            f"[WARN] stale lock from '{existing.get('holder')}' "
-            f"(pid {existing.get('pid')}, age {int(age)}s > {stale_after}s) -- "
-            f"force-acquiring. If that process is still legitimately running, "
-            f"this WILL cause a concurrent-build conflict.",
-            file=sys.stderr,
-        )
-
-    _write_lock({
-        "holder": holder,
-        "pid": os.getpid(),
-        "acquired_at": time.time(),
-    })
-    # Re-read to guard the (small, non-atomic-write) race between two
-    # callers acquiring near-simultaneously: last writer wins the file, so
-    # confirm we are still the writer we just wrote.
-    confirm = _read_lock()
-    if confirm and confirm.get("pid") == os.getpid() and confirm.get("holder") == holder:
+    payload = {"holder": holder, "pid": os.getpid(), "acquired_at": time.time()}
+    path = path or lock_path()
+    if _write_lock(payload, path):
         return True, None
-    return False, confirm
+    existing = _read_lock(path)
+    if existing is None:
+        return False, {"holder": "unknown", "pid": "?"}
+    age = time.time() - existing.get("acquired_at", 0)
+    if age < stale_after:
+        return False, existing
+    print(
+        f"[WARN] stale lock from '{existing.get('holder')}' "
+        f"(pid {existing.get('pid')}, age {int(age)}s > {stale_after}s) -- "
+        f"force-acquiring. If that process is still legitimately running, "
+        f"this WILL cause a concurrent-build conflict.",
+        file=sys.stderr,
+    )
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    if _write_lock(payload, path):
+        return True, None
+    return False, _read_lock(path)
 
 
-def release(holder="unknown"):
+def release(holder="unknown", path=None):
     """Ownership is by HOLDER NAME, not pid. This is intentional: --acquire
     and --release are meant to be usable as two separate CLI invocations
     (e.g. from a shell script wrapping several of its own build steps
@@ -100,7 +131,8 @@ def release(holder="unknown"):
     metadata (see acquire()'s stale-lock message), never as the
     authorization check -- that was tried and breaks the primary CLI use
     case (caught by testing, see ORCHESTRATION_TOKEN_STRATEGY.md Part 7)."""
-    existing = _read_lock()
+    path = path or lock_path()
+    existing = _read_lock(path)
     if existing is None:
         return True  # nothing to release
     if existing.get("holder") != holder:
@@ -111,7 +143,7 @@ def release(holder="unknown"):
         )
         return False
     try:
-        LOCK_PATH.unlink()
+        path.unlink()
     except OSError:
         pass
     return True
@@ -126,9 +158,10 @@ def run_locked(command, holder="build_lock_run", stale_after=DEFAULT_STALE_AFTER
     orchestrator that queued several verify steps and is fine waiting its
     turn rather than treating "someone else is building" as an error).
     """
+    path = lock_path()
     deadline = time.time() + wait_seconds
     while True:
-        ok, existing = acquire(holder=holder, stale_after=stale_after)
+        ok, existing = acquire(holder=holder, stale_after=stale_after, path=path)
         if ok:
             break
         if time.time() >= deadline:
@@ -146,7 +179,7 @@ def run_locked(command, holder="build_lock_run", stale_after=DEFAULT_STALE_AFTER
         result = subprocess.run(command, shell=True)
         return result.returncode
     finally:
-        release(holder=holder)
+        release(holder=holder, path=path)
         print(f"[LOCK] released by '{holder}'")
 
 

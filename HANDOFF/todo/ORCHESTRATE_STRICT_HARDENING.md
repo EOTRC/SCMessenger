@@ -43,3 +43,17 @@ python scripts/rules_check.py
 Do not enable unattended runs of this script until the security-gate
 handling is verified against a real gated diff (a
 `core/src/{crypto,transport,routing,privacy}/` touch must stop the batch).
+
+## v2 implementation state (2026-08-10)
+
+The v2 kernel now persists dial security and delivery gates, retains
+content-addressed isolated-worker diffs for integration, requires the declared
+independent review roles, and serializes standalone verification invocations
+across worktrees. Deterministic coverage is in `scripts/test_orchestration_v2.py`.
+
+This ticket remains in `todo/` deliberately: the active Mac lane may not move
+HANDOFF task state, and the live dry-run could not obtain a deterministic lake
+on 2026-08-10 (`[BLOCKED] ... no lake available for tier CODER`). A Windows
+orchestrator must rerun the live-queue dry path with an available provider and
+make the authoritative HANDOFF transition; it must not infer completion from
+the deterministic unit suite alone.
