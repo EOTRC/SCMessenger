@@ -21,6 +21,21 @@ Design rules this file is built around:
     so it is not an identity source.
 4.  Non-allow-listed senders get no ticket and no ACK. Staying silent avoids
     turning the bridge into an oracle that confirms which node is listening.
+5.  Inbound content from an allow-listed peer splits into three routes.
+    First, the Android/iOS apps wrap EVERY outbound message -- protocol
+    housekeeping and real human text alike -- in the same scm.message.*
+    JSON envelope, so the envelope is unwrapped first (see
+    classify_content()/extract_text()) to get the actual text underneath.
+    A message whose kind marks it as protocol housekeeping (identity_sync,
+    history_sync, history_sync_data -- periodic re-sync pings the phone
+    sends every 1-3 minutes on its own, not something a human typed) or
+    whose unwrapped text is empty gets NO ticket, NO chat-log entry, and NO
+    reply of any kind -- it is only marked seen so it is not reprocessed.
+    Of what remains, a message whose unwrapped text starts with /handoff
+    becomes a HANDOFF ticket exactly as before (the /handoff token itself is
+    stripped before the body reaches the ticket). Anything else is ordinary
+    chat -- no ticket, just an append to HANDOFF/logs/chat/<date>.jsonl and
+    a lighter [SEEN] acknowledgement instead of [ACK].
 
 Usage:
     python scripts/inbox_bridge.py discover   # list peers seen in history
@@ -36,6 +51,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -60,6 +76,10 @@ HANDOFF_SCAN_DIRS = (
     REPO_ROOT / "HANDOFF" / "IN_PROGRESS",
     REPO_ROOT / "HANDOFF" / "done",
 )
+# Ordinary (non-/handoff) chat from an allow-listed peer lands here instead
+# of becoming a ticket: one JSON object per line, one file per UTC date.
+HANDOFF_CHAT_LOG_DIR = REPO_ROOT / "HANDOFF" / "logs" / "chat"
+HANDOFF_COMMAND = "/handoff"
 
 
 def _appdata() -> Path:
@@ -79,6 +99,11 @@ def _localappdata() -> Path:
 CONFIG_PATH = _appdata() / "inbox_bridge.json"
 STATE_PATH = _localappdata() / "inbox_bridge.state.json"
 STATUS_PATH = _localappdata() / "inbox_bridge.status.json"
+# Single-instance guard for `run` (the persistent poller/responder). Lives
+# under the same soak/ directory that soak_supervisor.py locks its own
+# persistent loop with (LOCK_PATH -> supervisor.lock), so both of this repo's
+# long-lived processes are guarded by the same pattern for consistency.
+RUN_LOCK_PATH = _localappdata() / "soak" / "inbox_bridge.lock"
 
 
 # --------------------------------------------------------------------------
@@ -219,6 +244,24 @@ def send_message(api: str, recipient: str, message: str) -> dict:
 # --------------------------------------------------------------------------
 
 
+def _normalize_peer_ids(value) -> list:
+    """allowed_peer_id accepts either a single string or a list of strings.
+
+    A plain string is the original, still-supported config shape -- no
+    migration is required. Order is preserved and duplicates are dropped so
+    downstream code (and log/print output) is deterministic.
+    """
+    candidates = value if isinstance(value, list) else [value]
+    seen = set()
+    out = []
+    for item in candidates:
+        peer = str(item).strip()
+        if peer and peer not in seen:
+            seen.add(peer)
+            out.append(peer)
+    return out
+
+
 def load_config(api_override=None) -> dict:
     config = read_json(CONFIG_PATH)
     if config is None:
@@ -230,18 +273,24 @@ def load_config(api_override=None) -> dict:
             '         "allowed_peer_id": "<phone identifier from discover>",\n'
             '         "poll_interval_secs": %d,\n'
             '         "api": "%s"\n'
-            "       }\n" % (CONFIG_PATH, DEFAULT_POLL_SECS, DEFAULT_API)
+            "       }\n\n"
+            "       allowed_peer_id may also be a list of identifiers.\n"
+            % (CONFIG_PATH, DEFAULT_POLL_SECS, DEFAULT_API)
         )
         raise SystemExit(2)
-    peer = str(config.get("allowed_peer_id", "")).strip()
-    if not peer:
+    peer_ids = _normalize_peer_ids(config.get("allowed_peer_id", ""))
+    if not peer_ids:
         sys.stderr.write(
             "[FAIL] allowed_peer_id is empty in %s -- refusing to run without an\n"
             "       allow-list. Run `discover` to find the phone's identifier.\n"
             % CONFIG_PATH
         )
         raise SystemExit(2)
-    config["allowed_peer_id"] = peer
+    # allowed_peer_ids is the canonical list used everywhere internally;
+    # allowed_peer_id is kept as the first entry for backward compatibility
+    # with any code (or operator habit) that reads the singular key.
+    config["allowed_peer_ids"] = peer_ids
+    config["allowed_peer_id"] = peer_ids[0]
     config.setdefault("api", DEFAULT_API)
     config.setdefault("poll_interval_secs", DEFAULT_POLL_SECS)
     if api_override:
@@ -338,6 +387,210 @@ def ack_text(message_id: str, ticket: str) -> str:
     return "[ACK] %s queued as %s" % (short_id(message_id), ticket)
 
 
+def seen_text(message_id: str) -> str:
+    return "[SEEN] %s received (logged, not queued as a task)" % short_id(message_id)
+
+
+# --------------------------------------------------------------------------
+# command routing
+# --------------------------------------------------------------------------
+
+# Matches a leading /handoff, case-insensitively, either alone or followed by
+# whitespace and a body. "/handoffoo" does not match (no whitespace after the
+# token); "foo /handoff bar" does not match (not at the start of the
+# content) -- both fall through to the ordinary-chat route.
+_HANDOFF_RE = re.compile(r"^/handoff(?:\s+(?P<body>.*))?$", re.IGNORECASE | re.DOTALL)
+
+
+def parse_command(content: str):
+    """Split message content into (is_handoff, body).
+
+    `body` has the /handoff token (and the one run of whitespace after it)
+    removed, so it is exactly what render_ticket() should see -- the ticket
+    text should not repeat the command. When is_handoff is False, body is the
+    original, unmodified content.
+    """
+    stripped = str(content).lstrip()
+    match = _HANDOFF_RE.match(stripped)
+    if not match:
+        return False, content
+    return True, match.group("body") or ""
+
+
+# Non-human "kind" values the Android/iOS apps put on protocol traffic they
+# generate automatically. Source of truth: encodeMeshMessagePayload() call
+# sites in android/app/src/main/java/com/scmessenger/android/data/
+# MeshRepository.kt (lines ~2693, ~2752, ~7593) and the mirrored Swift in
+# iOS/SCMessenger/SCMessenger/Data/MeshRepository.swift (lines ~2373, ~2460,
+# ~2594): those are the only three non-"text" kind literals either client
+# ever emits.
+#   identity_sync      -- periodic empty-text identity broadcast
+#   history_sync        -- periodic empty-text "send me your recent history"
+#                           request
+#   history_sync_data   -- the reply to history_sync: a JSON array of the
+#                           sender's own message rows, carried in `text`.
+#                           This one is NOT empty-text, so it would slip past
+#                           an empty-text-only check -- it must be matched by
+#                           kind, which is why kind is the primary signal
+#                           below and "empty text" is only a backstop.
+# Deliberately NOT included: `schema`. Every envelope this protocol sends --
+# control traffic and real human text alike -- carries the same
+# "scm.message.identity.v1" schema string. Confirmed against this node's own
+# history: message e7a8b366 ("confirmed delivery probe.", a verified human
+# reply logged in HANDOFF/todo/INBOX_2026-08-11T043333Z_e7a8b366ff27.md) has
+# the identical schema field as the identity_sync/history_sync pings sitting
+# next to it in HANDOFF/logs/chat/2026-08-11.jsonl. Treating "schema starts
+# with scm.message." as a housekeeping signal would misclassify every human
+# message from this peer -- exactly the failure mode the conservative
+# fallback below exists to avoid.
+CONTROL_KINDS = frozenset({"identity_sync", "history_sync", "history_sync_data"})
+
+
+def classify_content(content) -> tuple:
+    """Split raw /api/history `content` into (category, text).
+
+    category is "housekeeping" or "content". `text` is the human-readable
+    payload to actually act on: for the scm.message.* envelope format the
+    Android/iOS apps wrap every outbound message in (control traffic and
+    real chat alike -- see CONTROL_KINDS above for the evidence), that means
+    the envelope's own `text` field; for anything else, `text` is `content`
+    itself, unchanged, since plain-string content (e.g. from a CLI/desktop
+    peer, which never wraps in this envelope) already IS the message.
+
+    Housekeeping rules, in order, each conservative-by-construction: when in
+    doubt this returns "content", never "housekeeping" -- silently
+    swallowing a human message is worse than logging one stray control ping.
+
+    1. Nothing here at all (content empty/whitespace after stripping) --
+       there is no message to route either way, so it is dropped rather than
+       logged or ticketed.
+    2. content parses as a JSON object carrying a `kind` field (or a
+       `schema`+`text` pair as a fallback shape): `kind` in CONTROL_KINDS is
+       housekeeping unconditionally (this is what catches
+       history_sync_data's non-empty text). `kind` missing/blank defaults to
+       "text", mirroring the apps' own decode default (see
+       decodeMessageWithIdentityHints()/DecodedMessagePayload in the Kotlin/
+       Swift referenced above) -- an unrecognized/absent kind is NOT treated
+       as housekeeping by itself.
+    3. Whatever kind resolves to (recognized "text", or anything not in
+       CONTROL_KINDS), an empty/whitespace `text` field inside the envelope
+       is housekeeping -- there is nothing to relay, so nothing is swallowed
+       by dropping it.
+
+    Anything that doesn't parse as this envelope shape at all (no JSON, JSON
+    that isn't an object, or an object with neither `kind` nor a
+    `schema`+`text` pair) is passed straight through as ordinary content --
+    including a message that merely contains JSON-looking text, or whose
+    text happens to equal a control-kind name like "history_sync" as a
+    literal string rather than a JSON envelope.
+    """
+    raw = content if isinstance(content, str) else str(content)
+    stripped = raw.strip()
+    if not stripped:
+        return "housekeeping", raw
+
+    envelope = None
+    if stripped.startswith("{"):
+        try:
+            candidate = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            candidate = None
+        if isinstance(candidate, dict) and (
+            "kind" in candidate or ("schema" in candidate and "text" in candidate)
+        ):
+            envelope = candidate
+
+    if envelope is None:
+        return "content", raw
+
+    kind = str(envelope.get("kind") or "text").strip() or "text"
+    text = envelope.get("text", "")
+    text = text if isinstance(text, str) else str(text)
+
+    if kind in CONTROL_KINDS:
+        return "housekeeping", text
+    if not text.strip():
+        return "housekeeping", text
+    return "content", text
+
+
+def extract_text(content) -> str:
+    """The human-readable text `content` actually carries, unwrapping the
+    scm.message.* envelope if present. See classify_content() for the full
+    reasoning; this is the convenience form for callers that already know
+    (via route_message()) that the message is not housekeeping and just want
+    the text to act on.
+    """
+    _, text = classify_content(content)
+    return text
+
+
+def route_message(peer_id: str, content: str, allowed_peer_ids) -> str:
+    """Pure routing decision: "ignored", "housekeeping", "handoff", or "chat".
+
+    No I/O, so tests can exercise the exact decision drain_once() makes
+    without a live node. drain_once() also uses this directly, so the
+    behaviour under test is the behaviour that actually runs.
+
+    The /handoff check runs against the EXTRACTED text, never the raw
+    `content`: for this bridge's allow-listed peer (the Android phone),
+    every inbound message -- human or not -- arrives wrapped in the
+    scm.message.* envelope (`{"schema":...,"kind":"text","text":"/handoff
+    ...","sender":{...}}`), so a check against the raw envelope string could
+    never match a leading "/handoff".
+    """
+    allowed = set(str(p) for p in allowed_peer_ids)
+    if str(peer_id) not in allowed:
+        return "ignored"
+    category, text = classify_content(content)
+    if category == "housekeeping":
+        return "housekeeping"
+    is_handoff, _ = parse_command(text)
+    return "handoff" if is_handoff else "chat"
+
+
+def append_json_line_atomic(path: Path, record: dict) -> None:
+    """Append one JSON line, fsync'd before returning.
+
+    Append mode (rather than read-modify-atomic-replace) means a crash mid
+    write can only corrupt the line being written, never a previously
+    committed one.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record, ensure_ascii=False) + "\n"
+    with open(path, "a", encoding="utf-8", newline="\n") as handle:
+        handle.write(line)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def chat_log_path(ts_ms: int) -> Path:
+    date_str = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+    return HANDOFF_CHAT_LOG_DIR / ("%s.jsonl" % date_str)
+
+
+def append_chat_log(message: dict, peer: str) -> Path:
+    """Append one chat-log line, storing the unwrapped human text.
+
+    `content` here is deliberately the extract_text() result, not the raw
+    /api/history content -- for this bridge's peer that raw value is a full
+    scm.message.* JSON envelope (schema/kind/sender and all), which made the
+    log an unreadable wall of escaped JSON per line. Plain-string content
+    (not enveloped) passes through extract_text() unchanged, so this is a
+    strict readability improvement with no behaviour change for that case.
+    """
+    ts = normalize_ts(message.get("timestamp"))
+    path = chat_log_path(ts)
+    record = {
+        "message_id": str(message.get("id", "")),
+        "peer_id": peer,
+        "timestamp": iso(ts),
+        "content": extract_text(message.get("content", "")),
+    }
+    append_json_line_atomic(path, record)
+    return path
+
+
 # --------------------------------------------------------------------------
 # drain
 # --------------------------------------------------------------------------
@@ -346,7 +599,7 @@ def ack_text(message_id: str, ticket: str) -> str:
 def drain_once(config: dict, state: dict, status: dict) -> int:
     """One poll pass. Returns the number of tickets written."""
     api = config["api"]
-    peer = config["allowed_peer_id"]
+    peer_ids = config.get("allowed_peer_ids") or _normalize_peer_ids(config["allowed_peer_id"])
 
     probe = probe_node(api)
     status["node_health_ok"] = probe["health_ok"]
@@ -381,16 +634,17 @@ def drain_once(config: dict, state: dict, status: dict) -> int:
         return 0
 
     seen = set(state["seen_message_ids"])
+    allowed = set(peer_ids)
     inbound = [
         m
         for m in messages
-        if str(m.get("direction", "")) == "received" and str(m.get("peer_id", "")) == peer
+        if str(m.get("direction", "")) == "received" and str(m.get("peer_id", "")) in allowed
     ]
     status["allowlisted_inbound_in_window"] = len(inbound)
     status["ignored_inbound_in_window"] = sum(
         1
         for m in messages
-        if str(m.get("direction", "")) == "received" and str(m.get("peer_id", "")) != peer
+        if str(m.get("direction", "")) == "received" and str(m.get("peer_id", "")) not in allowed
     )
     if inbound:
         state["last_received_message_at"] = max(
@@ -414,32 +668,86 @@ def drain_once(config: dict, state: dict, status: dict) -> int:
             save_state(state)
             continue
 
-        name = ticket_name(message)
-        write_text_atomic(HANDOFF_TODO / name, render_ticket(message, peer))
+        sender = str(message.get("peer_id", ""))
+        content = message.get("content", "")
+        route = route_message(sender, content, peer_ids)
+        if route == "ignored":
+            # Belt-and-suspenders: `inbound` above already filtered to
+            # peer_ids, so this should be unreachable. If it ever triggers,
+            # stay silent -- same rule as any other non-allow-listed sender.
+            state["seen_message_ids"].append(message_id)
+            save_state(state)
+            continue
 
-        # Ticket is durable before anything is promised to the phone.
-        state["seen_message_ids"].append(message_id)
-        state["tickets_written_total"] += 1
-        state["ack_pending"][message_id] = name
-        save_state(state)
-        written += 1
-        print("[OK] ticket %s <- message %s" % (name, short_id(message_id)))
+        if route == "housekeeping":
+            # Protocol housekeeping (identity_sync/history_sync/
+            # history_sync_data, or an envelope with nothing in `text`):
+            # marked seen for dedupe only. No ticket, no chat-log entry, and
+            # -- unlike the "chat" branch -- no ack_pending entry either, so
+            # this never produces a reply of any kind.
+            state["seen_message_ids"].append(message_id)
+            save_state(state)
+            print(
+                "[INFO] housekeeping suppressed (no reply) <- message %s"
+                % short_id(message_id)
+            )
+            continue
+
+        # Both remaining routes ("handoff" and "chat") act on the unwrapped
+        # text, never the raw envelope -- see route_message()'s docstring.
+        text = extract_text(content)
+
+        if route == "handoff":
+            _, body = parse_command(text)
+            ticket_message = dict(message)
+            ticket_message["content"] = body
+            name = ticket_name(message)
+            write_text_atomic(HANDOFF_TODO / name, render_ticket(ticket_message, sender))
+
+            # Ticket is durable before anything is promised to the phone.
+            state["seen_message_ids"].append(message_id)
+            state["tickets_written_total"] += 1
+            state["ack_pending"][message_id] = {"peer": sender, "kind": "ack", "ticket": name}
+            save_state(state)
+            written += 1
+            print("[OK] ticket %s <- message %s" % (name, short_id(message_id)))
+        else:
+            log_path = append_chat_log(message, sender)
+
+            # Log entry is durable before anything is promised to the phone.
+            state["seen_message_ids"].append(message_id)
+            state["ack_pending"][message_id] = {"peer": sender, "kind": "seen", "ticket": None}
+            save_state(state)
+            print(
+                "[SEEN] logged to %s <- message %s"
+                % (log_path.name, short_id(message_id))
+            )
 
     flush_acks(config, state, status)
     return written
 
 
 def flush_acks(config: dict, state: dict, status: dict) -> None:
-    """Send outstanding ACKs. A failure here retries next pass, never re-files."""
+    """Send outstanding ACKs (and [SEEN] acks). A failure here retries next
+    pass, never re-files or re-logs."""
     pending = state.get("ack_pending", {})
     if not pending:
         status["acks_pending"] = 0
         return
-    for message_id, ticket in list(pending.items()):
+    # Fallback recipient for entries written by a pre-multi-peer version of
+    # this script, where ack_pending[message_id] was a bare ticket name
+    # string rather than a {peer, kind, ticket} dict.
+    fallback_peer = config.get("allowed_peer_id", "")
+    for message_id, entry in list(pending.items()):
+        if isinstance(entry, str):
+            entry = {"peer": fallback_peer, "kind": "ack", "ticket": entry}
+        recipient = entry.get("peer") or fallback_peer
+        if entry.get("kind") == "seen":
+            text = seen_text(message_id)
+        else:
+            text = ack_text(message_id, entry.get("ticket") or "")
         try:
-            response = send_message(
-                config["api"], config["allowed_peer_id"], ack_text(message_id, ticket)
-            )
+            response = send_message(config["api"], recipient, text)
         except NodeUnreachable as exc:
             status["last_error"] = "ACK send failed for %s: %s" % (short_id(message_id), exc)
             break
@@ -492,6 +800,68 @@ def new_status() -> dict:
         "acks_pending": 0,
         "last_error": None,
     }
+
+
+# --------------------------------------------------------------------------
+# single-instance lock (guards `run` only -- see RUN_LOCK_PATH)
+# --------------------------------------------------------------------------
+
+
+def pid_alive(pid: int) -> bool:
+    """Cross-checks a recorded PID against the live process table.
+
+    Mirrors soak_supervisor.py's pid_alive(): tasklist is the only
+    dependency-free way to ask Windows "is this PID real" without pulling in
+    psutil, and a stale/reused PID in the lock file must never be trusted
+    blindly.
+    """
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", "PID eq %d" % pid, "/NH"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return str(pid) in result.stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def acquire_run_lock() -> bool:
+    """Hard single-instance guard: refuses to start a second `run` poller.
+
+    Two `run` processes polling the same node would each maintain their own
+    ack_pending queue against the same history and each send ACKs/[SEEN]
+    replies for the messages they independently notice first -- doubling the
+    replies the phone sees. That is the exact "duplicate messages" failure
+    mode this guard exists to make structurally impossible rather than just
+    unlikely (process dedup at the launcher level does not cover a bridge
+    started by hand alongside a supervised one).
+
+    Stale-lock detection: if the recorded PID is not alive, the lock is
+    reclaimed rather than left blocking forever, so a crashed bridge does not
+    permanently prevent restart.
+    """
+    RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    existing = read_json(RUN_LOCK_PATH)
+    if existing:
+        pid = existing.get("pid")
+        if pid and pid != os.getpid() and pid_alive(pid):
+            sys.stderr.write(
+                "[FAIL] another inbox_bridge instance is running (pid %d); exiting\n" % pid
+            )
+            return False
+        # Stale lock: owning PID is gone (crash, kill, normal exit that
+        # skipped cleanup). Safe to reclaim.
+    write_json_atomic(RUN_LOCK_PATH, {"pid": os.getpid(), "started_at": iso(now_ms())})
+    return True
+
+
+def release_run_lock() -> None:
+    existing = read_json(RUN_LOCK_PATH)
+    if existing and existing.get("pid") == os.getpid():
+        try:
+            RUN_LOCK_PATH.unlink()
+        except OSError:
+            pass
 
 
 # --------------------------------------------------------------------------
@@ -603,8 +973,9 @@ def cmd_selftest(args) -> int:
     config = load_config(args.api)
     ok = True
     print("[INFO] config      : %s" % CONFIG_PATH)
-    print("[INFO] allow-list  : %s" % config["allowed_peer_id"])
+    print("[INFO] allow-list  : %s" % ", ".join(config["allowed_peer_ids"]))
     print("[INFO] handoff dir : %s" % HANDOFF_TODO)
+    print("[INFO] chat log dir: %s" % HANDOFF_CHAT_LOG_DIR)
 
     if not HANDOFF_TODO.is_dir():
         print("[FAIL] HANDOFF/todo does not exist")
@@ -664,21 +1035,27 @@ def cmd_once(args) -> int:
 
 
 def cmd_run(args) -> int:
-    config = load_config(args.api)
-    state = load_state()
-    status = new_status()
-    interval = int(config.get("poll_interval_secs", DEFAULT_POLL_SECS))
-    print("[INFO] bridge running, polling %s every %ds" % (config["api"], interval))
-    print("[INFO] allow-list: %s" % config["allowed_peer_id"])
-    print("[INFO] status file: %s" % STATUS_PATH)
-    while True:
-        try:
-            drain_once(config, state, status)
-        except Exception as exc:  # keep the loop alive; the status file records it
-            status["last_error"] = "loop error: %r" % exc
-            status["node_reachable"] = False
-        write_status(status, state)
-        time.sleep(interval)
+    if not acquire_run_lock():
+        return 1
+    try:
+        config = load_config(args.api)
+        state = load_state()
+        status = new_status()
+        interval = int(config.get("poll_interval_secs", DEFAULT_POLL_SECS))
+        print("[INFO] bridge running, polling %s every %ds" % (config["api"], interval))
+        print("[INFO] allow-list: %s" % ", ".join(config["allowed_peer_ids"]))
+        print("[INFO] status file: %s" % STATUS_PATH)
+        print("[INFO] lock file: %s (pid %d)" % (RUN_LOCK_PATH, os.getpid()))
+        while True:
+            try:
+                drain_once(config, state, status)
+            except Exception as exc:  # keep the loop alive; the status file records it
+                status["last_error"] = "loop error: %r" % exc
+                status["node_reachable"] = False
+            write_status(status, state)
+            time.sleep(interval)
+    finally:
+        release_run_lock()
 
 
 def cmd_status(args) -> int:
