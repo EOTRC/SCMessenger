@@ -295,6 +295,7 @@ fn test_empty_payload_roundtrip() {
 
 struct TestReceiptDelegate {
     receipts: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    generic_messages: std::sync::Arc<std::sync::Mutex<usize>>,
 }
 
 impl scmessenger_core::CoreDelegate for TestReceiptDelegate {
@@ -315,6 +316,7 @@ impl scmessenger_core::CoreDelegate for TestReceiptDelegate {
         _sender_timestamp: u64,
         _data: Vec<u8>,
     ) {
+        *self.generic_messages.lock().unwrap() += 1;
     }
     fn on_receipt_received(&self, message_id: String, status: String) {
         self.receipts.lock().unwrap().push((message_id, status));
@@ -330,8 +332,10 @@ fn test_receipt_roundtrip_flips_state() {
 
     // Register delegate on Alice
     let receipts = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let generic_messages = std::sync::Arc::new(std::sync::Mutex::new(0usize));
     let delegate = TestReceiptDelegate {
         receipts: std::sync::Arc::clone(&receipts),
+        generic_messages: std::sync::Arc::clone(&generic_messages),
     };
     alice.set_delegate(Some(Box::new(delegate)));
 
@@ -372,7 +376,50 @@ fn test_receipt_roundtrip_flips_state() {
         .expect("received receipt payload must use the canonical receipt codec");
     assert_eq!(decoded_receipt.message_id, received_msg.id);
 
-    // 5. Assert Alice's CoreDelegate received the receipt callback with Delivered status
+    // 5. The valid receipt keeps its dedicated callback/outbox behavior, but
+    // never enters the user-facing message pipeline.
+    assert_eq!(alice.inbox_count(), 0, "receipts must not enter the inbox");
+    assert_eq!(
+        alice.history_store_manager().count(),
+        0,
+        "receipts must not enter message history"
+    );
+    assert_eq!(
+        *generic_messages.lock().unwrap(),
+        0,
+        "receipts must not trigger the generic message callback"
+    );
+
+    // A malformed receipt is still protocol metadata: receive_message returns
+    // it to the caller for the receipt branch, but must not surface its payload.
+    let malformed_envelope = bob
+        .prepare_message(
+            pubkey(&alice),
+            "{malformed".to_string(),
+            MessageType::Receipt,
+            None,
+        )
+        .expect("prepare malformed receipt must succeed");
+    let malformed_receipt = alice
+        .receive_message(malformed_envelope.envelope_data)
+        .expect("malformed receipt envelope must still decrypt");
+    assert_eq!(
+        malformed_receipt.message_type,
+        MessageType::Receipt,
+        "malformed receipt must remain available to the receipt branch"
+    );
+    assert_eq!(alice.inbox_count(), 0, "malformed receipts must not enter the inbox");
+    assert_eq!(
+        alice.history_store_manager().count(),
+        0,
+        "malformed receipts must not enter message history"
+    );
+    assert_eq!(
+        *generic_messages.lock().unwrap(),
+        0,
+        "malformed receipts must not trigger the generic message callback"
+    );
+
     let recorded = receipts.lock().unwrap();
     assert_eq!(
         recorded.len(),
