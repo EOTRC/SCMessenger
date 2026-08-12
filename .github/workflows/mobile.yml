@@ -105,6 +105,12 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+          # Provenance stamp: android/app/build.gradle reads SCM_GIT_HASH and
+          # embeds it as BuildConfig.SCM_GIT_HASH (same pattern as release.yml).
+          # Without this the CI APK ships with an empty/unknown stamp and the
+          # provenance chain (APK -> commit -> audit) breaks.
+          SCM_GIT_HASH: ${{ github.sha }}
+          SCM_GIT_REF: ${{ github.ref_name }}
         run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
       - name: Upload APK
         uses: actions/upload-artifact@v4
