@@ -1556,9 +1556,17 @@ mod tests {
         ));
         // A bare IP that is NOT ours is not caught by this check (the RFC1918
         // class logic below governs it instead): same-class still dialable...
-        assert!(is_dialable_for_this_node("/ip4/192.168.0.136", Local, &my_addrs));
+        assert!(is_dialable_for_this_node(
+            "/ip4/192.168.0.136",
+            Local,
+            &my_addrs
+        ));
         // ...cross-class still rejected by the existing class gate.
-        assert!(!is_dialable_for_this_node("/ip4/10.0.2.16", Local, &my_addrs));
+        assert!(!is_dialable_for_this_node(
+            "/ip4/10.0.2.16",
+            Local,
+            &my_addrs
+        ));
         // Circuit addresses keep unconditional-allow even when the relay hop
         // is our own IP and carries no port of its own beyond the hop.
         assert!(is_dialable_for_this_node(
