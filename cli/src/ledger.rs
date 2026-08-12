@@ -199,6 +199,9 @@ pub struct PeerDialState {
     /// A dial for this key is currently in flight.
     pub in_flight: bool,
 
+    /// Number of established connections.
+    pub connections: u32,
+
     /// Has a successful connection history (seeded from ledger, set on success).
     pub is_known_good: bool,
 }
@@ -208,8 +211,18 @@ impl PeerDialState {
     pub const BACKOFF_LADDER: [u64; 5] = [5, 30, 120, 300, 1800];
 
     /// Whether a new dial may be started now.
+    ///
+    /// `connections == 0` is the per-peer concurrent-connection cap (P0,
+    /// 2026-08-12): once a peer already has an established connection, no
+    /// further dials to its OTHER addresses may start. Keyed on PeerId via
+    /// DialKey::Peer, independent of address -- the prior address-level guard
+    /// alone let N distinct addresses of one peer open N simultaneous
+    /// connections, which is the trigger for the libp2p-request-response
+    /// connection-bookkeeping panic. The slot is released by
+    /// `record_disconnect`; saturating arithmetic keeps a missed release from
+    /// ever underflowing into a negative/wedged state.
     pub fn ready(&self, now: u64) -> bool {
-        now >= self.next_attempt_after && !self.in_flight
+        now >= self.next_attempt_after && !self.in_flight && self.connections == 0
     }
 
     /// Reset state after a successful dial.
@@ -463,6 +476,54 @@ impl ConnectionLedger {
             .iter()
             .filter(|addr| self.record_connection(addr, peer_id, DnsPolicy::Reject))
             .count()
+    }
+
+    /// Drop a peer's stale ledger addresses once a NEWER address is CONFIRMED.
+    ///
+    /// P0 stale-address reaping (2026-08-12). The fleet renumbers constantly
+    /// (the Pixel moved .111 -> .107 -> .131 -> .111 in one session), so once
+    /// a dial to the peer's NEW address succeeds, every older address of that
+    /// same peer is a redundant dial path forever.
+    ///
+    /// Two hard constraints shape where this lives:
+    ///
+    /// 1. CONFIRMED connections only. Remote ADVERTISEMENTS (see
+    ///    `record_identified_peer`) must never trigger reaping: a peer
+    ///    legitimately advertises LAN + WAN + IPv6 simultaneously, and the
+    ///    adversarial regression test `identify_still_records_real_addresses`
+    ///    pins additive recording for exactly that shape. So this method is
+    ///    called from the dial-success path (`complete_dial`), never from
+    ///    `record_connection`.
+    /// 2. The caller names the confirmed address explicitly. Resolving "which
+    ///    of this peer's entries is the new one" via `find_by_peer_id` would
+    ///    be a HashMap-ordered guess across N candidate entries -- and
+    ///    reaping the WRONG one deletes the address the connection is
+    ///    actually on. `confirmed_addr` is the `addr_key` of the successful
+    ///    dial, so the keep-set is never a guess.
+    ///
+    /// Bootstrap entries are exempt so no peer can ever reap the seeded
+    /// discovery roots. Returns the number of entries removed.
+    pub fn reap_stale_addresses_for_peer(&mut self, peer_id: &str, confirmed_addr: &str) -> usize {
+        let confirmed = strip_peer_id(confirmed_addr);
+        let stale: Vec<String> = self
+            .entries
+            .iter()
+            .filter_map(|(addr, e)| {
+                if addr != &confirmed
+                    && e.last_peer_id.as_deref() == Some(peer_id)
+                    && !e.is_bootstrap
+                {
+                    Some(addr.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let removed = stale.len();
+        for addr in stale {
+            self.entries.remove(&addr);
+        }
+        removed
     }
 
     /// Record a topic observed from a peer
@@ -803,23 +864,56 @@ impl ConnectionLedger {
             self.dial_policy
                 .reset_on_connection_established(&addr_key, target_pid);
 
+            // P0 stale-address reaping (2026-08-12): this is a CONFIRMED
+            // connection to `addr_key`, so drop this peer's other ledger
+            // addresses now. Runs before the early-return below so both
+            // success exits get it. Advertisements never reach this path.
+            if let Some(pid) = target_pid {
+                self.reap_stale_addresses_for_peer(&pid.to_string(), &addr_key);
+            }
+
             let mut state = self.peer_dial_states.remove(key).unwrap_or_default();
             state.record_success();
 
             if let DialKey::Addr(_) = key {
                 if let Some(pid) = learned_peer_id {
                     let peer_key = DialKey::Peer(pid);
-                    self.peer_dial_states.entry(peer_key).or_insert(state);
+                    let peer_state = self.peer_dial_states.entry(peer_key).or_insert(state);
+                    peer_state.connections = peer_state.connections.saturating_add(1);
+                    peer_state.is_known_good = true;
                     return;
                 }
             }
 
+            // Count the established connection against this key's slot. For
+            // Peer keys this is the release target of `record_disconnect`
+            // (fired per dropped connection). For Addr keys with no learned
+            // peer id the counter stays 1 until eviction -- acceptable: a
+            // successful connection records the peer id into the ledger, so
+            // all future scheduler dials of this address key on `DialKey::Peer`
+            // instead of the Addr key.
+            state.connections = state.connections.saturating_add(1);
             self.peer_dial_states.insert(key.clone(), state);
         } else {
             self.dial_policy.record_dial_failure(&addr_key, pid_opt);
             if let Some(state) = self.peer_dial_states.get_mut(key) {
                 state.record_failure(now);
             }
+        }
+    }
+
+    /// Record a disconnected peer, releasing its concurrent connection slot.
+    ///
+    /// Fired from the `SwarmEvent::PeerDisconnected` handler (one event per
+    /// dropped connection -- see core/src/transport/swarm.rs), which keeps the
+    /// `connections` counter incremented in `complete_dial` balanced.
+    /// Saturating subtraction means a missed or extra release can never
+    /// underflow; the worst case is a stale slot that a subsequent successful
+    /// dial repairs via `complete_dial`.
+    pub fn record_disconnect(&mut self, peer_id: PeerId) {
+        let key = DialKey::Peer(peer_id);
+        if let Some(state) = self.peer_dial_states.get_mut(&key) {
+            state.connections = state.connections.saturating_sub(1);
         }
     }
 
@@ -945,6 +1039,29 @@ pub fn is_dialable_for_this_node(multiaddr: &str, mode: NetworkMode, my_addrs: &
     // gives circuit addresses.
     if multiaddr.contains("/p2p-circuit") {
         return true;
+    }
+    // Port-stripped self-dial gap (P1 follow-up, 2026-08-12): is_self_address
+    // compares stripped strings EXACTLY, so a candidate carrying this node's
+    // own IP with NO port component ("/ip4/192.168.0.121") does not equal
+    // "/ip4/192.168.0.121/tcp/9001" and slips past the check above -- and
+    // is_dialable_multiaddr still marks a bare /ip4/ component as having a
+    // transport, so such a candidate reaches the dialer. A portless candidate
+    // aimed at our own IP is either a self-dial intent or a malformed ledger
+    // entry; neither is worth a dial slot. Candidates on our IP that DO carry
+    // a port are left alone: a different port on the same host is a
+    // legitimate co-located node, and the exact-match check above already
+    // catches our own port. Placed after the circuit exemption so circuit
+    // addresses keep their unconditional-allow semantics.
+    if let Some(candidate_ip) = extract_ipv4(multiaddr) {
+        let has_transport_port = multiaddr.contains("/tcp/") || multiaddr.contains("/udp/");
+        if !has_transport_port
+            && my_addrs
+                .iter()
+                .filter_map(|a| extract_ipv4(a))
+                .any(|ip| ip == candidate_ip)
+        {
+            return false;
+        }
     }
     if mode == NetworkMode::Local {
         if let Some(candidate_ip) = extract_ipv4(multiaddr) {
@@ -1398,6 +1515,54 @@ mod tests {
         // dialing one's own PeerId at the connection layer as a backstop.)
         assert!(is_dialable_for_this_node(
             "/ip4/192.168.0.121/tcp/9001/p2p-circuit/p2p/12D3KooWTarget",
+            Local,
+            &my_addrs
+        ));
+    }
+
+    #[test]
+    fn port_stripped_self_address_is_rejected() {
+        // P1 follow-up (2026-08-12): a candidate carrying this node's own IP
+        // but NO port component used to slip past is_self_address (exact
+        // string match) and is_dialable_multiaddr (bare /ip4/ counts as a
+        // transport), producing a self-dial intent that burns a dial slot.
+        use NetworkMode::Local;
+        let my_addrs = vec!["/ip4/192.168.0.121/tcp/9001".to_string()];
+
+        // Bare-IP candidate on our own address: rejected regardless of mode.
+        assert!(!is_dialable_for_this_node(
+            "/ip4/192.168.0.121",
+            Local,
+            &my_addrs
+        ));
+        assert!(!is_dialable_for_this_node(
+            "/ip4/192.168.0.121",
+            NetworkMode::Public,
+            &my_addrs
+        ));
+        // Same-IP candidates that DO carry a port are unaffected: exact-match
+        // self-dial is still caught (same port)...
+        assert!(!is_dialable_for_this_node(
+            "/ip4/192.168.0.121/tcp/9001",
+            Local,
+            &my_addrs
+        ));
+        // ...and a DIFFERENT port on the same host stays dialable (legitimate
+        // co-located node; must not become a permanent host-wide ban).
+        assert!(is_dialable_for_this_node(
+            "/ip4/192.168.0.121/tcp/9002",
+            Local,
+            &my_addrs
+        ));
+        // A bare IP that is NOT ours is not caught by this check (the RFC1918
+        // class logic below governs it instead): same-class still dialable...
+        assert!(is_dialable_for_this_node("/ip4/192.168.0.136", Local, &my_addrs));
+        // ...cross-class still rejected by the existing class gate.
+        assert!(!is_dialable_for_this_node("/ip4/10.0.2.16", Local, &my_addrs));
+        // Circuit addresses keep unconditional-allow even when the relay hop
+        // is our own IP and carries no port of its own beyond the hop.
+        assert!(is_dialable_for_this_node(
+            "/ip4/192.168.0.121/p2p-circuit/p2p/12D3KooWTarget",
             Local,
             &my_addrs
         ));
@@ -1931,16 +2096,111 @@ mod tests {
     #[test]
     fn test_dial_policy_manager_integration() {
         let mut ledger = ConnectionLedger::default();
-        let key = DialKey::Addr("/ip4/1.2.3.4/tcp/9001".to_string());
+        let peer_id = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        let key = DialKey::for_target("/ip4/1.2.3.4/tcp/9001", Some(peer_id));
 
         // First attempt allowed
         assert!(ledger.try_begin_dial(key.clone(), 0, false));
 
-        // Complete dial with success -> resets policy
-        ledger.complete_dial(&key, true, 0, None);
+        // Complete dial with success (learned peer id) -> resets policy and
+        // credits the connection to the Peer slot
+        ledger.complete_dial(&key, true, 0, Some(peer_id));
+
+        // While the connection is established, a re-dial to the same peer is
+        // suppressed by the per-peer concurrent-connection cap
+        assert!(!ledger.try_begin_dial(key.clone(), 0, false));
+
+        // Disconnect releases the slot
+        ledger.record_disconnect(peer_id);
 
         // Complete dial with failure -> records failure in policy
         assert!(ledger.try_begin_dial(key.clone(), 0, false));
         ledger.complete_dial(&key, false, 0, None);
+    }
+
+    #[test]
+    fn test_per_peer_concurrent_connection_cap() {
+        let mut ledger = ConnectionLedger::default();
+        let peer_id = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        let addr1 = "/ip4/192.168.0.1/tcp/9001";
+        let addr2 = "/ip4/192.168.0.2/tcp/9001";
+
+        let key1 = DialKey::for_target(addr1, Some(peer_id.clone()));
+        let key2 = DialKey::for_target(addr2, Some(peer_id.clone()));
+
+        // Start first dial
+        assert!(ledger.try_begin_dial(key1.clone(), 0, false));
+
+        // (a) While first dial is in-flight, second dial to same peer
+        // (different addr) is suppressed
+        assert!(!ledger.try_begin_dial(key2.clone(), 0, false));
+
+        // Complete first dial successfully
+        ledger.complete_dial(&key1, true, 0, Some(peer_id.clone()));
+
+        // (a) First connection is established. Second dial to same peer is
+        // STILL suppressed.
+        assert!(!ledger.try_begin_dial(key2.clone(), 0, false));
+
+        // (b) Peer disconnects
+        ledger.record_disconnect(peer_id);
+
+        // Fresh dial is permitted again
+        assert!(ledger.try_begin_dial(key2.clone(), 0, false));
+    }
+
+    #[test]
+    fn test_stale_address_reaping() {
+        let mut ledger = ConnectionLedger::default();
+        let peer_id = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        let old_addr = "/ip4/192.168.0.100/tcp/9001";
+        let new_addr = "/ip4/192.168.0.200/tcp/9001";
+
+        // Both addresses are in the ledger (the fleet renumbers constantly).
+        ledger.record_connection(old_addr, &peer_id.to_string(), DnsPolicy::Reject);
+        ledger.record_connection(new_addr, &peer_id.to_string(), DnsPolicy::Reject);
+        assert!(ledger.entries.contains_key(&strip_peer_id(old_addr)));
+        assert!(ledger.entries.contains_key(&strip_peer_id(new_addr)));
+
+        // (c) A CONFIRMED connection to the NEW address reaps the old one.
+        // The trigger is the dial-success path (complete_dial), NOT
+        // record_connection -- remote advertisements must stay additive.
+        let key = DialKey::Addr(new_addr.to_string());
+        assert!(ledger.try_begin_dial(key.clone(), 0, false));
+        ledger.complete_dial(&key, true, 0, Some(peer_id));
+
+        // Old address reaped, confirmed address kept
+        assert!(!ledger.entries.contains_key(&strip_peer_id(old_addr)));
+        assert!(ledger.entries.contains_key(&strip_peer_id(new_addr)));
+    }
+
+    #[test]
+    fn test_reaping_never_fires_on_advertisements() {
+        let mut ledger = ConnectionLedger::default();
+        let pid = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id()
+            .to_string();
+
+        // A peer legitimately advertises LAN + WAN + IPv6 simultaneously.
+        // record_identified_peer (-> record_connection) must NOT reap: all
+        // three survive, matching identify_still_records_real_addresses.
+        let addrs: Vec<String> = [
+            "/ip4/198.51.100.4/tcp/9001",
+            "/ip4/192.168.1.20/tcp/9001",
+            "/ip6/2606:4700:4700::1111/tcp/9001",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        assert_eq!(ledger.record_identified_peer(&pid, &addrs), 3);
+        assert_eq!(ledger.entries.len(), 3, "advertisements must stay additive");
     }
 }

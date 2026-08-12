@@ -626,7 +626,17 @@ impl DialScheduler {
                 let mut l = ledger.lock().await;
                 match result {
                     Ok(_) => {
-                        l.complete_dial(&key, true, now2, None);
+                        // Credit the connection to the Peer slot so the
+                        // per-peer concurrent-connection cap in the ledger
+                        // sees it. `record_disconnect` (fired per
+                        // SwarmEvent::PeerDisconnected) is the matching
+                        // release. For Addr keys the learned id is not
+                        // known; the ledger treats those as transient.
+                        let learned = match &key {
+                            ledger::DialKey::Peer(pid) => Some(*pid),
+                            ledger::DialKey::Addr(_) => None,
+                        };
+                        l.complete_dial(&key, true, now2, learned);
                     }
                     Err(_) => {
                         l.record_failure(&addr_str);
@@ -2259,6 +2269,12 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>, auto_reply: boo
                                     let multiaddr = entry.multiaddr.clone();
                                     l.record_failure(&multiaddr);
                                 }
+                                // Release the per-peer concurrent-connection
+                                // slot (P0 cap). Core emits one
+                                // PeerDisconnected per dropped connection, so
+                                // this balances the saturating_add in
+                                // complete_dial.
+                                l.record_disconnect(peer_id);
                             }
 
                             SwarmEvent::RelayCircuitEstablished => {
@@ -3331,6 +3347,9 @@ async fn cmd_relay(
                             let multiaddr = entry.multiaddr.clone();
                             l.record_failure(&multiaddr);
                         }
+                        // Release the per-peer concurrent-connection slot (P0
+                        // cap) -- same wiring as cmd_start's handler.
+                        l.record_disconnect(peer_id);
                         tracing::info!("Peer disconnected: {}", peer_id);
                     }
                     SwarmEvent::RelayCircuitEstablished => {
