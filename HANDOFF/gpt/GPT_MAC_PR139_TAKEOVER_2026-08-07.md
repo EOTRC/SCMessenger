@@ -13,7 +13,7 @@
 > 1. Preserved RFC 1918 IPv4 & IPv6 ULA LAN mesh convergence + 7-topology routing spec (`HANDOFF/plans/RFC1918_MESH_ROUTING_SPEC_2026-08-08.md`).
 > 2. Complete IronCore Tier 1 security & error boundary remediations (`core/src/iron_core.rs`).
 > 3. Full 7/7 green CI validation across all GitHub Actions workflows.
-> 
+>
 > **Dispatch:** Execute 5-node fleet release gate (Nodes 3 & 4: iOS Physical App + macOS CLI). Preserve existing identity/appdata.
 
 ## Current Windows state
