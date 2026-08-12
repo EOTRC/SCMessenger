@@ -408,7 +408,11 @@ fn test_receipt_roundtrip_flips_state() {
         MessageType::Receipt,
         "malformed receipt must remain available to the receipt branch"
     );
-    assert_eq!(alice.inbox_count(), 0, "malformed receipts must not enter the inbox");
+    assert_eq!(
+        alice.inbox_count(),
+        0,
+        "malformed receipts must not enter the inbox"
+    );
     assert_eq!(
         alice.history_store_manager().count(),
         0,
