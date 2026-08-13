@@ -244,13 +244,12 @@ dependencies {
     // Hilt Dependency Injection
     implementation "com.google.dagger:hilt-android:$hilt_version"
     implementation "com.google.zxing:core:3.5.2"
-    implementation 'com.google.android.gms:play-services-code-scanner:16.1.0'
-    implementation 'com.google.android.gms:play-services-base:18.2.0'
     ksp "com.google.dagger:hilt-android-compiler:$hilt_version"
     implementation 'androidx.hilt:hilt-navigation-compose:1.1.0'
     
     // DataStore for preferences
     implementation 'androidx.datastore:datastore-preferences:1.0.0'
+    implementation 'androidx.security:security-crypto:1.1.0-alpha06'
     
     // Timber logging
     implementation 'com.jakewharton.timber:timber:5.0.1'
@@ -308,9 +307,9 @@ if (localPropsFile.exists()) {
 def runCargoNdkBuild(String target, String sdkDir, String ndkDir, String rustProfile, String rustDir, boolean isWindows, String msysUcrtBin) {
     exec {
         workingDir project.file('../../')
-        // Ensure 16KB page alignment for Android 15+ compatibility
-        environment "RUSTFLAGS", "-C link-arg=-Wl,-z,max-page-size=16384"
-        environment "CARGO_INCREMENTAL", "1" // Enable incremental compilation for faster debug iterations
+        // Ensure 16KB page alignment for Android 15+ compatibility and lightweight debug info
+        environment "RUSTFLAGS", "-C link-arg=-Wl,-z,max-page-size=16384 -C debuginfo=0"
+        environment "CARGO_INCREMENTAL", "0"
         
         // Auto-detect and use sccache if available
         def sccacheExists = false
@@ -351,18 +350,11 @@ def runCargoNdkBuild(String target, String sdkDir, String ndkDir, String rustPro
         }
 
         def cargoCmd = isWindows ? 'cargo' : (file("${System.getProperty('user.home')}/.cargo/bin/cargo").exists() ? "${System.getProperty('user.home')}/.cargo/bin/cargo" : 'cargo')
+        def effectiveProfile = rustProfile ?: '--release'
         if (isWindows) {
-            if (rustProfile) {
-                commandLine 'cmd', '/c', "cargo ndk -t $target build $rustProfile -p scmessenger-core"
-            } else {
-                commandLine 'cmd', '/c', "cargo ndk -t $target build -p scmessenger-core"
-            }
+            commandLine 'cmd', '/c', "cargo ndk -t $target build $effectiveProfile -p scmessenger-core"
         } else {
-            def cmd = [cargoCmd, 'ndk', '-t', target, 'build']
-            if (rustProfile) {
-                cmd.add(rustProfile)
-            }
-            cmd.addAll(['-p', 'scmessenger-core'])
+            def cmd = [cargoCmd, 'ndk', '-t', target, 'build', effectiveProfile, '-p', 'scmessenger-core']
             commandLine cmd
         }
     }
@@ -463,15 +455,15 @@ task generateUniFFIBindings {
 
         def cargoCmd = isWindows ? 'cargo' : (file("${System.getProperty('user.home')}/.cargo/bin/cargo").exists() ? "${System.getProperty('user.home')}/.cargo/bin/cargo" : 'cargo')
 
-        // Step 1: build the host cdylib
+        // Step 1: build the host cdylib in release profile (with gen-bindings feature to avoid double compile)
         exec {
             workingDir project.file('../../')
-            environment "RUSTFLAGS", ""
+            environment "RUSTFLAGS", "-C debuginfo=0"
             environment "CARGO_INCREMENTAL", "0"
             if (isWindows) {
-                commandLine 'cmd', '/c', 'cargo build -p scmessenger-core'
+                commandLine 'cmd', '/c', 'cargo build --release -p scmessenger-core --features gen-bindings'
             } else {
-                commandLine cargoCmd, 'build', '-p', 'scmessenger-core'
+                commandLine cargoCmd, 'build', '--release', '-p', 'scmessenger-core', '--features', 'gen-bindings'
             }
         }
 
@@ -483,7 +475,7 @@ task generateUniFFIBindings {
         def cargoTargetDir = project.file(cargoTargetDirStr)
         def stagedDir = file('../../core/target/staged-cdylib')
         stagedDir.mkdirs()
-        def cdylibSrc = new File(cargoTargetDir, "debug/${cdylibName}")
+        def cdylibSrc = new File(cargoTargetDir, "release/${cdylibName}")
         def cdylibStaged = new File(stagedDir, cdylibName)
         if (cdylibSrc.exists()) {
             ant.copy(file: cdylibSrc.absolutePath, tofile: cdylibStaged.absolutePath, overwrite: true)
@@ -495,19 +487,19 @@ task generateUniFFIBindings {
         // Step 3: build (do NOT run) the gen_kotlin binary
         exec {
             workingDir project.file('../../core')
-            environment "RUSTFLAGS", ""
+            environment "RUSTFLAGS", "-C debuginfo=0"
             environment "CARGO_INCREMENTAL", "0"
             if (isWindows) {
-                commandLine 'cmd', '/c', 'cargo build --bin gen_kotlin --features gen-bindings'
+                commandLine 'cmd', '/c', 'cargo build --release --bin gen_kotlin --features gen-bindings'
             } else {
-                commandLine cargoCmd, 'build', '--bin', 'gen_kotlin', '--features', 'gen-bindings'
+                commandLine cargoCmd, 'build', '--release', '--bin', 'gen_kotlin', '--features', 'gen-bindings'
             }
         }
 
         // Step 4: invoke the gen_kotlin binary directly with the staged cdylib
         // path. The binary now also honours SCMESSENGER_CDYLIB_PATH env var as
         // a primary lookup, falling back to CARGO_TARGET_DIR + relative paths.
-        def genKotlinBin = new File(cargoTargetDir, "debug/gen_kotlin${isWindows ? '.exe' : ''}")
+        def genKotlinBin = new File(cargoTargetDir, "release/gen_kotlin${isWindows ? '.exe' : ''}")
         if (!genKotlinBin.exists()) {
             throw new GradleException("gen_kotlin binary not found at ${genKotlinBin.absolutePath}")
         }

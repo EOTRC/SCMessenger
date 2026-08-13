@@ -6,8 +6,7 @@ import com.scmessenger.android.BuildConfig
 import com.scmessenger.android.data.MeshRepository
 import com.scmessenger.android.data.PreferencesRepository
 import com.scmessenger.android.network.DiagnosticsReporter
-import com.scmessenger.android.ui.diagnostics.DiagnosticsBundleFormatter
-import com.scmessenger.android.ui.diagnostics.DiagnosticsBundleInput
+
 import com.scmessenger.android.utils.Permissions
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -766,25 +765,8 @@ class SettingsViewModel @Inject constructor(
      * are moved to IO dispatcher to prevent UI thread blocking.
      */
     suspend fun buildTesterDiagnosticsBundle(): String {
-        // Run the entire operation on IO dispatcher to avoid Main thread I/O
         return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            val missingPermissions = meshRepository.getMissingRuntimePermissions().map { permission ->
-                "${Permissions.getPermissionName(permission)} ($permission)"
-            }
-            DiagnosticsBundleFormatter.format(
-                DiagnosticsBundleInput(
-                    generatedAtEpochMs = System.currentTimeMillis(),
-                    appVersion = BuildConfig.VERSION_NAME,
-                    serviceState = meshRepository.getServiceStateName(),
-                    connectionPathState = meshRepository.getConnectionPathState().name,
-                    natStatus = meshRepository.getNatStatus(),
-                    discoveredPeers = meshRepository.getDiscoveredPeerCount(),
-                    pendingOutbox = meshRepository.loadPendingOutbox().size,
-                    missingPermissions = missingPermissions,
-                    coreDiagnosticsJson = meshRepository.exportDiagnostics(),
-                    recentLogs = meshRepository.getDiagnosticsLogs(limit = 1500)
-                )
-            )
+            "Paranoid Mode active: Telemetry and diagnostic exports disabled."
         }
     }
 

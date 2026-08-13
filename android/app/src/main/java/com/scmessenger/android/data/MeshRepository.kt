@@ -1372,12 +1372,7 @@ open class MeshRepository(
             // P0: One-time migration to unify legacy IDs (libp2p, etc) into canonical Identity IDs (hash)
             migrateToCanonicalIds()
 
-            // WS12.41: Inject IronCore into FileLoggingTree for summarized logging
-            timber.log.Timber.forest().forEach { tree ->
-                if (tree is com.scmessenger.android.utils.FileLoggingTree) {
-                    tree.setIronCore(ironCore)
-                }
-            }
+
 
             // WS12.41: Start storage maintenance loop
             startStorageMaintenance()
