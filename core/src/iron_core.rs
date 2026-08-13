@@ -3473,8 +3473,10 @@ impl IronCore {
                     "Failed to parse receipt payload from sender: malformed JSON"
                 );
             }
-            // Fall through to generic pipeline steps (dedup, metrics, persistence)
-            // instead of early-returning, so receipts are tracked consistently.
+            // Receipts are protocol metadata, not user content. Return the
+            // decoded message so callers can handle the receipt branch without
+            // persisting it or notifying the generic message delegate.
+            return Ok(message);
         }
 
         // Record in inbox and history (single lock acquisition prevents TOCTOU)

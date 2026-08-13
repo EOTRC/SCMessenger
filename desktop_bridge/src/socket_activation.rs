@@ -56,9 +56,17 @@ pub fn handoff_complete(status: &SocketActivationStatus) -> SocketActivationStat
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // LISTEN_FDS and LISTEN_PID are process-global, so serialize tests that mutate them.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_no_activation_by_default() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         // Unset the env vars (they shouldn't be set in test environment)
         std::env::remove_var("LISTEN_FDS");
         std::env::remove_var("LISTEN_PID");
@@ -70,6 +78,10 @@ mod tests {
 
     #[test]
     fn test_activation_detected() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         std::env::set_var("LISTEN_FDS", "2");
         std::env::set_var("LISTEN_PID", &std::process::id().to_string());
 
