@@ -324,11 +324,7 @@ fun MeshNavHost(
             )
         }
 
-        composable(Screen.Diagnostics.route) {
-            DiagnosticsScreen(
-                onNavigateBack = { navController.popBackStack() }
-            )
-        }
+
 
         composable(Screen.BlockedPeers.route) {
             BlockedPeersScreen(

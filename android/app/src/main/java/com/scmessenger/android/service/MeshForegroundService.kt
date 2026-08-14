@@ -265,24 +265,7 @@ class MeshForegroundService : Service() {
                     durationMs = performanceMonitor.getServiceUptimeMs()
                 )
 
-                // Reactive VPN service lifecycle binding
-                launch {
-                    preferencesRepository.vpnModeEnabled.collect { enabled ->
-                        if (enabled && isRunning) {
-                            val vpnIntent = Intent(this@MeshForegroundService, MeshVpnService::class.java).apply {
-                                action = MeshVpnService.ACTION_START
-                            }
-                            startService(vpnIntent)
-                            Timber.i("MeshVpnService started dynamically via Settings toggle")
-                        } else {
-                            val vpnIntent = Intent(this@MeshForegroundService, MeshVpnService::class.java).apply {
-                                action = MeshVpnService.ACTION_STOP
-                            }
-                            startService(vpnIntent)
-                            Timber.i("MeshVpnService stopped dynamically via Settings toggle")
-                        }
-                    }
-                }
+
 
                 Timber.i("Mesh service started successfully - ANR watchdog active")
             } catch (e: Exception) {
@@ -303,10 +286,12 @@ class MeshForegroundService : Service() {
 
     private fun startPeriodicAdjustments() {
         serviceScope.launch {
+            val powerManager = getSystemService(POWER_SERVICE) as? PowerManager
             while (isActive && isRunning) {
+                var checkInterval = 30000L
                 try {
-                    // Compute adjustments every 30 seconds
-                    delay(30000L)
+                    val isPowerSave = powerManager?.isPowerSaveMode == true
+                    checkInterval = if (isPowerSave) 60000L else 30000L
 
                     if (isRunning) {
                         // Trigger battery/network state update
@@ -317,7 +302,7 @@ class MeshForegroundService : Service() {
                         // Wire updateHeartbeat into periodic service lifecycle
                         serviceHealthMonitor.updateHeartbeat()
 
-                        Timber.d("Periodic AutoAdjust profile computed")
+                        Timber.d("Periodic AutoAdjust profile computed (PowerSave=$isPowerSave)")
                     }
                 } catch (e: Exception) {
                     Timber.e(e, "Error in periodic adjustments")
@@ -326,6 +311,9 @@ class MeshForegroundService : Service() {
                         durationMs = 30000L,
                         context = "periodic_adjustments_error"
                     )
+                } finally {
+                    // Safety: ALWAYS delay to prevent tight-loop CPU spinning on recurring exceptions
+                    delay(checkInterval)
                 }
             }
         }
@@ -337,8 +325,9 @@ class MeshForegroundService : Service() {
             if (lock != null && lock.isHeld) {
                 lock.release()
             }
-            wakeLock?.acquire(10 * 60 * 1000L) // 10 minutes timeout
-            Timber.d("WakeLock acquired for BLE scan windows")
+            // Micro-WakeLock enforcement: max 15 seconds per processing window
+            wakeLock?.acquire(15 * 1000L)
+            Timber.d("Micro-WakeLock acquired for 15 seconds")
         } catch (e: Exception) {
             Timber.e(e, "Failed to acquire WakeLock")
         }
@@ -393,11 +382,7 @@ class MeshForegroundService : Service() {
                 message = "Mesh network is now inactive"
             )
 
-            // Stop VPN service if running
-            val vpnIntent = Intent(this@MeshForegroundService, MeshVpnService::class.java).apply {
-                action = MeshVpnService.ACTION_STOP
-            }
-            startService(vpnIntent)
+
 
             // Clean up
             withContext(Dispatchers.Default) {

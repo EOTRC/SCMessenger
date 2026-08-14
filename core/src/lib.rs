@@ -149,6 +149,23 @@ pub fn get_build_provenance() -> String {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
 }
 
+/// Safely execute an FFI closure with panic isolation across the C ABI boundary.
+///
+/// Prevents Rust panics in background or FFI threads from unwinding across JNI/C
+/// boundaries and causing native process crashes.
+pub fn safe_ffi_call<F, R>(f: F) -> Result<R, IronCoreError>
+where
+    F: FnOnce() -> Result<R, IronCoreError> + std::panic::UnwindSafe,
+{
+    match std::panic::catch_unwind(f) {
+        Ok(res) => res,
+        Err(_err) => {
+            tracing::error!("Native panic caught at FFI boundary; isolating to prevent process crash");
+            Err(IronCoreError::Internal)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

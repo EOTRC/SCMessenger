@@ -154,27 +154,10 @@ class PerformanceMonitor(context: Context) {
     }
 
     /**
-     * Write ANR event to file for post-mortem analysis.
+     * Write ANR event to file (Disabled in Paranoid Mode for zero file telemetry).
      */
     private fun writeAnrEvent(anrEvent: AnrEvent) {
-        try {
-            val file = File(anrDir, "anr_${anrEvent.eventId}.json")
-            file.writeText(anrEvent.toJson())
-            Timber.i("ANR event written to: %s", file.absolutePath)
-
-            // Keep only last 100 ANR files
-            val allAnrFiles = anrDir.listFiles { _: File, name: String -> name.startsWith("anr_") && name.endsWith(".json") }
-            val anrFiles: Array<File> = if (allAnrFiles != null) allAnrFiles.sortedBy { it.lastModified() }.toTypedArray() else emptyArray()
-
-            if (anrFiles.size > 100) {
-                for (i in 0 until anrFiles.size - 100) {
-                    anrFiles[i].delete()
-                    Timber.d("Removed old ANR file: %s", anrFiles[i].name)
-                }
-            }
-        } catch (e: Exception) {
-            Timber.e(e, "Failed to write ANR event to file")
-        }
+        // No-op in Paranoid Mode: diagnostic events are not written to disk
     }
 
     /**
