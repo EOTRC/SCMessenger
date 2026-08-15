@@ -124,14 +124,23 @@
       "quirks": "Preview tier -- 503s under load. Have a fallback."
     },
     {
-      "id": "agy-gemini", "provider": "agy", "model": "gemini-3.7-flash",
-      "cost_class": "free-quota", "tiers": ["micro", "scoped", "shell"], "status": "UNPROBED",
-      "quirks": "Shell-capable, so it can verify its own work -- the only free lane that can. MUST pass --add-dir <repo> or it re-discovers the path and bails (this is the 'random timeout'). MUST pin --model with the exact quoted name from `agy models`; shorthand silently substitutes. On timeout use --continue, never re-dispatch fresh."
+      "id": "agy-gemini", "provider": "agy", "model": "gemini-3.7-flash-high",
+      "cost_class": "free-quota", "tiers": ["micro", "scoped", "reasoning", "shell"],
+      "latency_s": 9.8, "status": "OK",
+      "pool": "gemini",
+      "models": ["gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low",
+                 "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
+                 "gemini-3.5-flash-high", "gemini-3.5-flash-medium", "gemini-3.5-flash-low",
+                 "gemini-3.1-pro-high", "gemini-3.1-pro-low"],
+      "invoke": "$LOCALAPPDATA/agy/bin/agy.exe --add-dir <repo> --model '<exact>' --dangerously-skip-permissions --print-timeout 12m -p \"<task>\"",
+      "quirks": "THE ONLY FREE LANE WITH A SHELL -- it can run gh/git/cargo and verify its own work. Verified 2026-08-15: 9.8s round trip executing real git commands. MUST pass --add-dir or it re-discovers the repo path and bails (this is the 'random timeout'). MUST pin --model to an EXACT name from the models list above; shorthand silently substitutes a different model, and an unpinned run can route to the Claude pool and spend Anthropic quota. Default --print-timeout is 5m, too short for real work. On timeout use --continue, never re-dispatch fresh."
     },
     {
-      "id": "agy-claude", "provider": "agy", "model": "claude-sonnet",
-      "cost_class": "metered", "tiers": ["scoped", "reasoning", "shell"], "status": "UNPROBED",
-      "quirks": "SPENDS ANTHROPIC QUOTA from the same pool as the native session. Only after free lanes have failed on the same task twice with different output contracts."
+      "id": "agy-claude", "provider": "agy", "model": "claude-sonnet-4-6",
+      "cost_class": "metered", "tiers": ["scoped", "reasoning", "shell"], "status": "OK",
+      "pool": "non-gemini",
+      "models": ["claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"],
+      "quirks": "SPENDS ANTHROPIC QUOTA from the same pool as the native session. CRITICAL: `gpt-oss-120b-medium` is in THIS pool, not a free one -- the name suggests an open-weights freebie and it is not. Operator-confirmed 2026-08-15. Selecting it costs Anthropic quota exactly like claude-sonnet-4-6 does. Escalate here only after free lanes have failed on the same task twice with different output contracts."
     },
     {
       "id": "claude-native", "provider": "native", "model": "current-session",

@@ -103,6 +103,10 @@ def strip_heredocs(command):
 # Conservative fallbacks, used only when shlex cannot parse the command.
 _RAW_CARGO_CLEAN = re.compile(r"\bcargo\s+clean\b")
 _RAW_AGY = re.compile(r"\bagy(\.exe)?\b")
+# Subcommands that only read state. No worker, no quota, so no flags required.
+_AGY_READONLY = re.compile(
+    r"\bagy(\.exe)?\b[^|;&]*?\s(--help|-h|--version|models?|agents?|changelog|help|install)\b"
+)
 _RAW_DELEGATE = re.compile(r"delegate_task\.py")
 _RAW_BUILD = re.compile(
     r"\bcargo\s+(build|test|check|clippy|run)\b|\bgradlew\b|\bcargo-ndk\b"
@@ -275,6 +279,14 @@ def guard_dispatch(segs, raw):
 
     for seg in agy_segs:
         text = raw if seg is None else " ".join(seg)
+
+        # Read-only subcommands and help are NOT dispatches: they spend no
+        # quota and start no worker. Blocking them was a live bug -- the
+        # guard's own message tells you to run `agy models` to find the exact
+        # name to pin, and the guard then refused to let you run it.
+        if _AGY_READONLY.search(text):
+            continue
+
         missing = []
         if "--add-dir" not in text:
             missing.append(
