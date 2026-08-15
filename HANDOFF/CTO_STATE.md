@@ -19,56 +19,22 @@ execution queue until the tag. Long-horizon: the "Distance to 1.0" artifact.
 Latest thing a stranger can download is **v0.1.9, from 2026-03-19.** That number
 is the whole problem.
 
-## 2. In flight
+## 2. In flight  (updated 09:55 HST tick)
 
-| PR | Base ← Head | State 2026-08-15 05:55 HST | Next action |
+**#149 and #150 both MERGED to tracking** (16:13Z / 17:09Z) while the CTO seat was
+idle — verified: the UniFFI assertion is present on tracking and the restored
+Android sources are there. The build fix and the delegation tooling have landed.
+
+| PR | Base ← Head | State | Next |
 |---|---|---|---|
-| **#149** | tracking ← `fix/ksp-uniffi-ordering` | **MERGED 06:13 HST** as `7740aa75`. 6/6 green, scope gate clean | done. Build fix **and the orchestration tooling** are now on tracking |
-| **#150** | tracking ← `chore/delegation-lane-routing` | 2 Android lanes **re-running** against fixed tracking (jobs 95036743692/728) | merge if they go green |
-| **#147** | **main** ← `gpt/pr139-receipt-filter-20260811` | **CONFLICTING / DIRTY.** 100 commits, +14,619/-2,211, 102 files | **CTO verdict: CLOSE.** See below |
-| **#146** | tracking ← `android/pr139-transport-durability` | MERGEABLE / CLEAN, 6/6 pass — **but the run is `31409694204`, from 2026-08-10** | merge **after** #149; its green predates the UniFFI regression |
-| **#153** | tracking ← `chore/backlog-amnesty-root-junk` | **MERGED 06:14 HST** as `988a5b20` | done. Backlog 87→8, untracked `local.properties`/`screen.png`/`window_dump.xml` |
-| **#152** | **main** ← `fix/repo-hygiene-main-whitespace` | Repository Hygiene **pass 15s** — but `Lint` and `Rust Linting` FAIL in 24-26s | orchestrator batch 1. See the Lint note below before merging |
-| **#139** | main ← tracking | MERGEABLE | merge after the above. **D1 + D5 together** |
-| `chore/harness-unify` | pushed, **no PR** | 4 commits, validated | open against tracking, or hold |
+| **#139** | main ← tracking | OPEN, **1 red check** | `Repository Hygiene`. #164 fixes it |
+| **#164** | tracking ← `fix/hygiene-trailing-ws` | opened this tick | merge → re-run #139 → **D1 + D5** |
+| #157–#163 | → tracking | 7 open, another session's | triage before #139 |
+| #152/#154/#156 | → main | 3 open | CI hardening; check overlap with #164 |
+| `chore/harness-unify` | pushed, no PR | validated | open or fold in |
 
-**#147 — CLOSED 2026-08-15 06:10 HST.** It was not a third integration branch, as
-this file previously recorded. It was a branch cut from `tracking` but pointed at
-`main`, so GitHub rendered the whole `tracking`-vs-`main` delta as its diff: 102
-files, +14,619/-2,211, apparently touching the merge-blocked crypto/transport
-paths. None of that was its own work. Verified independently before closing:
-
-```
-git merge-base --is-ancestor 7538e4e9 origin/tracking/pre-v040-tag-work   -> exit 0
-git log --oneline 7538e4e9 --not origin/tracking/pre-v040-tag-work        -> no output
-```
-
-Zero commits unique to the branch. `isBareDeliveryReceiptPayload` is on `tracking`
-verbatim in `MeshRepository.kt` and `MeshRepository.swift`. Nothing to cherry-pick;
-the content reaches `main` via #139. This is the same base-mismatch trap
-`scripts/pr_scope.sh` was written for after #150 — **read the ancestry, not the
-diff stat.**
-
-13 dependabot PRs open (#142,#141,#108,#107,#106,#103,#102, …).
-**CTO verdict 2026-08-15: DEFER all 13 until after the tag.** Dependency debt is
-SHIP_PLAN S4. Merging them now risks reddening the exact build we are trying to
-freeze. Do not close them — they are the S4 queue.
-
-```
-gh pr checks 149 ; gh pr checks 150 ; bash scripts/pr_scope.sh 139
-```
-
-**The orchestration tooling is not in the working tree.** `scripts/agy_run.sh`,
-`pr_scope.sh`, `triage_lane.sh` live only on `origin/fix/ksp-uniffi-ordering`
-(PR #149); `lanes.json`, `delegate.py`, `lane_probe.py` only on
-`chore/delegation-lane-routing` (PR #150). The CTO seat's own dispatch tooling is
-blocked behind the same merge train it is trying to move. Until #149 lands,
-dispatch with the raw working form:
-
-```
-"$LOCALAPPDATA/agy/bin/agy.exe" --add-dir "<repo>" --model 'gemini-3.7-flash-high' \
-  --dangerously-skip-permissions --print-timeout 45m --output-format stream-json -p "$(cat <file>)"
-```
+Another session is actively working — #158 is a fix to `scripts/pr_scope.sh`.
+**Assume you are not alone in this checkout.**
 
 ## 3. Critical path
 
@@ -223,11 +189,13 @@ first 100, and reported clear. The script was written specifically to stop a
 merge that bypasses AGENTS.md rule 8 — and on the largest PR in the repo, the
 exact case it was built for, it failed open.
 
-**The fix:** derive the file list from git, not the API:
-
-```
-git diff --name-only origin/main...origin/tracking/pre-v040-tag-work | grep -E '^core/src/(crypto|transport|routing|privacy)/'
-```
+**FIXED — PR #158, verified independently 2026-08-15 08:41 HST.** The script now
+derives its file list from `git diff --name-only origin/<base>...origin/<head>`,
+falls back to the API only with a loud `[BLOCKER]` announcement, and fails closed
+on a truncation tripwire (exactly 100 files returned = assume truncated). Running
+the repaired script on #139 myself now prints all six gated files and `[STOP] 5
+reasons`. Confirmed still correct on a small PR, so it did not simply start
+failing closed on everything.
 
 Any PR reporting exactly 100 changed files should be assumed truncated.
 
@@ -319,9 +287,34 @@ until the gate itself has been fixed and re-run.
    D4. **Pull the CI prebuilt image; never build on the t3.micro** — a build there
    once OOM'd for 16 hours.
 
-   D4 therefore runs **Pixel 6a ↔ AWS Ubuntu node**: cross-platform, node to node,
+   D4 therefore runs **Pixel 6a ↔ the AWS node**: cross-platform, node to node,
    no second handset required. Scoring unchanged — receiver-side decrypt + durable
    history + receipt, never transport ACKs.
+
+   **The node is Amazon Linux 2023, not Ubuntu** — verified by SSH 2026-08-15:
+   `ssh ubuntu@` gives `Permission denied`; `ssh ec2-user@` works and
+   `/etc/os-release` reports `NAME="Amazon Linux" VERSION="2023"`. At least 8
+   repo docs still say `ssh ubuntu@` and every one of them fails. The
+   architectural point is unaffected: it is a full node, all nodes relay, and
+   Android ↔ this node is genuinely cross-platform.
+
+   **`HANDOFF/gpt/AWS_RELAY_CURRENT_ADDRESS.md` is the canonical address
+   pointer** and it is CORRECT — 54.226.67.101, `i-006b14491d421bd0d`, with
+   100.56.248.69 already listed as obsolete. The repo had a maintained
+   single-source-of-truth all along and ~99 documents copied a stale IP instead
+   of reading it. PR #161 points the active runbooks at it. Its "Image:" line is
+   stale, though: the node actually reports `9f54b107`, not `6b2573fa`.
+
+   **D4 ordering blocker:** `docker-publish.yml` only fires on push to `main`,
+   publishing `sha-<7char>`. Latest published is `sha-ebf5411`. Since building on
+   the t3.micro is forbidden (16-hour OOM), the node cannot be rebuilt to the
+   tagged SHA until that SHA is on `main`. So the sequence is fixed:
+   **#139 → main → CI publishes image → rebuild node → run D4.**
+
+   Identity baseline to verify a rebuild did not orphan the ledger:
+   `libp2p_peer_id 12D3KooWKMUXfjvWeodBUJbSwBuRXBU3d6XSbP1AJXL9WhaS3yKy`,
+   `identity_id 0b33200936f41deb55e674e1d798b5c2aac7494a8a95ea34cd59c3b013c226ad`.
+   Runbook: PR #159.
 
 4. **Docker lane now reports green while its Android step fails.** #156 puts
    `continue-on-error: true` on that one step — narrowly scoped, so any *other*
