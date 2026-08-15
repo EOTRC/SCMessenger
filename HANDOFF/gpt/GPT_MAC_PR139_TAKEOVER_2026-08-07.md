@@ -5,16 +5,16 @@
 **Date:** 2026-08-07
 **Repository:** `Sovereign-Communication/SCMessenger`
 **PR:** #139, `tracking/pre-v040-tag-work`
-**Current PR head:** `5b8b8e7b68da62f5b20fa2401517e0f8a2763bd5`
+**Current PR head:** `6cb7033a82e976a59e5630128656657bebff5d08` (FULL GREEN CI 7/7)
 
-> **Head re-pointed 2026-08-07 (Windows lane).** This packet originally named
-> `57c5d6a4` and instructed a build from `cabc0473`. Both are now stale by
-> several commits. Build from `5b8b8e7b` (or the then-current PR head), which
-> additionally carries `d9099f3d` IronCore delivery/routing state handling,
-> `abb32d45` relay reputation manager wiring on identity init, and `5b8b8e7b`
-> the canonical peer id FFI surface snapshot. All 31 CI checks are green at
-> this head, so no Windows follow-up commit is pending -- the Mac lane is not
-> waiting on the implementation lane.
+> **UPDATED 2026-08-08 (Windows Orchestrator Stand-Down):** The adversarial review is COMPLETE and returned BLOCK. See `docs/security/PR139_ADVERSARIAL_REVIEW_2026-08-08.md` and the PR #139 comment for the full handoff. PR #139 must NOT merge until the five conditions in the review verdict are met. The P0 UPnP panic fix direction (options a/b/c) requires operator decision BEFORE any core/src/transport/ changes (merge-blocked by rule 8).
+
+> **Head re-pointed 2026-08-08 (Windows Orchestrator lane).** Build from current PR head `6cb7033a`, which carries:
+> 1. Preserved RFC 1918 IPv4 & IPv6 ULA LAN mesh convergence + 7-topology routing spec (`HANDOFF/plans/RFC1918_MESH_ROUTING_SPEC_2026-08-08.md`).
+> 2. Complete IronCore Tier 1 security & error boundary remediations (`core/src/iron_core.rs`).
+> 3. Full 7/7 green CI validation across all GitHub Actions workflows.
+>
+> **Dispatch:** Execute 5-node fleet release gate (Nodes 3 & 4: iOS Physical App + macOS CLI). Preserve existing identity/appdata.
 
 ## Current Windows state
 

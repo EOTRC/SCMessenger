@@ -34,6 +34,7 @@ private enum DefaultSettings {
 /// proper lifecycle and resource cleanup.
 @MainActor
 @Observable
+// swiftlint:disable:next type_body_length
 final class MeshRepository {
     enum LiveTransportAction: Equatable {
         case startBle
@@ -1777,6 +1778,11 @@ final class MeshRepository {
         let normalizedSenderKey = normalizePublicKey(senderPublicKeyHex)
         let rawContent = String(data: data, encoding: .utf8) ?? "[binary]"
         let decodedPayload = decodeMessageWithIdentityHints(rawContent)
+        let messageKind = decodedPayload.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if messageKind == "receipt" || isBareDeliveryReceiptPayload(decodedPayload.text) {
+            logDiagnostic("msg_rx_suppressed kind=receipt sender=\(senderId) msg=\(messageId)")
+            return
+        }
         let hintedIdentity = decodedPayload.hints
         let hintedKey = normalizePublicKey(hintedIdentity?.publicKey)
         let verifiedHints: MessageIdentityHints? = {
@@ -1826,7 +1832,6 @@ final class MeshRepository {
         }
 
         // Auto-upsert contact: senderPublicKeyHex is guaranteed valid (Rust verified it during decrypt)
-        let messageKind = decodedPayload.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let isChatEvent = messageKind == "text" || messageKind.isEmpty
 
         let existingContact = try? contactManager?.get(peerId: canonicalPeerId)
@@ -1975,7 +1980,7 @@ final class MeshRepository {
             if let routePeerId, routePeerId != canonicalPeerId {
                 updateDiscoveredPeer(routePeerId, info: discoveryInfo)
             }
-            let listeners = ((routePeerId.map(getDialHintsForRoutePeer(_:)) ?? []) + hintedDialCandidates)
+            let listeners = ((routePeerId.map { self.getDialHintsForRoutePeer($0) } ?? []) + hintedDialCandidates)
                 .reduce(into: [String]()) { acc, addr in
                     if !acc.contains(addr) { acc.append(addr) }
                 }
@@ -2630,6 +2635,23 @@ final class MeshRepository {
         return encoded
     }
 
+    private func isBareDeliveryReceiptPayload(_ raw: String) -> Bool {
+        guard let data = raw.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+
+        let allowedKeys: Set<String> = ["message_id", "status", "timestamp"]
+        guard Set(json.keys).isSubset(of: allowedKeys),
+              let messageId = json["message_id"] as? String,
+              !messageId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let status = (json["status"] as? String)?.lowercased(),
+              ["sent", "delivered", "read", "failed"].contains(status),
+              let timestamp = json["timestamp"] as? NSNumber,
+              timestamp.int64Value >= 0
+        else { return false }
+        return true
+    }
+
     private func decodeMessageWithIdentityHints(_ raw: String) -> DecodedMessagePayload {
         guard let data = raw.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -2935,7 +2957,10 @@ final class MeshRepository {
         return String(multiaddr[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    func getDialHintsForRoutePeer(_ routePeerId: String) -> [String] {
+    func getDialHintsForRoutePeer(
+        _ routePeerId: String,
+        includeRelayCircuits: Bool = true
+    ) -> [String] {
         let normalizedRoute = routePeerId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard isLibp2pPeerId(normalizedRoute) else { return [] }
 
@@ -2945,7 +2970,7 @@ final class MeshRepository {
         return buildDialCandidatesForPeer(
             routePeerId: normalizedRoute,
             rawAddresses: fromLedger,
-            includeRelayCircuits: true
+            includeRelayCircuits: includeRelayCircuits
         )
     }
 
@@ -3000,7 +3025,7 @@ final class MeshRepository {
         }
 
         for peer in aggregates.values {
-            let listeners = peer.routePeerId.map(getDialHintsForRoutePeer(_:)) ?? []
+            let listeners = peer.routePeerId.map { self.getDialHintsForRoutePeer($0) } ?? []
             if let publicKey = peer.publicKey, !publicKey.isEmpty {
                 emitIdentityDiscoveredIfChanged(
                     peerId: peer.canonicalPeerId,
@@ -6072,7 +6097,7 @@ final class MeshRepository {
         let dynamicRelays = discoveredPeerMap.filter { $0.value.isRelay && !$0.value.isFull && $0.key != targetPeerId }
         for (relayPeerId, _) in dynamicRelays where isLibp2pPeerId(relayPeerId) {
             // If we have direct addresses for this relay, try using it
-            let directAddrs = getDialHintsForRoutePeer(relayPeerId)
+            let directAddrs = getDialHintsForRoutePeer(relayPeerId, includeRelayCircuits: false)
             for addr in directAddrs {
                 let circuit = "\(addr)/p2p/\(relayPeerId)/p2p-circuit/p2p/\(targetPeerId)"
                 if !relays.contains(circuit) { relays.append(circuit) }

@@ -1916,10 +1916,15 @@ impl IronCore {
     // Extended messaging
     // -----------------------------------------------------------------------
 
-    /// Prepare a delivery receipt envelope for the given message.
+    /// Prepare an encrypted delivery receipt envelope ready for send_message.
+    ///
+    /// The receipt JSON is the encrypted MessageType::Receipt payload; callers
+    /// must pass the returned bytes directly to the transport rather than
+    /// wrapping or decoding them again. Use encode_receipt for raw receipt
+    /// codec access.
     pub fn prepare_receipt(
         &self,
-        _recipient_public_key_hex: String,
+        recipient_public_key_hex: String,
         message_id: String,
     ) -> Result<Vec<u8>, IronCoreError> {
         let receipt = crate::Receipt {
@@ -1930,7 +1935,18 @@ impl IronCore {
                 .unwrap_or_default()
                 .as_secs(),
         };
-        crate::message::types::encode_receipt(&receipt).map_err(|_| IronCoreError::Internal)
+        let receipt_payload =
+            crate::message::types::encode_receipt(&receipt).map_err(|_| IronCoreError::Internal)?;
+        let receipt_text =
+            String::from_utf8(receipt_payload).map_err(|_| IronCoreError::Internal)?;
+
+        self.prepare_message_with_id(
+            recipient_public_key_hex,
+            receipt_text,
+            crate::MessageType::Receipt,
+            None,
+        )
+        .map(|prepared| prepared.envelope_data)
     }
 
     /// Generate cover traffic payload (random bytes).
@@ -3457,8 +3473,10 @@ impl IronCore {
                     "Failed to parse receipt payload from sender: malformed JSON"
                 );
             }
-            // Fall through to generic pipeline steps (dedup, metrics, persistence)
-            // instead of early-returning, so receipts are tracked consistently.
+            // Receipts are protocol metadata, not user content. Return the
+            // decoded message so callers can handle the receipt branch without
+            // persisting it or notifying the generic message delegate.
+            return Ok(message);
         }
 
         // Record in inbox and history (single lock acquisition prevents TOCTOU)

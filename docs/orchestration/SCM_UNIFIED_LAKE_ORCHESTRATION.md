@@ -156,7 +156,9 @@ LOOP (each wake cycle):
      (2 failed escalations) -> write ESCALATION file, park the id, move on.
 
 HARD RULES:
-  - Never edit source files yourself (1-3 line compile-error unblocks excepted).
+  - Never edit source files yourself. Compile-error repairs are fresh scoped
+    worker tasks under Orchestration Control Plane v2; there is no direct-fix
+    exception.
   - crypto/, privacy/, transport/ diffs always route REVIEW per packet
     (crypto-security-auditor or adversarial, THINK+ tier).
   - Escalate to the human operator before: architecture-direction changes,

@@ -32,6 +32,11 @@ use web_time::Duration;
 /// The Iron Core network behaviour combining all protocols.
 #[derive(NetworkBehaviour)]
 pub struct IronCoreBehaviour {
+    /// Connection admission must run before stateful child behaviours. The
+    /// derive macro calls `handle_established_*_connection` in field order;
+    /// placing the limit guard first prevents request-response from recording
+    /// a connection that this behaviour later rejects.
+    pub connection_limits: connection_limits::Behaviour,
     /// Circuit Relay v2 client for relay reservations and relayed dials.
     pub relay_client: relay::client::Behaviour,
     /// Circuit Relay v2 server - all nodes act as relays for NAT traversal.
@@ -65,8 +70,6 @@ pub struct IronCoreBehaviour {
     pub mdns: Toggle<mdns::tokio::Behaviour>,
     /// Peer identification — advertises relay capability
     pub identify: identify::Behaviour,
-    /// Connection limits to prevent resource exhaustion
-    pub connection_limits: connection_limits::Behaviour,
 }
 
 /// A libp2p request_response message request sent to a peer

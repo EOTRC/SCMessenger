@@ -951,7 +951,7 @@ RustBuffer uniffi_scmessenger_core_fn_method_ironcore_prepare_onion_message(uint
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_SCMESSENGER_CORE_FN_METHOD_IRONCORE_PREPARE_RECEIPT
 #define UNIFFI_FFIDEF_UNIFFI_SCMESSENGER_CORE_FN_METHOD_IRONCORE_PREPARE_RECEIPT
-RustBuffer uniffi_scmessenger_core_fn_method_ironcore_prepare_receipt(uint64_t ptr, RustBuffer _recipient_public_key_hex, RustBuffer message_id, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_scmessenger_core_fn_method_ironcore_prepare_receipt(uint64_t ptr, RustBuffer recipient_public_key_hex, RustBuffer message_id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_SCMESSENGER_CORE_FN_METHOD_IRONCORE_PUBLIC_KEY_HEX
@@ -3977,4 +3977,3 @@ uint32_t ffi_scmessenger_core_uniffi_contract_version(void
 
 );
 #endif
-

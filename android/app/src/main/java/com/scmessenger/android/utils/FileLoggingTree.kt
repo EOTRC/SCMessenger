@@ -43,12 +43,12 @@ class FileLoggingTree(context: Context) : Timber.Tree() {
             }
 
             val logLine = "$timestamp $priorityStr/${tag ?: "Mesh"}: $message\n"
-            
+
             // WS12.41: Send to IronCore for summarized storage
             synchronized(this) {
                 runCatching { ironCore?.recordLog(logLine) ?: false }
                     .onFailure { android.util.Log.w("FileLoggingTree", "IronCore logging failed; using file fallback", it) }
-                
+
                 // Fallback/Legacy: Still append to file but with smaller limit
                 // The user wants "instead of saving all the log files, we only save the log once"
                 // but for debugging it's useful to have some raw tail.

@@ -136,6 +136,30 @@ def main():
                   2 if building else 0))
     extra.append(("deconflict override respected", run("cargo build --workspace"), 0))
 
+    # -- 2026-08-15 incident: `git checkout <ref> -- .` wiped four files of
+    # another session's uncommitted work. The guard used to allow every
+    # `checkout <ref> -- <paths>` form as "recovery". It now blocks based on
+    # whether the named paths actually HAVE local changes, so recovery keeps
+    # working while destruction does not. These two cases pin both halves --
+    # the same command shape must flip on working-tree state alone.
+    probe = "docs/rules/DELEGATION.md"
+    had = os.path.exists(probe)
+    original = open(probe, "rb").read() if had else None
+    try:
+        extra.append(("mass checkout from a ref is blocked",
+                      run("git checkout origin/main -- ."), 2))
+        if had:
+            with open(probe, "ab") as fh:
+                fh.write(b"\n<!-- preflight guard test scratch -->\n")
+            extra.append(("checkout over a DIRTY path is blocked",
+                          run("git checkout origin/main -- " + probe), 2))
+            open(probe, "wb").write(original)
+            extra.append(("checkout over a CLEAN path stays allowed",
+                          run("git checkout origin/main -- " + probe), 0))
+    finally:
+        if had and original is not None:
+            open(probe, "wb").write(original)
+
     npass = nfail = 0
     results = [(d, run(c), e) for d, c, e in CASES] + extra
     for desc, rc, expected in results:

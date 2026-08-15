@@ -85,6 +85,31 @@ conditions, null checks, timing side channels, and edge-case failures. The
 review agent must produce a list of potential vulnerabilities with severity
 ratings.
 
+### Reviewer independence (added 2026-08-09)
+
+**An agent that authored, proposed, or specified a fix cannot provide the rule 8
+sign-off for it.** This includes proposing the shape of a remediation, supplying
+a patch that was adopted, or writing a regression test that landed. Thorough
+verification by such an agent is valuable and should be recorded in the PR
+thread, but it does **not** constitute the gate and must not be allowed to stand
+in for it by default. State the conflict explicitly and route the sign-off to an
+uninvolved reviewer.
+
+Two further constraints on who may sign:
+
+- **Multi-model panels are not a substitute.** `docs/FUSION_LITE.md` is explicit
+  that `fusion_lite.py` is not a substitute for this gate on
+  crypto/transport/routing/privacy code regardless of how the panel answers. The
+  same applies to any single external model consulted ad hoc. Use them to find
+  candidate findings, not to clear the gate.
+- **A verdict is scoped to the commit it reviewed.** If later commits touch the
+  reviewed modules, the clean bills in that verdict are void for those areas.
+  Either re-review or record explicitly, in the merge record, which deltas were
+  reviewed post-hoc and by whom. Do not leave an earlier verdict standing as
+  though it still describes the branch. (Observed on PR #139: a verdict
+  certifying "crypto module untouched" and "no dependency delta" was invalidated
+  by two later commits.)
+
 ## Compaction Poisoning Defense
 
 Malicious instructions embedded in repository config files can be elevated into

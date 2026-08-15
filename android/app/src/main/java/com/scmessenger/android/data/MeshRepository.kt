@@ -1372,12 +1372,7 @@ open class MeshRepository(
             // P0: One-time migration to unify legacy IDs (libp2p, etc) into canonical Identity IDs (hash)
             migrateToCanonicalIds()
 
-            // WS12.41: Inject IronCore into FileLoggingTree for summarized logging
-            timber.log.Timber.forest().forEach { tree ->
-                if (tree is com.scmessenger.android.utils.FileLoggingTree) {
-                    tree.setIronCore(ironCore)
-                }
-            }
+
 
             // WS12.41: Start storage maintenance loop
             startStorageMaintenance()
@@ -1780,6 +1775,11 @@ open class MeshRepository(
                         val normalizedSenderKey = normalizePublicKey(senderPublicKeyHex)
                         val rawContent = data.toString(Charsets.UTF_8)
                         val decodedPayload = decodeMessageWithIdentityHints(rawContent)
+                        val messageKind = decodedPayload.kind.trim().lowercase()
+                        if (messageKind == "receipt" || isBareDeliveryReceiptPayload(decodedPayload.text)) {
+                            Timber.d("Suppressing delivery receipt from text/UI path: msg=$messageId")
+                            return@launch
+                        }
                         val hintedIdentity = decodedPayload.hints
                         val hintedKey = normalizePublicKey(hintedIdentity?.publicKey)
                         val verifiedHints = if (
@@ -1838,7 +1838,6 @@ open class MeshRepository(
 
                         // Auto-upsert contact: senderPublicKeyHex is guaranteed valid Ed25519 key
                         // (Rust only fires this callback after successful decryption)
-                        val messageKind = decodedPayload.kind.trim().lowercase()
                         val isChatEvent = messageKind == "text" || messageKind.isEmpty()
 
                         val existingContact = try { contactManager?.get(canonicalPeerId) } catch (e: Exception) { null }
@@ -7625,6 +7624,24 @@ open class MeshRepository(
                 .toString()
         } catch (_: Exception) {
             content
+        }
+    }
+
+    private fun isBareDeliveryReceiptPayload(raw: String): Boolean {
+        val trimmed = raw.trim()
+        if (!trimmed.startsWith("{")) return false
+        return try {
+            val json = org.json.JSONObject(trimmed)
+            val allowedKeys = setOf("message_id", "status", "timestamp")
+            val keys = json.keys().asSequence().toSet()
+            val messageId = json.optString("message_id", "").trim()
+            val status = json.optString("status", "").trim().lowercase()
+            val timestamp = json.opt("timestamp")
+            keys.isNotEmpty() && keys.all { it in allowedKeys } &&
+                messageId.isNotEmpty() && status in setOf("sent", "delivered", "read", "failed") &&
+                (timestamp is Number || timestamp?.toString()?.toLongOrNull() != null)
+        } catch (_: Exception) {
+            false
         }
     }
 
