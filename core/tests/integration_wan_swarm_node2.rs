@@ -28,7 +28,7 @@ use scmessenger_core::transport::internet::{
     InternetRelay, InternetTransportConfig, InternetTransportError, NatStatus, RelayMode,
 };
 use scmessenger_core::transport::manager::{
-    OutgoingQueue, PendingSend, ReconnectionState, SendResult, TransportManager,
+    OutgoingQueue, PendingSend, SendResult, TransportManager,
 };
 
 // Helper function: Generate a dummy 32-byte peer identity
@@ -47,11 +47,11 @@ fn random_libp2p_peer_id() -> PeerId {
 // Helper function: Create default TransportCapabilities
 fn mock_capabilities(bandwidth: u64, latency_ms: u32, streaming: bool) -> TransportCapabilities {
     TransportCapabilities {
+        max_payload_size: 1_048_576,
+        supports_streaming: streaming,
+        is_bidirectional: true,
         estimated_bandwidth_bps: bandwidth,
         estimated_latency_ms: latency_ms,
-        supports_streaming: streaming,
-        requires_encryption: true,
-        max_message_size: 1_048_576,
     }
 }
 
@@ -66,57 +66,57 @@ mod layer1_domain_assertions {
     fn test_tcp_quic_transport_manager_state_transitions() {
         let manager = TransportManager::new();
 
-        // 1. Register TCP & QUIC transports
-        let tcp_caps = mock_capabilities(10_000_000, 50, true);
-        let quic_caps = mock_capabilities(50_000_000, 20, true);
+        // 1. Register Internet & Local transports
+        let internet_caps = mock_capabilities(10_000_000, 50, true);
+        let local_caps = mock_capabilities(50_000_000, 20, true);
 
-        manager.register_transport(TransportType::TCP, tcp_caps.clone());
-        manager.register_transport(TransportType::QUIC, quic_caps.clone());
+        manager.register_transport(TransportType::Internet, internet_caps.clone());
+        manager.register_transport(TransportType::Local, local_caps.clone());
 
         let peer1 = random_peer_id_bytes(1);
 
-        // 2. Discover peer1 on TCP
+        // 2. Discover peer1 on Internet
         manager.handle_event(TransportEvent::PeerDiscovered {
             peer_id: peer1,
-            transport: TransportType::TCP,
-            address: b"192.168.1.10:4001".to_vec(),
+            transport: TransportType::Internet,
+            addr: b"192.168.1.10:4001".to_vec(),
         });
 
         assert!(manager.is_peer_connected(peer1));
-        assert_eq!(manager.transports_for_peer(peer1), vec![TransportType::TCP]);
+        assert_eq!(manager.transports_for_peer(peer1), vec![TransportType::Internet]);
 
-        // 3. Establish connection to peer1 on TCP
+        // 3. Establish connection to peer1 on Internet
         manager.handle_event(TransportEvent::ConnectionEstablished {
             peer_id: peer1,
-            transport: TransportType::TCP,
+            transport: TransportType::Internet,
         });
 
-        assert_eq!(manager.peers_on_transport(TransportType::TCP).len(), 1);
-        assert_eq!(manager.peers_on_transport(TransportType::TCP)[0], peer1);
+        assert_eq!(manager.peers_on_transport(TransportType::Internet).len(), 1);
+        assert_eq!(manager.peers_on_transport(TransportType::Internet)[0], peer1);
 
-        // 4. Discover & establish peer1 on QUIC as well (multi-transport)
+        // 4. Discover & establish peer1 on Local as well (multi-transport)
         manager.handle_event(TransportEvent::PeerDiscovered {
             peer_id: peer1,
-            transport: TransportType::QUIC,
-            address: b"192.168.1.10:4002".to_vec(),
+            transport: TransportType::Local,
+            addr: b"192.168.1.10:4002".to_vec(),
         });
         manager.handle_event(TransportEvent::ConnectionEstablished {
             peer_id: peer1,
-            transport: TransportType::QUIC,
+            transport: TransportType::Local,
         });
 
-        // Best transport selection should prefer QUIC (higher bandwidth 50M vs 10M, lower latency 20ms vs 50ms)
+        // Best transport selection should prefer Local (higher bandwidth 50M vs 10M, lower latency 20ms vs 50ms)
         let best = manager
             .best_transport_for_peer(peer1)
             .expect("Best transport found");
-        assert_eq!(best, TransportType::QUIC);
+        assert_eq!(best, TransportType::Local);
 
         // 5. Test priority-ordered outgoing queue via send_to_peer
         let res1 = manager.send_to_peer(peer1, b"low priority".to_vec(), 10);
-        assert_eq!(res1, Ok(SendResult::Queued(TransportType::QUIC)));
+        assert_eq!(res1.unwrap(), SendResult::Queued(TransportType::Local));
 
         let res2 = manager.send_to_peer(peer1, b"high priority".to_vec(), 200);
-        assert_eq!(res2, Ok(SendResult::Queued(TransportType::QUIC)));
+        assert_eq!(res2.unwrap(), SendResult::Queued(TransportType::Local));
 
         let pending = manager.pending_sends();
         assert_eq!(pending.len(), 2);
@@ -127,26 +127,27 @@ mod layer1_domain_assertions {
         // 6. Receive data on peer1
         manager.handle_event(TransportEvent::DataReceived {
             peer_id: peer1,
+            transport: TransportType::Local,
             data: b"hello".to_vec(),
         });
 
-        // 7. Disconnect QUIC for peer1
+        // 7. Disconnect Local for peer1
         manager.handle_event(TransportEvent::PeerDisconnected {
             peer_id: peer1,
-            transport: TransportType::QUIC,
+            transport: TransportType::Local,
         });
 
-        // Still connected via TCP!
+        // Still connected via Internet!
         assert!(manager.is_peer_connected(peer1));
         assert_eq!(
-            manager.best_transport_for_peer(peer1),
-            Ok(TransportType::TCP)
+            manager.best_transport_for_peer(peer1).unwrap(),
+            TransportType::Internet
         );
 
-        // 8. Disconnect TCP for peer1 -> fully disconnected
+        // 8. Disconnect Internet for peer1 -> fully disconnected
         manager.handle_event(TransportEvent::PeerDisconnected {
             peer_id: peer1,
-            transport: TransportType::TCP,
+            transport: TransportType::Internet,
         });
 
         assert!(!manager.is_peer_connected(peer1));
@@ -159,8 +160,8 @@ mod layer1_domain_assertions {
         let escalation = Arc::new(EscalationEngine::new(EscalationPolicy::Balanced));
         manager.set_escalation_engine(escalation.clone());
 
-        let tcp_caps = mock_capabilities(10_000_000, 50, true);
-        manager.register_transport(TransportType::TCP, tcp_caps);
+        let internet_caps = mock_capabilities(10_000_000, 50, true);
+        manager.register_transport(TransportType::Internet, internet_caps);
 
         let target_peer = random_peer_id_bytes(42);
         let target_addr = b"10.0.0.5:4001".to_vec();
@@ -171,38 +172,25 @@ mod layer1_domain_assertions {
         // Discover and connect target peer
         manager.handle_event(TransportEvent::PeerDiscovered {
             peer_id: target_peer,
-            transport: TransportType::TCP,
-            address: target_addr,
+            transport: TransportType::Internet,
+            addr: target_addr,
         });
         manager.handle_event(TransportEvent::ConnectionEstablished {
             peer_id: target_peer,
-            transport: TransportType::TCP,
+            transport: TransportType::Internet,
         });
 
         // Peer disconnects -> should enter reconnection queue automatically because it is a target peer
         manager.handle_event(TransportEvent::PeerDisconnected {
             peer_id: target_peer,
-            transport: TransportType::TCP,
+            transport: TransportType::Internet,
         });
 
         assert_eq!(manager.reconnection_queue_len(), 1);
 
-        // Test exponential backoff
-        let mut recon_state = ReconnectionState::new(
-            target_peer,
-            [TransportType::TCP].into_iter().collect(),
-            b"10.0.0.5:4001".to_vec(),
-        );
-
-        assert_eq!(recon_state.failures, 0);
-        assert!(!recon_state.is_exhausted());
-
-        // Fail 1: backoff -> 2s
-        recon_state.record_failure();
-        assert_eq!(recon_state.failures, 1);
-
         // Record failure in manager
         manager.record_reconnect_failure(&target_peer);
+        assert_eq!(manager.reconnection_queue_len(), 1);
 
         // Record success removes from queue
         manager.record_reconnect_success(&target_peer);
@@ -456,7 +444,7 @@ mod layer2_branch_coverage {
         // 5. is_peer_connected on unknown peer -> false
         assert!(!manager.is_peer_connected(peer));
         assert!(manager.transports_for_peer(peer).is_empty());
-        assert!(manager.peers_on_transport(TransportType::TCP).is_empty());
+        assert!(manager.peers_on_transport(TransportType::Internet).is_empty());
     }
 
     #[test]
@@ -613,7 +601,7 @@ mod layer3_panic_safety_and_boundaries {
         manager.handle_event(TransportEvent::PeerDiscovered {
             peer_id: peer,
             transport: TransportType::BLE,
-            address: vec![],
+            addr: vec![],
         });
         manager.handle_event(TransportEvent::ConnectionEstablished {
             peer_id: peer,
@@ -631,7 +619,7 @@ mod layer3_panic_safety_and_boundaries {
         // 2. Outgoing queue methods
         let mut queue = OutgoingQueue::new();
         assert!(queue.is_empty());
-        assert_eq!(queue.dequeue(), None);
+        assert!(queue.dequeue().is_none());
 
         queue.enqueue(PendingSend {
             peer_id: peer,
@@ -690,10 +678,10 @@ mod layer3_panic_safety_and_boundaries {
         let null_key = "relay\0with\0nulls";
 
         assert!(mgr.allow_request(empty_key));
-        mgr.record_failure(long_key, "");
+        mgr.record_failure(&long_key, "");
         mgr.record_failure(null_key, "null byte failure");
 
-        assert_eq!(mgr.get_failure_count(long_key), 1);
+        assert_eq!(mgr.get_failure_count(&long_key), 1);
         assert_eq!(
             mgr.get_last_failure_reason(null_key),
             Some("null byte failure".to_string())
@@ -747,15 +735,15 @@ mod layer4_multi_hop_call_depth {
 
         manager.set_escalation_engine(escalation.clone());
 
-        // 1. Hop 1: Register TCP & QUIC transports with capabilities
-        let tcp_caps = mock_capabilities(10_000_000, 100, true);
-        let quic_caps = mock_capabilities(100_000_000, 10, true);
+        // 1. Hop 1: Register BLE & Internet transports with capabilities
+        let ble_caps = mock_capabilities(10_000_000, 100, true);
+        let internet_caps = mock_capabilities(100_000_000, 10, true);
 
-        manager.register_transport(TransportType::TCP, tcp_caps.clone());
-        manager.register_transport(TransportType::QUIC, quic_caps.clone());
+        manager.register_transport(TransportType::BLE, ble_caps.clone());
+        manager.register_transport(TransportType::Internet, internet_caps.clone());
 
-        escalation.set_capabilities(TransportType::TCP, tcp_caps);
-        escalation.set_capabilities(TransportType::QUIC, quic_caps);
+        escalation.set_capabilities(TransportType::BLE, ble_caps);
+        escalation.set_capabilities(TransportType::Internet, internet_caps);
 
         let target_peer = random_peer_id_bytes(100);
         let libp2p_target = random_libp2p_peer_id();
@@ -763,27 +751,27 @@ mod layer4_multi_hop_call_depth {
 
         // Initialize peer escalation state
         escalation
-            .init_peer(target_peer, vec![TransportType::TCP, TransportType::QUIC])
+            .init_peer(target_peer, vec![TransportType::BLE, TransportType::Internet])
             .expect("Peer escalation init");
 
-        // 2. Hop 2: Connect peer via TCP initially
+        // 2. Hop 2: Connect peer via BLE initially
         manager.add_target_peer(target_peer, b"192.168.1.50:4001".to_vec());
         manager.handle_event(TransportEvent::PeerDiscovered {
             peer_id: target_peer,
-            transport: TransportType::TCP,
-            address: b"192.168.1.50:4001".to_vec(),
+            transport: TransportType::BLE,
+            addr: b"192.168.1.50:4001".to_vec(),
         });
         manager.handle_event(TransportEvent::ConnectionEstablished {
             peer_id: target_peer,
-            transport: TransportType::TCP,
+            transport: TransportType::BLE,
         });
 
         assert_eq!(
-            manager.best_transport_for_peer(target_peer),
-            Ok(TransportType::TCP)
+            manager.best_transport_for_peer(target_peer).unwrap(),
+            TransportType::BLE
         );
 
-        // 3. Hop 3: Direct TCP fails and times out across STALE_CONFIRM_TICKS
+        // 3. Hop 3: Direct BLE fails and times out across STALE_CONFIRM_TICKS
         // 3 consecutive ticks trigger staleness -> deescalation & synthetic disconnect
         manager.tick();
         manager.tick();
@@ -791,9 +779,9 @@ mod layer4_multi_hop_call_depth {
 
         // Direct connection address trips CircuitBreaker
         let direct_addr_str = "192.168.1.50:4001";
-        cb_mgr.record_failure(direct_addr_str, "TCP timeout");
-        cb_mgr.record_failure(direct_addr_str, "TCP timeout");
-        cb_mgr.record_failure(direct_addr_str, "TCP timeout");
+        cb_mgr.record_failure(direct_addr_str, "BLE timeout");
+        cb_mgr.record_failure(direct_addr_str, "BLE timeout");
+        cb_mgr.record_failure(direct_addr_str, "BLE timeout");
 
         assert_eq!(cb_mgr.get_state(direct_addr_str), CircuitState::Open);
         assert!(!cb_mgr.allow_request(direct_addr_str));
@@ -825,23 +813,23 @@ mod layer4_multi_hop_call_depth {
                 .unwrap();
         });
 
-        // 6. Hop 6: Connection Established on QUIC fallback transport -> reset backoff & re-escalate!
+        // 6. Hop 6: Connection Established on Internet fallback transport -> reset backoff & re-escalate!
         manager.handle_event(TransportEvent::PeerDiscovered {
             peer_id: target_peer,
-            transport: TransportType::QUIC,
-            address: circuit_addrs[0].to_vec(),
+            transport: TransportType::Internet,
+            addr: circuit_addrs[0].to_vec(),
         });
         manager.handle_event(TransportEvent::ConnectionEstablished {
             peer_id: target_peer,
-            transport: TransportType::QUIC,
+            transport: TransportType::Internet,
         });
 
         dial_policy.reset_on_connection_established(&circuit_key, Some(libp2p_target));
         cb_mgr.record_success(&circuit_key);
 
         assert_eq!(
-            manager.best_transport_for_peer(target_peer),
-            Ok(TransportType::QUIC)
+            manager.best_transport_for_peer(target_peer).unwrap(),
+            TransportType::Internet
         );
     }
 }

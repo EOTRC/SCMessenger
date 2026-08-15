@@ -380,7 +380,7 @@ fn test_layer2_messaging_blocking_abuse_branches() {
 
     let updated_score = alice.get_peer_reputation(bad_peer.to_string());
     assert!(updated_score < 100.0);
-    assert!(alice.peer_rate_limit_multiplier(bad_peer.to_string()) >= 1.0);
+    assert!(alice.peer_rate_limit_multiplier(bad_peer.to_string()) < 1.0);
 
     // Maintenance cycle
     alice

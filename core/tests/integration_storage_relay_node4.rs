@@ -6,12 +6,9 @@
 // 3. Relay client socket reconnections & transport recovery.
 // 4. 5-Layer Deep Verification Standard (Domain Assertions, >=80% Branch Coverage, Panic Safety, Multi-Hop Call Depth, Memory Zeroization).
 
-use scmessenger_core::identity::PublicKeyBundle;
-use scmessenger_core::relay::client::{
-    ConnectionState, RelayClient, RelayClientConfig, TransportType,
-};
+use scmessenger_core::relay::client::{ConnectionState, RelayClient, RelayClientConfig};
 use scmessenger_core::relay::protocol::{RelayCapability, RelayMessage, PROTOCOL_VERSION};
-use scmessenger_core::relay::server::{RelayServer, RelayServerConfig};
+use scmessenger_core::relay::server::RelayServer;
 use scmessenger_core::store::backend::{MemoryStorage, SledStorage, StorageBackend};
 use scmessenger_core::store::contacts::{Contact, ContactManager};
 use scmessenger_core::store::relay_custody::{
