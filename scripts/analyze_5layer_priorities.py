@@ -37,7 +37,7 @@ def main():
         graph_data = json.load(f)
 
     nodes = graph_data.get("nodes", [])
-    
+
     # Load unwired data
     unwired_map = {}
     if UNWIRED_DATA.exists():
@@ -58,7 +58,7 @@ def main():
         norm_path = fname
         if norm_path.startswith("c:/Users/SCM/Documents/GitHub/SCMessenger/"):
             norm_path = norm_path.replace("c:/Users/SCM/Documents/GitHub/SCMessenger/", "")
-        
+
         file_degrees[norm_path] = file_degrees.get(norm_path, 0) + n.get("degree", 0)
         file_symbols[norm_path] = file_symbols.get(norm_path, 0) + 1
 
@@ -72,10 +72,10 @@ def main():
         for file in files:
             if not file.endswith((".rs", ".kt", ".swift")):
                 continue
-            
+
             full_path = os.path.join(root, file)
             rel_path = os.path.relpath(full_path, REPO_ROOT).replace("\\", "/")
-            
+
             if "test" in file.lower() or "tests" in rel_path.lower():
                 continue
 

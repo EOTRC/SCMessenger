@@ -20,7 +20,7 @@ def main():
         data = json.load(f)
 
     functions = data.get("functions", [])
-    
+
     # Categorize functions
     stubs = [fn for fn in functions if fn.get("is_stub")]
     unwired = [fn for fn in functions if not fn.get("is_stub")]

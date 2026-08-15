@@ -1,7 +1,7 @@
 # PR #139 Five-Node Gate Status — 2026-08-13
 
-**Authority:** Windows Orchestrator (from Mac lane exit handoff)  
-**Session constraint:** No builds/tests (Antigravity heavy compute)  
+**Authority:** Windows Orchestrator (from Mac lane exit handoff)
+**Session constraint:** No builds/tests (Antigravity heavy compute)
 **Status:** Ready for operator to proceed with node rebuild and 5-node gate
 
 ---
