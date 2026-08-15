@@ -336,20 +336,30 @@ impl CircuitRelayLadder {
                 {
                     continue;
                 }
+                // Preserve each transport component (IP, port, transport wrappers)
+                // in direct_addr so the relay's concrete dialable prefix survives.
+                // Rust match arms do not fall through; failing to push in the IP
+                // and port arms strips the prefix and produces undialable addresses.
                 let mut direct_addr = Multiaddr::empty();
                 let mut has_ip = false;
                 let mut has_port = false;
                 for proto in relay_addr.iter() {
                     match proto {
-                        Protocol::Ip4(_) | Protocol::Ip6(_) => has_ip = true,
-                        Protocol::Tcp(_) | Protocol::Udp(_) => has_port = true,
+                        Protocol::Ip4(_) | Protocol::Ip6(_) => {
+                            has_ip = true;
+                            direct_addr.push(proto);
+                        }
+                        Protocol::Tcp(_) | Protocol::Udp(_) => {
+                            has_port = true;
+                            direct_addr.push(proto);
+                        }
                         Protocol::P2p(_) => {}
                         other => direct_addr.push(other),
                     }
                 }
 
                 if has_ip && has_port {
-                    // Construct circuit-relay address: base → /p2p/<relay> → /p2p-circuit → /p2p/<target>
+                    // Construct circuit-relay address: base -> /p2p/<relay> -> /p2p-circuit -> /p2p/<target>
                     let mut circuit_addr = direct_addr;
                     circuit_addr.push(Protocol::P2p(*relay_pid));
                     circuit_addr.push(Protocol::P2pCircuit);
@@ -527,7 +537,34 @@ mod tests {
         assert!(!relay_addresses.is_empty());
         // Check that the circuit relay address contains both relay and target peer IDs.
         let addr_str = relay_addresses[0].to_string();
+        assert!(addr_str.starts_with("/ip4/192.168.1.100/tcp/4001"));
         assert!(addr_str.contains("/p2p-circuit/"));
+    }
+
+    #[test]
+    fn circuit_relay_ladder_preserves_transport_prefix() {
+        let ladder = CircuitRelayLadder::new();
+        let relay_pid = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        let target_pid = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+
+        let prefix = "/ip4/192.168.1.100/tcp/4001";
+        let relay_addr: Multiaddr = prefix.parse().unwrap();
+        ladder.add_relay(relay_pid, vec![relay_addr]);
+
+        let relay_addresses = ladder.build_relay_addresses(target_pid);
+        assert_eq!(relay_addresses.len(), 1);
+
+        let addr_str = relay_addresses[0].to_string();
+        let expected = format!("{prefix}/p2p/{relay_pid}/p2p-circuit/p2p/{target_pid}");
+        assert_eq!(addr_str, expected);
+        assert!(
+            addr_str.starts_with(prefix),
+            "relay circuit address must preserve concrete transport prefix, got: {addr_str}"
+        );
     }
 
     #[test]
