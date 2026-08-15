@@ -564,6 +564,71 @@ def guard_destructive(segs, raw):
             )
 
 
+# --- Guard 5: repeat mistakes ------------------------------------------------
+#
+# A mistake made ONCE is a lesson. A mistake made TWICE is a missing hook.
+# Everything here was made at least twice by an agent in this repo, each time
+# costing a failed run and a re-diagnosis. The guard fires BEFORE the command,
+# states what went wrong last time, and gives the working form -- so the lesson
+# is recalled at the moment it is needed rather than written in a doc nobody
+# re-reads.
+#
+# These block (exit 2) rather than warn. A warning printed into a transcript is
+# a doc with extra steps; being made to reissue the command is what makes the
+# lesson land. Override per-command with SCM_SKIP_LESSONS=1.
+_LESSONS = [
+    (
+        # python -c '...' containing an f-string with escaped double quotes.
+        re.compile(r"python3?\s+(-u\s+)?-c\s+'[^']*f\"[^']*\\\""),
+        "f-string with escaped quotes inside a single-quoted python -c",
+        "Bash single-quoting turns \\\" inside an f-string into a SyntaxError.\n"
+        "Made twice on 2026-08-15: scripts/agy_stream_watch.py and\n"
+        "scripts/pr_scope.sh, one failed run each.\n\n"
+        "Use %-formatting, or put the script in a file:\n"
+        "  print(\"%s\" % d[\"key\"])              # works\n"
+        "  python3 - \"$ARG\" <<'PYEOF' ... PYEOF  # works, no quoting at all",
+    ),
+    (
+        # A python invocation that reads or writes an absolute /tmp path.
+        # Deliberately loose: the first version used [^|;&]* to stay within one
+        # segment, which excluded the semicolon in `import json;d=...` and so
+        # missed the very case it was written for. A false positive here costs
+        # one override; a false negative costs a silent wrong answer.
+        re.compile(r"python3?\b.*['\"]/tmp/"),
+        "/tmp path passed to python on Windows",
+        "Git Bash maps /tmp; python3 does not. The open() raises, the caller\n"
+        "sees an empty string, and a numeric guard like ${VAR:-0} silently\n"
+        "defaults -- turning a failure into a false PASS.\n"
+        "Made twice on 2026-08-15; the second one made a merge-safety check\n"
+        "report 'all checks green' while five checks were still running.\n\n"
+        "Use the repo-local tmp/ (AGENTS.md rule 2):\n"
+        "  T=\"$(git rev-parse --show-toplevel)/tmp\"; mkdir -p \"$T\"",
+    ),
+    (
+        # Reading $? after a pipeline.
+        re.compile(r"\|[^|]*\n?[^&|]*\$\?"),
+        "reading $? after a pipe",
+        "The pipeline's exit status is the LAST command's, so a piped gate can\n"
+        "never fail. `cargo fmt --check | head; echo $?` always prints 0.\n\n"
+        "Capture first, then test:\n"
+        "  cargo fmt --check > out.txt; rc=$?; head out.txt; exit $rc",
+    ),
+]
+
+
+def guard_lessons(segs, raw):
+    if override("SCM_SKIP_LESSONS", raw):
+        return
+    for pattern, title, lesson in _LESSONS:
+        if pattern.search(raw):
+            block(
+                "[REMEMBER] %s\n\n%s\n\n"
+                "This has been done before in this repo. Reissue the command in\n"
+                "the working form above.\n"
+                "Override: SCM_SKIP_LESSONS=1" % (title, lesson)
+            )
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -588,6 +653,7 @@ def main():
         guard_cargo_clean(segs, raw)
         guard_dispatch(segs, raw)
         guard_deconflict(segs, raw)
+        guard_lessons(segs, raw)
     except SystemExit:
         raise
     except Exception:
