@@ -51,13 +51,44 @@ that both finds and removes has skipped the review that makes it safe.
 - Disposition: **PLAN.** Merge PR #150, then make `delegate_task.py` a thin
   deprecation pointer. Do not delete it in the same change.
 
-### C2. Eight `orchestrat*` scripts with unclear division of labour
-`orchestrate_strict.py`, `orchestration_contract.py`, `orchestration_worktree.py`,
-`orchestrator_activate.sh`, `orchestrator_guard.py`, `parse_orchestration_footer.py`,
-`test_orchestration.sh`, `test_orchestration_v2.py`
-- `test_orchestration.sh` vs `test_orchestration_v2.py` is a versioned pair —
-  one is probably dead.
-- Disposition: **CALLOUT.** Needs someone to say which is the live entry point.
+### C2. `orchestrat*` scripts — RESOLVED 2026-08-15, and the first pass was wrong
+
+Phase 1 called this "eight scripts with unclear division of labour" and guessed
+that `test_orchestration.sh` / `test_orchestration_v2.py` were a versioned pair
+with one dead. Reading them says otherwise on both counts.
+
+Six of the eight are already the cohesive layered system this ticket was going
+to propose building — a kernel plus adapters, the same shape as C4/C5:
+
+| Script | Role (from its own docstring) |
+|---|---|
+| `orchestrate_strict.py` (725) | the KERNEL — "a composition layer, not a frontend-specific controller" |
+| `orchestration_contract.py` (123) | contract accessor — "adapters and the kernel use this module" |
+| `orchestration_worktree.py` (95) | writer-worktree lifecycle |
+| `orchestrator_guard.py` (75) | capability guard derived from the manifest |
+| `parse_orchestration_footer.py` (220) | structured worker-report parser |
+| `test_orchestration_v2.py` (398) | v2 contract and negative evals |
+
+Evidence it is the live entry point: `orchestrate_strict.py` is referenced by
+**18** files. The per-tool adapters already point at it
+(`.claude/commands/orchestrate.md`, `.qwen/commands/orchestrate.md`,
+`GEMINI.md`), so the C4/C5 pattern is already implemented here.
+
+The two remaining scripts are NOT dead and NOT duplicates:
+- `test_orchestration.sh` invokes `scripts/advanced_monitor.sh` and
+  `scripts/resource_manager.sh`, both of which exist. It tests the MONITORING
+  subsystem, not orchestration.
+- `orchestrator_activate.sh` reads `.claude/orchestrator_state.json` (exists)
+  and cites `HANDOFF/AGENT_HANDOFF_GUIDANCE.md` (exists). It reports status; it
+  activates nothing.
+
+So the conflict was a NAMING COLLISION, not duplication — two unrelated things
+sharing a prefix, which is exactly what made the first pass misread them.
+
+- Disposition: **DONE.** Renamed for honest names, nothing deleted:
+  `test_orchestration.sh` -> `test_monitoring_stack.sh`
+  `orchestrator_activate.sh` -> `orchestrator_status.sh`
+  Stale reference in `docs/historical/ORCHESTRATOR_QUICKREF.md` updated.
 
 ### C3. Seventeen `verify_*` scripts
 Likely mostly legitimate (different subsystems), but no index says which are
