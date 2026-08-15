@@ -160,7 +160,9 @@ where
     match std::panic::catch_unwind(f) {
         Ok(res) => res,
         Err(_err) => {
-            tracing::error!("Native panic caught at FFI boundary; isolating to prevent process crash");
+            tracing::error!(
+                "Native panic caught at FFI boundary; isolating to prevent process crash"
+            );
             Err(IronCoreError::Internal)
         }
     }
