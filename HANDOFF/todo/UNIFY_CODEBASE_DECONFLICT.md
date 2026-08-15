@@ -90,10 +90,37 @@ sharing a prefix, which is exactly what made the first pass misread them.
   `orchestrator_activate.sh` -> `orchestrator_status.sh`
   Stale reference in `docs/historical/ORCHESTRATOR_QUICKREF.md` updated.
 
-### C3. Seventeen `verify_*` scripts
-Likely mostly legitimate (different subsystems), but no index says which are
-current. `verify_all.ps1` vs `verify_all_builds.sh` overlap by name.
-- Disposition: **PLAN.** Produce an index first; prune only what the index proves dead.
+### C3. Seventeen `verify_*` scripts — INDEXED 2026-08-15, one prune candidate
+
+The concern was duplication. Measured, there is almost none: they cover
+different subsystems and only ONE has no reference anywhere in the repo.
+
+Wired into CI (these are load-bearing, do not touch):
+  verify_ios_bindings.sh   Swift bindings in sync with the UDL
+  verify_versions.sh       read-only release metadata verifier
+
+Referenced but manual (log-analysis and field-test helpers, mostly invoked by
+hand during a run; the reference counts are largely HANDOFF/docs mentions):
+  verify_receipt_convergence.sh (20)   verify_ble_only_pairing.sh (16)
+  verify_simulation.sh (15)            verify_relay_flap_regression.sh (14)
+  verify_integration.sh (11)           verify_ws12_matrix.sh (10)
+  verify_task_completion.sh (9)        verify_delivery_state_monotonicity.sh (8)
+  verify_branch_merges.sh (5)          verify_platform_security.sh (5)
+  verify_cross_pair_local.sh (4)       verify_all_builds.sh (3)
+  verify_task_systematic.sh (3)        verify_all.ps1 (1)
+
+Zero references anywhere:
+  verify_swift_violations.py (0)  -- "compiler-free verification for specific
+  SwiftLint rules". Kotlin/Swift linting runs in CI via a different path.
+
+- Disposition: **PLAN, mostly no-op.** The family is not duplicated and needs no
+  consolidation. `verify_all.ps1` (1 ref) and `verify_all_builds.sh` (3) overlap
+  by NAME only -- the .ps1 is an omni-diagnostic scanner, the .sh is a
+  cross-platform build check. Different jobs, misleading names; rename if it
+  ever bites.
+  One prune candidate: `verify_swift_violations.py`. Per the deletion rule it is
+  NOT removed in the round that found it. Next round: confirm no CI job or
+  developer invokes it, then remove.
 
 ### C4 + C5. Agent contracts and harness config — RESOLVED, operator ruling 2026-08-15
 
@@ -172,16 +199,41 @@ tagged". Five others also read as authoritative and none deferred to it:
   it removes the ambiguity most likely to misdirect a freshly woken orchestrator
   that opens whichever of the six it happens to find first.
 
-### C7. Duplicate-by-platform pairs
-`OllamaQuotaScraper.ps1` / `.sh`, `verify_all.ps1` / `verify_all_builds.sh`.
-- Disposition: **SAFE-ish** but verify both are still called before touching either.
+### C7. Duplicate-by-platform pairs — RESOLVED 2026-08-15, not duplicates
+
+- `OllamaQuotaScraper.ps1` (14 refs) / `.sh` (5 refs): a genuine
+  Windows/POSIX pair of the same tool. Both referenced, neither in CI. This is
+  the correct shape for a cross-platform helper on a Windows host with Git Bash
+  — keep both.
+- `verify_all.ps1` (1 ref) / `verify_all_builds.sh` (3 refs): NOT a pair. The
+  .ps1 is "SCMessenger Omni-Diagnostic Scanner (V4)"; the .sh is a
+  cross-platform build verification. Different jobs that collide on the
+  `verify_all` prefix — the same naming-collision pattern as C2.
+
+- Disposition: **DONE, no change.** Nothing here is duplicated. Both flagged
+  cases were names colliding, not code. Worth noting the pattern: three of the
+  seven conflicts in this ticket (C2, C3's verify_all, C7) turned out to be
+  prefix collisions rather than duplication. Filename similarity is a very weak
+  signal in this repo, and Phase 1 over-weighted it every time.
 
 ---
 
 ## NEXT ROUND
 
-Phase 2 on C1, C6, C7 and the C4+C5 plan. C2 (orchestrat* scripts) and C3
-(verify_* index) remain, C2 still a CALLOUT.
-call. C2, C4, C5 stay parked as CALLOUTs until the CTO or operator rules.
+Status after the 2026-08-15 pass: C2, C3, C4+C5, C6, C7 resolved or planned.
+C1 is the only one still blocked, on PR #150 merging.
 
-Do not start a round while a required CI check is red.
+Remaining, in order:
+1. C1 — once PR #150 lands, make `scripts/delegate_task.py` a deprecation
+   pointer at `scripts/delegate.py`. Do not delete it in that change.
+2. C4+C5 execution — move `.kiro/specs` and `.mimocode/plans` out, add adapter
+   pointers for `.codex`/`.bob`/`.agents`/`.qwen`, fold `.agents/rules` into
+   `docs/rules/`, and only then remove emptied directories.
+3. C3 tail — confirm nothing invokes `verify_swift_violations.py`, then remove.
+
+**Lesson from this pass, for whoever runs the next one:** Phase 1 classified by
+filename and was wrong on four of seven items. `GEMINI.md` was already correct,
+the orchestration system was already the architecture we planned to build, and
+two "duplicate pairs" were unrelated tools sharing a prefix. Open the file before
+you classify it — AGENTS.md rule 13. The repo is consistently more coherent than
+a directory listing makes it look.
