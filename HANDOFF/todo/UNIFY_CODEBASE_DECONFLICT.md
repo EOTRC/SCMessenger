@@ -159,14 +159,18 @@ is using it. A dormant harness with a valid adapter costs one small file.
   directories. Per the deletion rule, no directory is removed in the round that
   empties it.
 
-### C6. Six documents claiming planning authority
-`SHIP_PLAN.md` ("the **only** execution queue"), `REMAINING_WORK_TRACKING.md`,
-`docs/CURRENT_STATE.md`, `HANDOFF/todo/_QUEUE.md`,
+### C6. Six documents claiming planning authority — RESOLVED 2026-08-15
+
+`SHIP_PLAN.md` declares itself "the **only** execution queue until v0.4.0 is
+tagged". Five others also read as authoritative and none deferred to it:
+`REMAINING_WORK_TRACKING.md`, `docs/CURRENT_STATE.md`, `HANDOFF/todo/_QUEUE.md`,
 `HANDOFF/V1_0_0_EXECUTION_PLAN.md`, `DOCUMENTATION.md`.
-- SHIP_PLAN.md is the current truth and says so; the other five do not defer to it.
-- Disposition: **PLAN.** Add a one-line "superseded by SHIP_PLAN.md until the
-  v0.4.0 tag" header to the other five. Cheap, reversible, removes the ambiguity
-  without deleting history.
+
+- Disposition: **DONE.** A supersession banner added under the H1 of each of
+  the five, pointing at SHIP_PLAN.md and stating that authority returns once
+  v0.4.0 is tagged. Nothing deleted, nothing rewritten, fully reversible — and
+  it removes the ambiguity most likely to misdirect a freshly woken orchestrator
+  that opens whichever of the six it happens to find first.
 
 ### C7. Duplicate-by-platform pairs
 `OllamaQuotaScraper.ps1` / `.sh`, `verify_all.ps1` / `verify_all_builds.sh`.

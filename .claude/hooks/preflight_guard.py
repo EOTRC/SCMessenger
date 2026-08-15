@@ -605,6 +605,21 @@ _LESSONS = [
         "  T=\"$(git rev-parse --show-toplevel)/tmp\"; mkdir -p \"$T\"",
     ),
     (
+        # Broad staging in a shared checkout.
+        re.compile(r"\bgit\s+add\s+(-A\b|--all\b|-u\b|\.(\s|$))"),
+        "git add -A / -u / . in a shared checkout",
+        "This stages files you did not create. Other agents and the operator\n"
+        "work in this checkout concurrently, and their untracked or modified\n"
+        "files end up in your commit.\n"
+        "Made on 2026-08-15: `git add -A scripts/` swept in five untracked\n"
+        "files belonging to another session. Same class as the `git checkout\n"
+        "<ref> -- .` that destroyed four files earlier the same day -- a broad\n"
+        "path operator applied to a shared tree.\n\n"
+        "Stage explicit paths (AGENTS.md):\n"
+        "  git add path/one.rs path/two.md\n"
+        "  git status --short          # confirm ONLY your files are staged",
+    ),
+    (
         # Reading $? after a pipeline.
         re.compile(r"\|[^|]*\n?[^&|]*\$\?"),
         "reading $? after a pipe",
