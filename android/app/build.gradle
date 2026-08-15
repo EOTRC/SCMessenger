@@ -215,7 +215,13 @@ android {
     sourceSets {
         main {
             // Include generated UniFFI Kotlin bindings
+            // The UniFFI bindings are KOTLIN (uniffi/api/api.kt), so register
+            // the directory on the Kotlin source set as well as the Java one.
+            // java.srcDirs alone relies on the Kotlin plugin folding it in,
+            // which is not a contract we should be depending on for the one
+            // source file the whole Hilt graph needs to resolve.
             java.srcDirs += '../../core/target/generated-sources/uniffi/kotlin'
+            kotlin.srcDirs += '../../core/target/generated-sources/uniffi/kotlin'
 
             // JNI libraries from cargo-ndk build
             jniLibs.srcDirs = ['../../core/target/android-libs']
@@ -568,6 +574,28 @@ task generateUniFFIBindings {
                 commandLine genKotlinBin.absolutePath
             }
         }
+
+        // Step 5: prove the bindings actually landed.
+        //
+        // Without this the task "succeeds" whether or not it produced anything,
+        // and the only symptom is a KSP error 60 seconds later complaining that
+        // an unrelated supertype is error.NonExistentClass. That failure mode
+        // cost a full diagnosis cycle on 2026-08-15 because the log gave no
+        // evidence either way about whether api.kt existed.
+        def apiKt = file('../../core/target/generated-sources/uniffi/kotlin/uniffi/api/api.kt')
+        if (!apiKt.isFile() || apiKt.length() == 0) {
+            def root = file('../../core/target/generated-sources')
+            def listing = root.exists()
+                ? root.traverse(maxDepth: 4).collect { "    ${it}" }.join('\n')
+                : "    (${root} does not exist)"
+            throw new GradleException(
+                "UniFFI generation produced no usable bindings.\n" +
+                "  expected: ${apiKt}\n" +
+                "  exists:   ${apiKt.isFile()}, size: ${apiKt.isFile() ? apiKt.length() : 0}\n" +
+                "  tree under core/target/generated-sources:\n${listing}"
+            )
+        }
+        println "UniFFI bindings OK: ${apiKt} (${apiKt.length()} bytes)"
     }
 }
 
