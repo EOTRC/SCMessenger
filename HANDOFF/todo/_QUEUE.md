@@ -1,5 +1,11 @@
 # _QUEUE -- Dispatch Order for the Full v1.0.0 Backlog
 
+
+> **SUPERSEDED FOR EXECUTION until the v0.4.0 tag.** `SHIP_PLAN.md` is the only
+> execution queue; if a task is not on that page it is not being worked on.
+> This document remains the reference for scope and history, and resumes
+> authority once v0.4.0 is tagged. (Added 2026-08-15.)
+
 Status: Active
 Last updated: 2026-08-09 (Windows lane handoff; PR #139 five-node blockers)
 

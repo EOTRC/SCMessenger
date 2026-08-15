@@ -361,12 +361,61 @@ def guard_deconflict(segs, raw):
     )
 
 
-def discards_working_tree(seg):
-    """True for `git checkout -- <paths>`, `git checkout .`, bare `git restore`.
+def _would_discard_uncommitted(paths):
+    """True if `git checkout <ref> -- <paths>` would overwrite real work.
 
-    Deliberately ALLOWS `git checkout <ref> -- <paths>`, which restores FROM a
-    commit and is the standard recovery move -- it is how the 2026-08-08
-    incident was undone.
+    Asks git directly rather than guessing from the path shape. Restoring a
+    path with no local modifications discards nothing and is exactly the
+    recovery move the 2026-08-08 incident needed; restoring one that HAS
+    modifications throws them away with no undo, which is the 2026-08-15
+    incident. Same command, opposite consequence -- only the working-tree
+    state distinguishes them, so that is what we check.
+
+    Returns the list of paths that would be lost, or [] if none.
+    Fails OPEN (returns []) if git cannot be consulted.
+    """
+    args = [p.strip("'\"") for p in paths if p.strip("'\"")]
+    if not args:
+        return []
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain", "--"] + args,
+            capture_output=True, text=True, timeout=15,
+        )
+        if out.returncode != 0:
+            return []
+        lost = []
+        for line in out.stdout.splitlines():
+            if len(line) < 4:
+                continue
+            code, name = line[:2], line[3:].strip()
+            if code == "??":          # untracked: checkout does not touch it
+                continue
+            lost.append(name)
+        return lost
+    except Exception:
+        return []
+
+
+def discards_working_tree(seg):
+    """True for any git invocation that throws away uncommitted work.
+
+    Covers `git checkout -- <paths>`, `git checkout .`, bare `git restore`, AND
+    `git checkout <ref> -- .` / `<ref> -- <dir>`.
+
+    That last form used to be allowed outright, on the reasoning that restoring
+    FROM a commit is the standard recovery move. It is -- for ONE FILE. On
+    2026-08-15 `git checkout tracking/pre-v040-tag-work -- .` was run to get a
+    clean tree for a grep and silently destroyed four files of another
+    session's uncommitted work (core/Cargo.toml, scripts/build_wiring_graph.py,
+    and two generated JSON files). Unstaged changes never enter the object
+    store, so there was no recovery path: not reflog, not fsck, not stash.
+
+    The distinction is CONSEQUENCE, not path shape. Restoring a clean path
+    discards nothing; restoring a dirty one is unrecoverable. Both are spelled
+    identically, so the guard asks git which case it is:
+      ALLOWED  git checkout <ref> -- <paths>   when those paths are clean
+      BLOCKED  git checkout <ref> -- <paths>   when any has local changes
     """
     if basename(seg[0]) != "git":
         return False
@@ -375,6 +424,13 @@ def discards_working_tree(seg):
         rest = [t for t in rest if t == "--" or not t.startswith("-")]
         if rest and rest[0] in ("--", "."):
             return True
+        # `git checkout <ref> -- <paths>`: block only if it would destroy work.
+        if "--" in rest:
+            paths = rest[rest.index("--") + 1:]
+            if not paths:
+                return True
+            if _would_discard_uncommitted(paths):
+                return True
     if "restore" in seg and "--staged" not in seg:
         if not any(t == "-s" or t.startswith("--source") for t in seg):
             return True
@@ -508,6 +564,86 @@ def guard_destructive(segs, raw):
             )
 
 
+# --- Guard 5: repeat mistakes ------------------------------------------------
+#
+# A mistake made ONCE is a lesson. A mistake made TWICE is a missing hook.
+# Everything here was made at least twice by an agent in this repo, each time
+# costing a failed run and a re-diagnosis. The guard fires BEFORE the command,
+# states what went wrong last time, and gives the working form -- so the lesson
+# is recalled at the moment it is needed rather than written in a doc nobody
+# re-reads.
+#
+# These block (exit 2) rather than warn. A warning printed into a transcript is
+# a doc with extra steps; being made to reissue the command is what makes the
+# lesson land. Override per-command with SCM_SKIP_LESSONS=1.
+_LESSONS = [
+    (
+        # python -c '...' containing an f-string with escaped double quotes.
+        re.compile(r"python3?\s+(-u\s+)?-c\s+'[^']*f\"[^']*\\\""),
+        "f-string with escaped quotes inside a single-quoted python -c",
+        "Bash single-quoting turns \\\" inside an f-string into a SyntaxError.\n"
+        "Made twice on 2026-08-15: scripts/agy_stream_watch.py and\n"
+        "scripts/pr_scope.sh, one failed run each.\n\n"
+        "Use %-formatting, or put the script in a file:\n"
+        "  print(\"%s\" % d[\"key\"])              # works\n"
+        "  python3 - \"$ARG\" <<'PYEOF' ... PYEOF  # works, no quoting at all",
+    ),
+    (
+        # A python invocation that reads or writes an absolute /tmp path.
+        # Deliberately loose: the first version used [^|;&]* to stay within one
+        # segment, which excluded the semicolon in `import json;d=...` and so
+        # missed the very case it was written for. A false positive here costs
+        # one override; a false negative costs a silent wrong answer.
+        re.compile(r"python3?\b.*['\"]/tmp/"),
+        "/tmp path passed to python on Windows",
+        "Git Bash maps /tmp; python3 does not. The open() raises, the caller\n"
+        "sees an empty string, and a numeric guard like ${VAR:-0} silently\n"
+        "defaults -- turning a failure into a false PASS.\n"
+        "Made twice on 2026-08-15; the second one made a merge-safety check\n"
+        "report 'all checks green' while five checks were still running.\n\n"
+        "Use the repo-local tmp/ (AGENTS.md rule 2):\n"
+        "  T=\"$(git rev-parse --show-toplevel)/tmp\"; mkdir -p \"$T\"",
+    ),
+    (
+        # Broad staging in a shared checkout.
+        re.compile(r"\bgit\s+add\s+(-A\b|--all\b|-u\b|\.(\s|$))"),
+        "git add -A / -u / . in a shared checkout",
+        "This stages files you did not create. Other agents and the operator\n"
+        "work in this checkout concurrently, and their untracked or modified\n"
+        "files end up in your commit.\n"
+        "Made on 2026-08-15: `git add -A scripts/` swept in five untracked\n"
+        "files belonging to another session. Same class as the `git checkout\n"
+        "<ref> -- .` that destroyed four files earlier the same day -- a broad\n"
+        "path operator applied to a shared tree.\n\n"
+        "Stage explicit paths (AGENTS.md):\n"
+        "  git add path/one.rs path/two.md\n"
+        "  git status --short          # confirm ONLY your files are staged",
+    ),
+    (
+        # Reading $? after a pipeline.
+        re.compile(r"\|[^|]*\n?[^&|]*\$\?"),
+        "reading $? after a pipe",
+        "The pipeline's exit status is the LAST command's, so a piped gate can\n"
+        "never fail. `cargo fmt --check | head; echo $?` always prints 0.\n\n"
+        "Capture first, then test:\n"
+        "  cargo fmt --check > out.txt; rc=$?; head out.txt; exit $rc",
+    ),
+]
+
+
+def guard_lessons(segs, raw):
+    if override("SCM_SKIP_LESSONS", raw):
+        return
+    for pattern, title, lesson in _LESSONS:
+        if pattern.search(raw):
+            block(
+                "[REMEMBER] %s\n\n%s\n\n"
+                "This has been done before in this repo. Reissue the command in\n"
+                "the working form above.\n"
+                "Override: SCM_SKIP_LESSONS=1" % (title, lesson)
+            )
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -532,6 +668,7 @@ def main():
         guard_cargo_clean(segs, raw)
         guard_dispatch(segs, raw)
         guard_deconflict(segs, raw)
+        guard_lessons(segs, raw)
     except SystemExit:
         raise
     except Exception:
