@@ -19,8 +19,9 @@ human operator may do that.
 
 There are NO standalone relays in SCMessenger. Only NODES exist, and EVERY
 node relays -- store-and-forward custody is a behavior all nodes perform,
-not a role. The AWS instance at 100.56.248.69 is a CLOUD NODE: a full node
-that also relays, exactly as every other node does. Discovery is LEDGER
+not a role. The always-on AWS instance (tagged `scm-always-on-node`; dynamic
+IP) is a CLOUD NODE: a full node that also relays, exactly as every other
+node does. Discovery is LEDGER
 SHARING between nodes (invite/QR-seeded, gossip-propagated); bootstrap
 address lists are a deprecated transitional mechanism being replaced by
 ledger-sharing-first discovery (contract: V050-B1/B2). In docs, plans,

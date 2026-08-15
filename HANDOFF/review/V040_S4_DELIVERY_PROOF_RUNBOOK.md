@@ -7,7 +7,8 @@ current HEAD with both endpoints on the cloud node (AWS) (mandate 0A.8). The
 cross-internet Hawaii<->PA custody cell is 040-S5 (operator + Josh/Lucas,
 infra-gated) and stays separate.
 
-Cloud node facts: /ip4/100.56.248.69/tcp/9001; health http://100.56.248.69:9876/health
+Cloud node facts: dynamic IP (lookup via EC2 `scm-always-on-node` or `HANDOFF/gpt/AWS_RELAY_CURRENT_ADDRESS.md`);
+multiaddr `/ip4/<CLOUD_NODE_IP>/tcp/9001`; health `http://<CLOUD_NODE_IP>:9876/health`
 (port 9876, NOT 8080); image testbotz/scmessenger (container scm-alpha-relay).
 Peer id per newer alpha doc: 12D3KooW<redacted>
 (2026-07-20 proof recorded 12D3KooW<redacted>;
@@ -43,9 +44,14 @@ compile is COLD -> -j2 first, -j6 warm. Never `cargo clean --target X`
 (it wipes all of target/).
 0.3 Provenance baseline: `git rev-parse HEAD` = <HEAD_SHA>; every endpoint
 must later show it in its "Core Provenance:" startup line.
-0.4 Cloud node reachability (operator egress): PRECONDITION -- the cloud node must be reachable by PUBLIC route (public IP or DDNS + port forwards per H-04). 100.56.248.69 is a CGNAT-range tailnet address (ops-side convenience, NOT a product path -- repo philosophy: no third-party network dependencies); the 2026-07-28 probe found it unreachable from the Windows host. Operator to supply the public endpoint before this step. Verify:
-  curl -fsS http://100.56.248.69:9876/health  -> {"status":"healthy"}
-  powershell -NoProfile -Command "Test-NetConnection 100.56.248.69 -Port 9001 -InformationLevel Quiet"  -> True
+0.4 Cloud node reachability (operator egress): PRECONDITION -- the cloud node must be reachable by PUBLIC route (public IP or DDNS + port forwards per H-04). The cloud node address is dynamic (AWS account holds zero Elastic IPs; AllocateAddress is explicitly denied in IAM policy). Look up the current live IP before starting:
+  # Query via AWS CLI (tagged scm-always-on-node):
+  # CLOUD_NODE_IP=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=scm-always-on-node" "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].PublicIpAddress" --output text)
+  # Or check HANDOFF/gpt/AWS_RELAY_CURRENT_ADDRESS.md.
+  # Set environment variable: CLOUD_NODE_IP=<current-ip>
+Verify:
+  curl -fsS http://<CLOUD_NODE_IP>:9876/health  -> {"status":"healthy"}
+  powershell -NoProfile -Command "Test-NetConnection <CLOUD_NODE_IP> -Port 9001 -InformationLevel Quiet"  -> True
 If down: retry x2 @60s; then LAN-DIRECT fallback (Appendix A) or ABORT to
 operator (infra, not code). Never fake cloud-node evidence.
 0.5 Emulator (agy executes; orchestrator gates):
@@ -95,7 +101,7 @@ exactly 64 hex chars or import is rejected (ContactsViewModel.kt:495-504).
 
 2.1 Start CLI node (also used for the proof):
   set CARGO_INCREMENTAL=0
-  set SC_BOOTSTRAP_NODES=/ip4/100.56.248.69/tcp/9001
+  set SC_BOOTSTRAP_NODES=/ip4/<CLOUD_NODE_IP>/tcp/9001
   set RUST_LOG=info,scmessenger_core=debug
   target\debug\scmessenger-cli.exe --http-bind 127.0.0.1:9876 start --port 9100 > tmp\work_files\2026-07-28_wave2\cli.log 2>&1
 Then:
@@ -104,17 +110,17 @@ Record <CLI_PK_HEX> (public_key_hex) and <CLI_PEER_ID> (libp2p_peer_id).
 2.2 Assert CLI on the cloud node (first ConnectionEstablished, CLI side):
   findstr /C:"Connected to" /C:"Core Provenance" tmp\work_files\2026-07-28_wave2\cli.log
 Expect: "Core Provenance: 0.x.y (<HEAD_SHA>)" (hash must equal <HEAD_SHA>)
-and "Connected to 12D3Koo... via /ip4/100.56.248.69/tcp/9001 (promiscuous
+and "Connected to 12D3Koo... via /ip4/<CLOUD_NODE_IP>/tcp/9001 (promiscuous
 mode — any PeerID accepted)".
 2.3 agy installs + launches + seeds (orchestrator supplies exact JSON):
 Seed payload (double duty: registers cli-node contact AND seeds+dials the cloud node):
-  {"public_key":"<CLI_PK_HEX>","peer_id":"<CLI_PEER_ID>","nickname":"cli-node","listeners":["/ip4/100.56.248.69/tcp/9001"]}
+  {"public_key":"<CLI_PK_HEX>","peer_id":"<CLI_PEER_ID>","nickname":"cli-node","listeners":["/ip4/<CLOUD_NODE_IP>/tcp/9001"]}
 agy invocation (model name suffix IS the effort -- never add --effort):
   agy.exe -p --model "gemini-3.6-flash-high" --add-dir C:/Users/SCM/Documents/GitHub/SCMessenger --dangerously-skip-permissions --print-timeout 1800s "<scoped task: install -r -d the APK; pm grant POST_NOTIFICATIONS; launch via monkey; import the JSON exactly via Add Contact/Import; confirm cli-node appears; capture adb logcat -d to tmp/work_files/2026-07-28_wave2/android_logcat_seed.txt; report lines matching: Dialed seed relay from ledger / Connected to / Dial timed out / No known relay in ledger; read the app identity screen and report this device's 64-hex public key and 12D3Koo peer id verbatim; do not build or edit>"
 agy reports <ANDROID_PK_HEX> and <ANDROID_PEER_ID>.
 2.4 Verify seed took (cloud node ConnectionEstablished, Android side):
-Expect "Dialed seed relay from ledger: /ip4/100.56.248.69/tcp/9001" (now
-means CONNECTED, not queued) + core "Connected to ... via /ip4/100.56.248.69/tcp/9001".
+Expect "Dialed seed relay from ledger: /ip4/<CLOUD_NODE_IP>/tcp/9001" (now
+means CONNECTED, not queued) + core "Connected to ... via /ip4/<CLOUD_NODE_IP>/tcp/9001".
 "Dial timed out after 10s" or "No known relay in ledger yet" -> triage 6A.
 
 ## 3. Connection phase -- both sides on the cloud node + mutual discovery
@@ -124,11 +130,11 @@ discovered through the cloud node; Android "Connected to <CLI_PEER_ID> via ...";
 CLI outbox flush "Flushing N queued message(s) to peer <ANDROID_PEER_ID>"
 (cli/src/main.rs:2475-2479).
 3.2 Socket evidence (host):
-  powershell -NoProfile -Command "Get-NetTCPConnection -RemoteAddress 100.56.248.69 -RemotePort 9001 -State Established | Format-Table -AutoSize" > tmp\work_files\2026-07-28_wave2\netstat.txt
+  powershell -NoProfile -Command "Get-NetTCPConnection -RemoteAddress <CLOUD_NODE_IP> -RemotePort 9001 -State Established | Format-Table -AutoSize" > tmp\work_files\2026-07-28_wave2\netstat.txt
 Expect >=1 Established row. Emulator leg is NATed through host, so host
 established socket + Android logcat Connected line together evidence both.
 Cloud-node-side ss -tn (both endpoints) is OPERATOR-ASSISTED corroboration
-(SSH to 100.56.248.69); request it, never block on it, never fabricate.
+(SSH to <CLOUD_NODE_IP>); request it, never block on it, never fabricate.
 3.3 Mutual peer knowledge:
   curl -s http://127.0.0.1:9876/api/peers -o tmp\work_files\2026-07-28_wave2\peers_cli.json
 Expect <ANDROID_PEER_ID> listed. Absent -> triage 6B.
@@ -167,10 +173,10 @@ artifacts against pass criteria.
 1. Provenance match: <HEAD_SHA> == CLI Core Provenance hash == Android
    core provenance. Mismatch = artifact skew = rebuild both, not a pass.
 2. ConnectionEstablished BOTH sides: "Connected to ... via
-   /ip4/100.56.248.69/tcp/9001 (promiscuous mode ...)" in cli.log AND
+   /ip4/<CLOUD_NODE_IP>/tcp/9001 (promiscuous mode ...)" in cli.log AND
    android_logcat_seed.txt (stronger: second Connected to the counterparty
    peer on each side).
-3. Cloud-node socket: Established TCP row to 100.56.248.69:9001 in netstat.txt.
+3. Cloud-node socket: Established TCP row to <CLOUD_NODE_IP>:9001 in netstat.txt.
 4. CLI->Android: "Message from ..." in Android logcat AND "Delivered: <id>"
    in cli.log for the same send.
 5. Android->CLI: direction":"received" marker entry in history_cli.json AND
