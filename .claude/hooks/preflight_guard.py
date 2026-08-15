@@ -361,12 +361,61 @@ def guard_deconflict(segs, raw):
     )
 
 
-def discards_working_tree(seg):
-    """True for `git checkout -- <paths>`, `git checkout .`, bare `git restore`.
+def _would_discard_uncommitted(paths):
+    """True if `git checkout <ref> -- <paths>` would overwrite real work.
 
-    Deliberately ALLOWS `git checkout <ref> -- <paths>`, which restores FROM a
-    commit and is the standard recovery move -- it is how the 2026-08-08
-    incident was undone.
+    Asks git directly rather than guessing from the path shape. Restoring a
+    path with no local modifications discards nothing and is exactly the
+    recovery move the 2026-08-08 incident needed; restoring one that HAS
+    modifications throws them away with no undo, which is the 2026-08-15
+    incident. Same command, opposite consequence -- only the working-tree
+    state distinguishes them, so that is what we check.
+
+    Returns the list of paths that would be lost, or [] if none.
+    Fails OPEN (returns []) if git cannot be consulted.
+    """
+    args = [p.strip("'\"") for p in paths if p.strip("'\"")]
+    if not args:
+        return []
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain", "--"] + args,
+            capture_output=True, text=True, timeout=15,
+        )
+        if out.returncode != 0:
+            return []
+        lost = []
+        for line in out.stdout.splitlines():
+            if len(line) < 4:
+                continue
+            code, name = line[:2], line[3:].strip()
+            if code == "??":          # untracked: checkout does not touch it
+                continue
+            lost.append(name)
+        return lost
+    except Exception:
+        return []
+
+
+def discards_working_tree(seg):
+    """True for any git invocation that throws away uncommitted work.
+
+    Covers `git checkout -- <paths>`, `git checkout .`, bare `git restore`, AND
+    `git checkout <ref> -- .` / `<ref> -- <dir>`.
+
+    That last form used to be allowed outright, on the reasoning that restoring
+    FROM a commit is the standard recovery move. It is -- for ONE FILE. On
+    2026-08-15 `git checkout tracking/pre-v040-tag-work -- .` was run to get a
+    clean tree for a grep and silently destroyed four files of another
+    session's uncommitted work (core/Cargo.toml, scripts/build_wiring_graph.py,
+    and two generated JSON files). Unstaged changes never enter the object
+    store, so there was no recovery path: not reflog, not fsck, not stash.
+
+    The distinction is CONSEQUENCE, not path shape. Restoring a clean path
+    discards nothing; restoring a dirty one is unrecoverable. Both are spelled
+    identically, so the guard asks git which case it is:
+      ALLOWED  git checkout <ref> -- <paths>   when those paths are clean
+      BLOCKED  git checkout <ref> -- <paths>   when any has local changes
     """
     if basename(seg[0]) != "git":
         return False
@@ -375,6 +424,13 @@ def discards_working_tree(seg):
         rest = [t for t in rest if t == "--" or not t.startswith("-")]
         if rest and rest[0] in ("--", "."):
             return True
+        # `git checkout <ref> -- <paths>`: block only if it would destroy work.
+        if "--" in rest:
+            paths = rest[rest.index("--") + 1:]
+            if not paths:
+                return True
+            if _would_discard_uncommitted(paths):
+                return True
     if "restore" in seg and "--staged" not in seg:
         if not any(t == "-s" or t.startswith("--source") for t in seg):
             return True
