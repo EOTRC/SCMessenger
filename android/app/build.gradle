@@ -503,10 +503,24 @@ task generateUniFFIBindings {
 
         def cargoCmd = isWindows ? 'cargo' : (file("${System.getProperty('user.home')}/.cargo/bin/cargo").exists() ? "${System.getProperty('user.home')}/.cargo/bin/cargo" : 'cargo')
 
-        // Step 1: build the host cdylib in release profile (with gen-bindings feature to avoid double compile)
+        // Step 1: build the host cdylib.
+        //
+        // MUST stay a DEBUG build. uniffi library-mode bindgen recovers the
+        // interface by reading UNIFFI metadata symbols out of the compiled
+        // cdylib. A release build strips/GCs those symbols, so bindgen finds no
+        // metadata, emits nothing, and still exits 0 -- generation "succeeds"
+        // and produces an empty output tree.
+        //
+        // ebf5411b flipped this to `--release ... -C debuginfo=0` and the Mobile
+        // lane went from green (feb89335, 2026-08-13) to red on the very next
+        // run. The symptom surfaced a minute later and two tasks downstream as
+        // `e: [ksp] ... error.NonExistentClass` on AndroidPlatformBridge's
+        // supertype, which sent two rounds of diagnosis after task ordering and
+        // source-set registration. Neither was the cause. Step 5 below now
+        // fails here instead, at the real site.
         exec {
             workingDir project.file('../../')
-            environment "RUSTFLAGS", "-C debuginfo=0"
+            environment "RUSTFLAGS", ""
             environment "CARGO_INCREMENTAL", "0"
             ['SCM_GIT_HASH', 'SCM_GIT_REF', 'SCM_BUILD_TIME'].each { key ->
                 def value = System.getenv(key)?.trim()
@@ -515,9 +529,9 @@ task generateUniFFIBindings {
                 }
             }
             if (isWindows) {
-                commandLine 'cmd', '/c', 'cargo build --release -p scmessenger-core --features gen-bindings'
+                commandLine 'cmd', '/c', 'cargo build -p scmessenger-core'
             } else {
-                commandLine cargoCmd, 'build', '--release', '-p', 'scmessenger-core', '--features', 'gen-bindings'
+                commandLine cargoCmd, 'build', '-p', 'scmessenger-core'
             }
         }
 
@@ -529,7 +543,7 @@ task generateUniFFIBindings {
         def cargoTargetDir = project.file(cargoTargetDirStr)
         def stagedDir = file('../../core/target/staged-cdylib')
         stagedDir.mkdirs()
-        def cdylibSrc = new File(cargoTargetDir, "release/${cdylibName}")
+        def cdylibSrc = new File(cargoTargetDir, "debug/${cdylibName}")
         def cdylibStaged = new File(stagedDir, cdylibName)
         if (cdylibSrc.exists()) {
             ant.copy(file: cdylibSrc.absolutePath, tofile: cdylibStaged.absolutePath, overwrite: true)
@@ -550,16 +564,16 @@ task generateUniFFIBindings {
                 }
             }
             if (isWindows) {
-                commandLine 'cmd', '/c', 'cargo build --release --bin gen_kotlin --features gen-bindings'
+                commandLine 'cmd', '/c', 'cargo build --bin gen_kotlin --features gen-bindings'
             } else {
-                commandLine cargoCmd, 'build', '--release', '--bin', 'gen_kotlin', '--features', 'gen-bindings'
+                commandLine cargoCmd, 'build', '--bin', 'gen_kotlin', '--features', 'gen-bindings'
             }
         }
 
         // Step 4: invoke the gen_kotlin binary directly with the staged cdylib
         // path. The binary now also honours SCMESSENGER_CDYLIB_PATH env var as
         // a primary lookup, falling back to CARGO_TARGET_DIR + relative paths.
-        def genKotlinBin = new File(cargoTargetDir, "release/gen_kotlin${isWindows ? '.exe' : ''}")
+        def genKotlinBin = new File(cargoTargetDir, "debug/gen_kotlin${isWindows ? '.exe' : ''}")
         if (!genKotlinBin.exists()) {
             throw new GradleException("gen_kotlin binary not found at ${genKotlinBin.absolutePath}")
         }
