@@ -1,5 +1,11 @@
 # SCMessenger v1.0.0 Execution Plan — Two-Phase DAG
 
+
+> **SUPERSEDED FOR EXECUTION until the v0.4.0 tag.** `SHIP_PLAN.md` is the only
+> execution queue; if a task is not on that page it is not being worked on.
+> This document remains the reference for scope and history, and resumes
+> authority once v0.4.0 is tagged. (Added 2026-08-15.)
+
 **Generated:** 2026-07-04
 **Author:** Claude (native Cowork session), on operator direction (Lucas)
 **Status:** Active — long-horizon v1.0.0 sequencing authority (scope and two-phase DAG).

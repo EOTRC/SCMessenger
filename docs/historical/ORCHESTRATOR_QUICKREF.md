@@ -5,7 +5,7 @@
 ### Quick Commands
 ```bash
 # Check system status
-scripts/orchestrator_activate.sh
+scripts/orchestrator_status.sh
 
 # Control orchestrator
 "Activate orchestrator role" - Enable monitoring

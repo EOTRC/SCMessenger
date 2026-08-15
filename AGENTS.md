@@ -94,6 +94,46 @@ the same relay behavior.
     (`rm -rf`, `Remove-Item -Recurse -Force`) outside `tmp/` and `target/`.
     To recover a file, restore it FORWARD from a ref
     (`git checkout <ref> -- <path>`) rather than discarding working state.
+    Restoring a SINGLE FILE from a ref is recovery; `git checkout <ref> -- .`
+    is mass destruction wearing a recovery costume. On 2026-08-15 that exact
+    command destroyed four files of another session's uncommitted work. The
+    preflight hook now blocks it when the named paths are dirty.
+
+13. DESCRIBE ONLY WHAT YOU HAVE READ. Every statement about a file, commit,
+    PR, or run must come from output you obtained in THIS session. Not from
+    memory, not from its filename, not from what you wrote earlier.
+
+    Trust, but verify — and your own past statements are claims, not facts.
+    Three wrong calls in one day on 2026-08-15 all had the same shape:
+    - `GEMINI.md` was called "undeclared" without opening it. It already said
+      "Read AGENTS.md" and was the correct pattern.
+    - PR #150 was called "tooling-only, zero build risk" from memory of what
+      had been authored. It was 100 commits and +17k lines, including
+      merge-blocked `core/src/crypto` and `core/src/transport` files.
+    - A lesson was reported as "added to the handoff doc" when it had not
+      been written at all.
+
+    The artifact is always more correct than your summary of it. Before you
+    describe something, run the command that shows it. Cite the command.
+
+14. BEFORE ANY IRREVERSIBLE OR OUTWARD-FACING ACTION, ASK "unless there is a
+    reason not to?" — and then actually go looking for one. Merges, pushes,
+    deletions, branch/repo config, releases, anything a stranger will see.
+
+    Enumerate the blockers OUT LOUD before acting. The question is not
+    rhetorical; it is an instruction to spend one command checking. For a
+    merge, that command exists:
+
+        scripts/pr_scope.sh <pr-number>
+
+    It reports what the PR actually contains, whether the base is right,
+    whether it touches merge-blocked directories, and whether checks are
+    green. Asking this question about PR #150 surfaced three blockers in
+    under a minute, one of which would have pushed unreviewed crypto and
+    transport changes past the adversarial-review gate.
+
+    A "yes, merge it" from the operator is permission to act, not evidence
+    that no reason exists. Finding the reason is still your job.
 
 ## Capability classes — know which one you are
 
