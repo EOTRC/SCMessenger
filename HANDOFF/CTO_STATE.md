@@ -25,6 +25,64 @@ replaced it. Do not delete it.** The history of a wrong call is how the next
 session avoids re-making it; every §8 lesson exists because someone deleted the
 context instead of the conclusion.
 
+## 0b. OPERATOR APPROVAL GATE — standing, 2026-08-16
+
+**No change is made without operator approval.** Operator directive, standing.
+
+Interpretation, stated explicitly so it can be corrected rather than assumed:
+
+| Needs approval FIRST | Proceed freely |
+|---|---|
+| Any write to the repo (edit, new file, commit) | Reading anything |
+| Any `git push` | `git log`/`diff`/`merge-tree`/`rev-list` — read-only git |
+| Any merge, close, or reopen of a PR | Running `pr_scope.sh`, `gh pr checks`, reading CI logs |
+| Any PR comment or review posted | Dispatching a **read-only** SCANNER / VALIDATOR |
+| Branch protection, tags, releases | Writing to `tmp/` (scratch, packets, worker output) |
+| Dispatching an IMPLEMENTER (a worker that writes) | Reporting findings and recommendations |
+
+Investigation is not a change. Verification is not a change. **Producing or
+publishing anything is.**
+
+Present the evidence, state the recommendation, then wait. A green gate is not
+approval; `pr_scope.sh` exiting 0 means no reason was *found*, not that the
+operator said yes.
+
+## 0c. The verification loop — keep this shape
+
+This is the loop that caught a CRITICAL-adjacent defect on 2026-08-16 after the
+CTO had already talked himself into "it looks fixed". Do not shorten it.
+
+1. **The controller never self-certifies.** Reading the code and concluding it
+   is fine is a *claim*, not a review. `docs/ORCHESTRATION.md` forbids the
+   controller from making that call and AGENTS.md rule 8 requires an
+   independent sign-off. The CTO read `swarm.rs`, saw the guardrail call, and
+   declared W1 fixed. An independent validator found the cooldown was erased by
+   `forget_peer` on full disconnect. **The gate exists for the person running
+   it, not just for other people.**
+2. **Frame the packet adversarially.** Hand the worker your reading as *a claim
+   to falsify*, in those words: "If you merely agree with it, this review has no
+   value." A packet that asks for confirmation gets confirmation.
+3. **Spot-check what comes back.** A delegated verification is still a claim.
+   Verify the load-bearing assertion with your own command — not the whole
+   report, just the one thing the verdict rests on.
+4. **Expect corrections in both directions.** On 2026-08-16 workers corrected
+   the CTO twice (the #164/#169 renormalization claim; W1), and the CTO
+   corrected workers twice (a `git diff -w` cited as empty when blank lines
+   survive it; a "270 occurrences" census that counted argv unpacking). Neither
+   side is the authority. The command output is.
+5. **Prefer UNCERTAIN to a clean answer.** Tell workers so explicitly. This gate
+   already produced one false "[OK] clear" while six gated files were invisible.
+6. **Artifacts, not chat.** Verdicts go to `docs/security/` or the PR. A review
+   that exists only in a session transcript did not happen — and untracked work
+   in this shared checkout has been destroyed before, so commit it.
+
+Mechanics that keep dispatch healthy: isolated worktree per writer, never the
+shared checkout; deconflict builds (`tasklist` for cargo/gradle/java) before any
+dispatch that builds; a distinct log-dir per concurrent `agy_run.sh` or two runs
+on the same model and SHA silently overwrite each other; `--add-dir` and an
+exact `--model` always; 30m+ timeouts, and a transient `error_message` mid-run
+is not a failure — check whether it recovered before re-dispatching.
+
 ### Seat status
 
 **2026-08-16: this is the ONLY live CTO session.** The other sessions listed by
