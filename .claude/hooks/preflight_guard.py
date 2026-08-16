@@ -21,6 +21,13 @@ Guards:
                           already required operator approval for these; on
                           2026-08-08 a concurrent agent ran four of them in
                           sequence and destroyed another session's work.
+  5. repeat mistakes   -- patterns proven to fail repeatedly in this repo.
+  6. stale checkout    -- repo gates run from a stale checkout silently run the
+                          stale gate script, and stale gates fail in the safe-
+                          looking direction. On 2026-08-15, a stale pr_scope.sh
+                          reported [OK] on PR #139 because of an old 100-file
+                          API cap, missing 6 merge-blocked crypto/transport
+                          files that the current gate caught.
 
 MATCHING: commands are tokenized with shlex and split into shell segments, and a
 guard only fires when the trigger sits at a COMMAND POSITION. Substring matching
@@ -45,6 +52,8 @@ process before the command does.
   SCM_SKIP_DISPATCH_CHECK=1 skip guard 2
   SCM_SKIP_DECONFLICT=1     skip guard 3
   SCM_ALLOW_DESTRUCTIVE=1   skip guard 4
+  SCM_SKIP_LESSONS=1        skip guard 5
+  SCM_SKIP_STALE_GATE=1     skip guard 6
 """
 
 import json
@@ -656,6 +665,156 @@ def guard_lessons(segs, raw):
             )
 
 
+# --- Guard 6: stale checkout ------------------------------------------------
+#
+# A repo gate run from a stale checkout silently runs the STALE gate script,
+# and stale gates fail in the safe-looking direction.
+#
+# On 2026-08-15, two CTO sessions ran concurrently. The shared checkout sat 23
+# commits behind tracking. `scripts/pr_scope.sh` there was therefore the OLD
+# version, which derived its file list from `gh pr view --json files` -- an API
+# that silently capped at 100 files. PR #139 changed 253 files. Run from the
+# stale checkout, the gate printed:
+#     [OK]      clear of core/src/{crypto,transport,routing,privacy}
+# Run from a current checkout, the SAME gate on the SAME PR printed:
+#     [BLOCKER] touches merge-blocked directories (AGENTS.md rule 8):
+#                 core/src/crypto/backup.rs
+#                 core/src/transport/addr_filter.rs
+#                 core/src/transport/behaviour.rs
+#                 core/src/transport/dial_policy.rs
+#                 core/src/transport/observation.rs
+#                 core/src/transport/swarm.rs
+#
+# The gate reported PASS while six merge-blocked files were invisible to it.
+# The repair was already committed (#158), but was not in the checkout where the
+# runbook instructed people to run it.
+#
+# This guard blocks when a repo gate/verification script is invoked from a
+# working tree whose HEAD is behind base refs without performing network operations.
+
+_GATE_SCRIPT_NAMES = {
+    "pr_scope.sh",
+    "docs_sync_check.sh",
+    "docs_sync_check.ps1",
+    "triage_lane.sh",
+    "preflight.sh",
+    "preflight_disk.sh",
+    "preflight_disk.ps1",
+    "build_verify.sh",
+    "rules_check.py",
+    "prepush_check.py",
+    "orchestration_contract.py",
+    "repo_audit.sh",
+    "audit_unsafe.sh",
+    "audit_session_logs.sh",
+    "validate_tag.sh",
+    "validate_v020_final.sh",
+    "verify_incremental_gate.py",
+    "verify_swift_violations.py",
+}
+
+_GATE_SCRIPT_RE = re.compile(
+    r"(?:^|[/\\])"
+    r"(?:pr_scope\.sh|docs_sync_check\.(?:sh|ps1)|triage_lane\.sh|preflight(?:\.sh|_disk\.(?:sh|ps1))|"
+    r"build_verify\.sh|rules_check\.py|prepush_check\.py|orchestration_contract\.py|"
+    r"repo_audit\.sh|audit_unsafe\.sh|audit_session_logs\.sh|validate_tag\.sh|validate_v020_final\.sh|"
+    r"verify_[a-zA-Z0-9_-]+\.(?:sh|py|ps1)|check_[a-zA-Z0-9_-]+\.(?:sh|py|ps1)|"
+    r"[a-zA-Z0-9_-]+_(?:check|verify)[a-zA-Z0-9_-]*\.(?:sh|py|ps1))$",
+    re.IGNORECASE,
+)
+
+_RAW_GATE_RE = re.compile(
+    r"(?:^|[\s/\\\"'])(?:scripts/|\.claude/skills/|\.agents/skills/)?"
+    r"(pr_scope\.sh|docs_sync_check\.(?:sh|ps1)|triage_lane\.sh|preflight(?:\.sh|_disk\.(?:sh|ps1))|"
+    r"build_verify\.sh|rules_check\.py|prepush_check\.py|orchestration_contract\.py|"
+    r"repo_audit\.sh|audit_unsafe\.sh|audit_session_logs\.sh|validate_tag\.sh|validate_v020_final\.sh|"
+    r"verify_[a-zA-Z0-9_-]+\.(?:sh|py|ps1)|check_[a-zA-Z0-9_-]+\.(?:sh|py|ps1)|"
+    r"[a-zA-Z0-9_-]+_(?:check|verify)[a-zA-Z0-9_-]*\.(?:sh|py|ps1))\b",
+    re.IGNORECASE,
+)
+
+_STALE_BASE_REFS = ("origin/tracking/pre-v040-tag-work", "origin/main")
+
+
+def is_gate_script(tok):
+    clean = tok.strip("'\"")
+    bname = os.path.basename(clean.replace("\\", "/")).lower()
+    return bname in _GATE_SCRIPT_NAMES or _GATE_SCRIPT_RE.search(clean) is not None
+
+
+def _get_stale_behind(ref):
+    """Return number of commits HEAD is behind ref, or None if ref doesn't exist."""
+    try:
+        p = subprocess.run(
+            ["git", "rev-list", "--count", "HEAD..%s" % ref],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if p.returncode == 0:
+            return int(p.stdout.strip())
+    except Exception:
+        pass
+    return None
+
+
+def check_stale_checkout():
+    """Return (ref, behind_count) if HEAD is behind a base ref, else (None, 0)."""
+    test_refs = os.environ.get("_SCM_TEST_STALE_BASE_REFS")
+    refs = test_refs.split() if test_refs else _STALE_BASE_REFS
+    for ref in refs:
+        behind = _get_stale_behind(ref)
+        if behind is not None and behind > 0:
+            return ref, behind
+    return None, 0
+
+
+def guard_stale_checkout(segs, raw):
+    if override("SCM_SKIP_STALE_GATE", raw):
+        return
+
+    gate_script = None
+    if segs is not None:
+        for seg in segs:
+            for tok in seg:
+                if is_gate_script(tok):
+                    gate_script = tok.strip("'\"")
+                    break
+            if gate_script:
+                break
+    else:
+        m = _RAW_GATE_RE.search(raw)
+        if m:
+            gate_script = m.group(1)
+
+    if not gate_script:
+        return
+
+    ref, behind = check_stale_checkout()
+    if not ref or behind <= 0:
+        return
+
+    block(
+        "[BLOCKED] repo gate invoked from a stale checkout.\n"
+        "\n"
+        "`%s` was invoked, but HEAD is %d commit%s behind %s.\n"
+        "\n"
+        "A repo gate run from a stale checkout silently runs the STALE gate script,\n"
+        "and stale gates fail in the safe-looking direction. On 2026-08-15, a stale\n"
+        "`scripts/pr_scope.sh` (lacking #158) reported [OK] on PR #139 because of an old\n"
+        "100-file API cap, missing 6 merge-blocked crypto/transport files that the current\n"
+        "gate caught.\n"
+        "\n"
+        "Create a worktree at the current ref and run it there:\n"
+        "\n"
+        "  git worktree add --detach <path> %s\n"
+        "\n"
+        "Detail: docs/rules/BUILD_AND_CI.md, AGENTS.md rule 13\n"
+        "Override: SCM_SKIP_STALE_GATE=1"
+        % (gate_script, behind, "s" if behind != 1 else "", ref, ref)
+    )
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -681,6 +840,7 @@ def main():
         guard_dispatch(segs, raw)
         guard_deconflict(segs, raw)
         guard_lessons(segs, raw)
+        guard_stale_checkout(segs, raw)
     except SystemExit:
         raise
     except Exception:

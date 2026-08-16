@@ -14,20 +14,54 @@
 # process that already prints its own progress would be silly.
 #
 #   scripts/agy_run.sh <model> <timeout> <prompt-file> [log-dir]
-#   scripts/agy_run.sh gemini-3.7-flash-low 30m tmp/orch_test/ORCH_PROMPT.txt
+#   scripts/agy_run.sh gemini-3.7-flash-low 90m tmp/orch_test/ORCH_PROMPT.txt
 #
 # Prints one line per step as it happens, then a summary with token usage.
 # Exits 0 on SUCCESS, 1 on failure/stall.
 
 set -uo pipefail
 REPO="$(git rev-parse --show-toplevel)"
-AGY="${LOCALAPPDATA}/agy/bin/agy.exe"
+AGY="${AGY:-${LOCALAPPDATA}/agy/bin/agy.exe}"
 
-MODEL="${1:-}"; TIMEOUT="${2:-30m}"; PROMPT_FILE="${3:-}"; LOGDIR="${4:-$REPO/tmp/agy}"
+MODEL="${1:-}"; TIMEOUT="${2:-90m}"; PROMPT_FILE="${3:-}"; LOGDIR="${4:-$REPO/tmp/agy}"
 if [ -z "$MODEL" ] || [ -z "$PROMPT_FILE" ] || [ ! -f "$PROMPT_FILE" ]; then
   echo "usage: $0 <model> <timeout> <prompt-file> [log-dir]"
   echo "models: run '$AGY models' (exact names only -- shorthand silently substitutes)"
   exit 2
+fi
+
+parse_duration_seconds() {
+  local dur="$1"
+  local total=0
+  if [[ "$dur" =~ ^[0-9]+$ ]]; then
+    echo "$dur"
+    return
+  fi
+  local rem="$dur"
+  if [[ "$rem" =~ ([0-9]+)h ]]; then
+    local hours="${BASH_REMATCH[1]}"
+    total=$((total + hours * 3600))
+    rem="${rem/${hours}h/}"
+  fi
+  if [[ "$rem" =~ ([0-9]+)m ]]; then
+    local mins="${BASH_REMATCH[1]}"
+    total=$((total + mins * 60))
+    rem="${rem/${mins}m/}"
+  fi
+  if [[ "$rem" =~ ([0-9]+)s ]]; then
+    local secs="${BASH_REMATCH[1]}"
+    total=$((total + secs))
+    rem="${rem/${secs}s/}"
+  fi
+  echo "$total"
+}
+
+# Warn if timeout is below 90m floor for build-bearing tasks
+DUR_SECS=$(parse_duration_seconds "$TIMEOUT")
+if [ "$DUR_SECS" -gt 0 ] && [ "$DUR_SECS" -lt 5400 ]; then
+  if grep -qE "cargo test|cargo build|cargo clippy|gradlew|assembleDebug" "$PROMPT_FILE"; then
+    echo "[WARNING] timeout $TIMEOUT is below the 90m floor for build-bearing tasks" >&2
+  fi
 fi
 
 mkdir -p "$LOGDIR"

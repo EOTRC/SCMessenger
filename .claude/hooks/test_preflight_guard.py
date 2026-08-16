@@ -146,11 +146,11 @@ def main():
     had = os.path.exists(probe)
     original = open(probe, "rb").read() if had else None
     try:
-        extra.append(("mass checkout from a ref is blocked",
-                      run("git checkout origin/main -- ."), 2))
         if had:
             with open(probe, "ab") as fh:
                 fh.write(b"\n<!-- preflight guard test scratch -->\n")
+            extra.append(("mass checkout from a ref is blocked",
+                          run("git checkout origin/main -- ."), 2))
             extra.append(("checkout over a DIRTY path is blocked",
                           run("git checkout origin/main -- " + probe), 2))
             open(probe, "wb").write(original)
@@ -159,6 +159,85 @@ def main():
     finally:
         if had and original is not None:
             open(probe, "wb").write(original)
+
+    # --- T1: Stale-checkout guard tests ----------------------------------
+    try:
+        tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"]).decode().strip()
+        c1 = subprocess.check_output(["git", "commit-tree", tree, "-p", "HEAD", "-m", "test1"]).decode().strip()
+        c2 = subprocess.check_output(["git", "commit-tree", tree, "-p", c1, "-m", "test2"]).decode().strip()
+        c3 = subprocess.check_output(["git", "commit-tree", tree, "-p", c2, "-m", "test3"]).decode().strip()
+        test_ref = "refs/test/stale-tripwire"
+        subprocess.check_call(["git", "update-ref", test_ref, c3])
+        try:
+            env_stale = dict(ENV_NO_DECONFLICT, _SCM_TEST_STALE_BASE_REFS=test_ref)
+            payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "scripts/pr_scope.sh 139"}})
+            p = subprocess.run([sys.executable, HOOK], input=payload, capture_output=True, text=True, env=env_stale)
+            extra.append(("T1 stale checkout: fires when behind", p.returncode, 2))
+
+            msg_ok = ("3 commits behind refs/test/stale-tripwire" in p.stderr and
+                      "scripts/pr_scope.sh" in p.stderr and
+                      "git worktree add --detach <path> refs/test/stale-tripwire" in p.stderr and
+                      "SCM_SKIP_STALE_GATE=1" in p.stderr)
+            extra.append(("T1 stale checkout: message has ref, count, and remediation", 0 if msg_ok else 1, 0))
+
+            p_skip = subprocess.run(
+                [sys.executable, HOOK],
+                input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "SCM_SKIP_STALE_GATE=1 scripts/pr_scope.sh 139"}}),
+                capture_output=True, text=True, env=env_stale
+            )
+            extra.append(("T1 stale checkout: respects SCM_SKIP_STALE_GATE=1", p_skip.returncode, 0))
+
+            p_nongate = subprocess.run(
+                [sys.executable, HOOK],
+                input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "scripts/clean_target.sh --all"}}),
+                capture_output=True, text=True, env=env_stale
+            )
+            extra.append(("T1 stale checkout: non-gate script allowed when behind", p_nongate.returncode, 0))
+
+            p_current = subprocess.run(
+                [sys.executable, HOOK],
+                input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "scripts/pr_scope.sh 139"}}),
+                capture_output=True, text=True, env=ENV_NO_DECONFLICT
+            )
+            extra.append(("T1 stale checkout: gate allowed when current (0 behind)", p_current.returncode, 0))
+        finally:
+            subprocess.check_call(["git", "update-ref", "-d", test_ref])
+    except Exception as e:
+        extra.append(("T1 stale checkout tests failed setup: %s" % e, 1, 0))
+
+    # --- T2: Dispatch timeout floor tests --------------------------------
+    try:
+        os.makedirs("tmp", exist_ok=True)
+        build_prompt = "tmp/test_build_prompt.txt"
+        nobuild_prompt = "tmp/test_nobuild_prompt.txt"
+        with open(build_prompt, "w") as f:
+            f.write("Please run cargo test --workspace\n")
+        with open(nobuild_prompt, "w") as f:
+            f.write("Please review documentation\n")
+
+        env_agy = dict(os.environ, AGY="true")
+        p_def = subprocess.run(["bash", "scripts/agy_run.sh", "test-model", "", nobuild_prompt],
+                               capture_output=True, text=True, env=env_agy)
+        extra.append(("T2 timeout floor: default is 90m", 0 if "timeout=90m" in p_def.stdout else 1, 0))
+
+        p_warn = subprocess.run(["bash", "scripts/agy_run.sh", "test-model", "30m", build_prompt],
+                                capture_output=True, text=True, env=env_agy)
+        warn_ok = "[WARNING] timeout 30m is below the 90m floor for build-bearing tasks" in p_warn.stderr
+        extra.append(("T2 timeout floor: warning for build-bearing prompt under 90m", 0 if warn_ok else 1, 0))
+
+        p_90m = subprocess.run(["bash", "scripts/agy_run.sh", "test-model", "90m", build_prompt],
+                               capture_output=True, text=True, env=env_agy)
+        extra.append(("T2 timeout floor: no warning for build-bearing prompt at 90m", 0 if "[WARNING]" not in p_90m.stderr else 1, 0))
+
+        p_120m = subprocess.run(["bash", "scripts/agy_run.sh", "test-model", "120m", build_prompt],
+                                capture_output=True, text=True, env=env_agy)
+        extra.append(("T2 timeout floor: no warning for build-bearing prompt at 120m", 0 if "[WARNING]" not in p_120m.stderr else 1, 0))
+
+        p_nobuild = subprocess.run(["bash", "scripts/agy_run.sh", "test-model", "30m", nobuild_prompt],
+                                   capture_output=True, text=True, env=env_agy)
+        extra.append(("T2 timeout floor: no warning for non-build prompt under 90m", 0 if "[WARNING]" not in p_nobuild.stderr else 1, 0))
+    except Exception as e:
+        extra.append(("T2 timeout floor tests failed setup: %s" % e, 1, 0))
 
     npass = nfail = 0
     results = [(d, run(c), e) for d, c, e in CASES] + extra
