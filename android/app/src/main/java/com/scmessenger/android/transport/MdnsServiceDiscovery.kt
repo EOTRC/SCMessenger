@@ -208,6 +208,11 @@ class MdnsServiceDiscovery(
             Timber.d("mDNS: ignoring service lost for $serviceName without valid peer id")
             return
         }
+        val localPeerId = getLocalPeerId?.invoke()
+        if (localPeerId != null && cachedPeerId == localPeerId) {
+            Timber.d("mDNS: ignoring self service-lost for $cachedPeerId")
+            return
+        }
         onPeerDisconnected?.invoke(cachedPeerId)
     }
 

@@ -229,4 +229,130 @@ class MdnsServiceDiscoveryTest {
         )
         unmockkStatic(ContextCompat::class)
     }
+
+    @Test
+    fun `onServiceLost with local peer-id does not emit a disconnect`() {
+        val context = mockk<Context>(relaxed = true)
+        val onPeerDiscovered = mockk<(String) -> Unit>(relaxed = true)
+        val onDataReceived = mockk<(String, ByteArray) -> Unit>(relaxed = true)
+        val onPeerDisconnected = mockk<(String) -> Unit>(relaxed = true)
+        val onLanPeerResolved = mockk<(String, String, Int, String) -> Unit>(relaxed = true)
+        val getLocalPeerId = mockk<(() -> String?)>(relaxed = true)
+
+        every { getLocalPeerId.invoke() } returns "12D3KooWLocalPeerId1234567890123456789012345678"
+
+        val discovery = MdnsServiceDiscovery(
+            context,
+            onPeerDiscovered,
+            onDataReceived,
+            onPeerDisconnected,
+            onLanPeerResolved,
+            getLocalPeerId
+        )
+
+        val newResolveListenerMethod = MdnsServiceDiscovery::class.java.getDeclaredMethod(
+            "newResolveListener",
+            String::class.java
+        )
+        newResolveListenerMethod.isAccessible = true
+        val resolveListener = newResolveListenerMethod.invoke(discovery, "_scmessenger._tcp") as NsdManager.ResolveListener
+
+        val serviceInfo = mockk<NsdServiceInfo>(relaxed = true)
+        every { serviceInfo.attributes } returns mapOf("peer-id" to "12D3KooWLocalPeerId1234567890123456789012345678".toByteArray())
+        every { serviceInfo.serviceName } returns "testService"
+        every { serviceInfo.port } returns 9001
+
+        val inetAddress = mockk<InetAddress>(relaxed = true)
+        every { inetAddress.hostAddress } returns "192.168.0.148"
+        every { serviceInfo.host } returns inetAddress
+
+        resolveListener.onServiceResolved(serviceInfo)
+        discovery.onServiceLost(serviceInfo)
+
+        verify(exactly = 0) { onPeerDisconnected(any()) }
+    }
+
+    @Test
+    fun `onServiceLost with a different peer-id emits exactly one disconnect`() {
+        val context = mockk<Context>(relaxed = true)
+        val onPeerDiscovered = mockk<(String) -> Unit>(relaxed = true)
+        val onDataReceived = mockk<(String, ByteArray) -> Unit>(relaxed = true)
+        val onPeerDisconnected = mockk<(String) -> Unit>(relaxed = true)
+        val onLanPeerResolved = mockk<(String, String, Int, String) -> Unit>(relaxed = true)
+        val getLocalPeerId = mockk<(() -> String?)>(relaxed = true)
+
+        every { getLocalPeerId.invoke() } returns "12D3KooWLocalPeerId1234567890123456789012345678"
+
+        val discovery = MdnsServiceDiscovery(
+            context,
+            onPeerDiscovered,
+            onDataReceived,
+            onPeerDisconnected,
+            onLanPeerResolved,
+            getLocalPeerId
+        )
+
+        val newResolveListenerMethod = MdnsServiceDiscovery::class.java.getDeclaredMethod(
+            "newResolveListener",
+            String::class.java
+        )
+        newResolveListenerMethod.isAccessible = true
+        val resolveListener = newResolveListenerMethod.invoke(discovery, "_scmessenger._tcp") as NsdManager.ResolveListener
+
+        val serviceInfo = mockk<NsdServiceInfo>(relaxed = true)
+        every { serviceInfo.attributes } returns mapOf("peer-id" to "12D3KooWRemotePeerId123456789012345678901234567".toByteArray())
+        every { serviceInfo.serviceName } returns "testService"
+        every { serviceInfo.port } returns 9001
+
+        val inetAddress = mockk<InetAddress>(relaxed = true)
+        every { inetAddress.hostAddress } returns "192.168.0.148"
+        every { serviceInfo.host } returns inetAddress
+
+        resolveListener.onServiceResolved(serviceInfo)
+        discovery.onServiceLost(serviceInfo)
+
+        verify(exactly = 1) { onPeerDisconnected("12D3KooWRemotePeerId123456789012345678901234567") }
+    }
+
+    @Test
+    fun `onServiceLost with an invalid peer-id does not emit a disconnect`() {
+        val context = mockk<Context>(relaxed = true)
+        val onPeerDiscovered = mockk<(String) -> Unit>(relaxed = true)
+        val onDataReceived = mockk<(String, ByteArray) -> Unit>(relaxed = true)
+        val onPeerDisconnected = mockk<(String) -> Unit>(relaxed = true)
+        val onLanPeerResolved = mockk<(String, String, Int, String) -> Unit>(relaxed = true)
+        val getLocalPeerId = mockk<(() -> String?)>(relaxed = true)
+
+        every { getLocalPeerId.invoke() } returns "12D3KooWLocalPeerId1234567890123456789012345678"
+
+        val discovery = MdnsServiceDiscovery(
+            context,
+            onPeerDiscovered,
+            onDataReceived,
+            onPeerDisconnected,
+            onLanPeerResolved,
+            getLocalPeerId
+        )
+
+        val newResolveListenerMethod = MdnsServiceDiscovery::class.java.getDeclaredMethod(
+            "newResolveListener",
+            String::class.java
+        )
+        newResolveListenerMethod.isAccessible = true
+        val resolveListener = newResolveListenerMethod.invoke(discovery, "_scmessenger._tcp") as NsdManager.ResolveListener
+
+        val serviceInfo = mockk<NsdServiceInfo>(relaxed = true)
+        every { serviceInfo.attributes } returns mapOf("peer-id" to "INVALID_PEER_ID_NO_PREFIX".toByteArray())
+        every { serviceInfo.serviceName } returns "testService"
+        every { serviceInfo.port } returns 9001
+
+        val inetAddress = mockk<InetAddress>(relaxed = true)
+        every { inetAddress.hostAddress } returns "192.168.0.148"
+        every { serviceInfo.host } returns inetAddress
+
+        resolveListener.onServiceResolved(serviceInfo)
+        discovery.onServiceLost(serviceInfo)
+
+        verify(exactly = 0) { onPeerDisconnected(any()) }
+    }
 }
