@@ -733,7 +733,7 @@ _RAW_GATE_RE = re.compile(
     re.IGNORECASE,
 )
 
-_STALE_BASE_REFS = ("origin/tracking/pre-v040-tag-work", "origin/main")
+_CANONICAL_REF = "origin/tracking/pre-v040-tag-work"
 
 
 def is_gate_script(tok):
@@ -742,77 +742,98 @@ def is_gate_script(tok):
     return bname in _GATE_SCRIPT_NAMES or _GATE_SCRIPT_RE.search(clean) is not None
 
 
-def _get_stale_behind(ref):
-    """Return number of commits HEAD is behind ref, or None if ref doesn't exist."""
+def _get_blob_oid(ref, path):
+    """Return git blob object ID for path at ref, or None if missing or on error."""
     try:
         p = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD..%s" % ref],
+            ["git", "rev-parse", "--verify", "%s:%s" % (ref, path)],
             capture_output=True,
             text=True,
             timeout=5,
         )
         if p.returncode == 0:
-            return int(p.stdout.strip())
+            oid = p.stdout.strip()
+            if oid:
+                return oid
     except Exception:
         pass
     return None
 
 
-def check_stale_checkout():
-    """Return (ref, behind_count) if HEAD is behind a base ref, else (None, 0)."""
-    test_refs = os.environ.get("_SCM_TEST_STALE_BASE_REFS")
-    refs = test_refs.split() if test_refs else _STALE_BASE_REFS
-    for ref in refs:
-        behind = _get_stale_behind(ref)
-        if behind is not None and behind > 0:
-            return ref, behind
-    return None, 0
+def resolve_script_path(tok):
+    clean = tok.strip("'\"").replace("\\", "/")
+    if clean.startswith("./"):
+        clean = clean[2:]
+    return clean
+
+
+def _resolve_repo_path(path):
+    """Resolve relative path against HEAD if a bare script name was used."""
+    norm = resolve_script_path(path)
+    if _get_blob_oid("HEAD", norm) is not None:
+        return norm
+    if "/" not in norm:
+        cand = "scripts/" + norm
+        if _get_blob_oid("HEAD", cand) is not None:
+            return cand
+    return norm
 
 
 def guard_stale_checkout(segs, raw):
     if override("SCM_SKIP_STALE_GATE", raw):
         return
 
-    gate_script = None
+    gate_scripts = []
     if segs is not None:
         for seg in segs:
             for tok in seg:
                 if is_gate_script(tok):
-                    gate_script = tok.strip("'\"")
-                    break
-            if gate_script:
-                break
+                    gate_scripts.append(tok)
     else:
-        m = _RAW_GATE_RE.search(raw)
-        if m:
-            gate_script = m.group(1)
+        for m in _RAW_GATE_RE.finditer(raw):
+            gate_scripts.append(m.group(1))
 
-    if not gate_script:
+    if not gate_scripts:
         return
 
-    ref, behind = check_stale_checkout()
-    if not ref or behind <= 0:
-        return
-
-    block(
-        "[BLOCKED] repo gate invoked from a stale checkout.\n"
-        "\n"
-        "`%s` was invoked, but HEAD is %d commit%s behind %s.\n"
-        "\n"
-        "A repo gate run from a stale checkout silently runs the STALE gate script,\n"
-        "and stale gates fail in the safe-looking direction. On 2026-08-15, a stale\n"
-        "`scripts/pr_scope.sh` (lacking #158) reported [OK] on PR #139 because of an old\n"
-        "100-file API cap, missing 6 merge-blocked crypto/transport files that the current\n"
-        "gate caught.\n"
-        "\n"
-        "Create a worktree at the current ref and run it there:\n"
-        "\n"
-        "  git worktree add --detach <path> %s\n"
-        "\n"
-        "Detail: docs/rules/BUILD_AND_CI.md, AGENTS.md rule 13\n"
-        "Override: SCM_SKIP_STALE_GATE=1"
-        % (gate_script, behind, "s" if behind != 1 else "", ref, ref)
+    canonical_ref = (
+        os.environ.get("_SCM_TEST_CANONICAL_REF")
+        or os.environ.get("_SCM_TEST_STALE_BASE_REFS")
+        or _CANONICAL_REF
     )
+
+    for tok in gate_scripts:
+        script_path = _resolve_repo_path(tok)
+        head_oid = _get_blob_oid("HEAD", script_path)
+        if not head_oid:
+            continue  # Path missing at HEAD or git error -> fail open
+
+        canonical_oid = _get_blob_oid(canonical_ref, script_path)
+        if not canonical_oid:
+            continue  # Path missing at ref, ref missing, or git error -> fail open
+
+        if head_oid != canonical_oid:
+            block(
+                "[BLOCKED] repo gate differs from canonical version.\n"
+                "\n"
+                "`%s` differs from the canonical version at %s.\n"
+                "\n"
+                "A repo gate run from a stale checkout silently runs the STALE gate script,\n"
+                "and stale gates fail in the safe-looking direction. On 2026-08-15, a stale\n"
+                "`scripts/pr_scope.sh` (lacking #158) reported [OK] on PR #139 because of an old\n"
+                "100-file API cap, missing 6 merge-blocked crypto/transport files that the current\n"
+                "gate caught.\n"
+                "\n"
+                "To see what changed:\n"
+                "  git diff HEAD %s -- %s\n"
+                "\n"
+                "Create a worktree at the canonical ref and run it there:\n"
+                "  git worktree add --detach <path> %s\n"
+                "\n"
+                "Detail: docs/rules/BUILD_AND_CI.md, AGENTS.md rule 13\n"
+                "Override: SCM_SKIP_STALE_GATE=1"
+                % (script_path, canonical_ref, canonical_ref, script_path, canonical_ref)
+            )
 
 
 def main():

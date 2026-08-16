@@ -160,50 +160,143 @@ def main():
         if had and original is not None:
             open(probe, "wb").write(original)
 
-    # --- T1: Stale-checkout guard tests ----------------------------------
+    # --- T1: Stale-gate blob comparison tests ----------------------------
+    os.makedirs("tmp", exist_ok=True)
+    idx_file = os.path.abspath("tmp/test_fixture_index")
+    env_git = dict(os.environ, GIT_INDEX_FILE=idx_file)
+
+    ref_identical_behind = "refs/test/canonical-identical-behind"
+    ref_differ = "refs/test/canonical-differ"
+    ref_missing_gate = "refs/test/canonical-missing-gate"
+    ref_nongate_differ = "refs/test/canonical-nongate-differ"
+
+    created_refs = []
     try:
-        tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"]).decode().strip()
-        c1 = subprocess.check_output(["git", "commit-tree", tree, "-p", "HEAD", "-m", "test1"]).decode().strip()
-        c2 = subprocess.check_output(["git", "commit-tree", tree, "-p", c1, "-m", "test2"]).decode().strip()
-        c3 = subprocess.check_output(["git", "commit-tree", tree, "-p", c2, "-m", "test3"]).decode().strip()
-        test_ref = "refs/test/stale-tripwire"
-        subprocess.check_call(["git", "update-ref", test_ref, c3])
-        try:
-            env_stale = dict(ENV_NO_DECONFLICT, _SCM_TEST_STALE_BASE_REFS=test_ref)
-            payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "scripts/pr_scope.sh 139"}})
-            p = subprocess.run([sys.executable, HOOK], input=payload, capture_output=True, text=True, env=env_stale)
-            extra.append(("T1 stale checkout: fires when behind", p.returncode, 2))
+        head_tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"]).decode().strip()
 
-            msg_ok = ("3 commits behind refs/test/stale-tripwire" in p.stderr and
-                      "scripts/pr_scope.sh" in p.stderr and
-                      "git worktree add --detach <path> refs/test/stale-tripwire" in p.stderr and
-                      "SCM_SKIP_STALE_GATE=1" in p.stderr)
-            extra.append(("T1 stale checkout: message has ref, count, and remediation", 0 if msg_ok else 1, 0))
+        # 1. Identical tree, 25 commits ahead (HEAD is 25 behind)
+        c = "HEAD"
+        for i in range(25):
+            c = subprocess.check_output(["git", "commit-tree", head_tree, "-p", c, "-m", "ahead %d" % i]).decode().strip()
+        subprocess.check_call(["git", "update-ref", ref_identical_behind, c])
+        created_refs.append(ref_identical_behind)
 
-            p_skip = subprocess.run(
-                [sys.executable, HOOK],
-                input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "SCM_SKIP_STALE_GATE=1 scripts/pr_scope.sh 139"}}),
-                capture_output=True, text=True, env=env_stale
-            )
-            extra.append(("T1 stale checkout: respects SCM_SKIP_STALE_GATE=1", p_skip.returncode, 0))
+        # 2. Canonical tree where scripts/pr_scope.sh blob differs (stale gate A), but scripts/rules_check.py is identical
+        subprocess.check_call(["git", "read-tree", "HEAD"], env=env_git)
+        mod_pr_scope = subprocess.check_output(
+            ["git", "hash-object", "-w", "--stdin"],
+            input=b"#!/usr/bin/env bash\n# modified pr_scope\nexit 0\n"
+        ).decode().strip()
+        subprocess.check_call(["git", "update-index", "--add", "--cacheinfo", "100755", mod_pr_scope, "scripts/pr_scope.sh"], env=env_git)
+        tree_differ = subprocess.check_output(["git", "write-tree"], env=env_git).decode().strip()
+        c_differ = subprocess.check_output(["git", "commit-tree", tree_differ, "-p", "HEAD", "-m", "differ"]).decode().strip()
+        subprocess.check_call(["git", "update-ref", ref_differ, c_differ])
+        created_refs.append(ref_differ)
 
-            p_nongate = subprocess.run(
-                [sys.executable, HOOK],
-                input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "scripts/clean_target.sh --all"}}),
-                capture_output=True, text=True, env=env_stale
-            )
-            extra.append(("T1 stale checkout: non-gate script allowed when behind", p_nongate.returncode, 0))
+        # 3. Canonical tree where a gate script (scripts/rules_check.py) is absent
+        subprocess.check_call(["git", "read-tree", "HEAD"], env=env_git)
+        subprocess.check_call(["git", "update-index", "--force-remove", "scripts/rules_check.py"], env=env_git)
+        tree_missing = subprocess.check_output(["git", "write-tree"], env=env_git).decode().strip()
+        c_missing = subprocess.check_output(["git", "commit-tree", tree_missing, "-p", "HEAD", "-m", "missing gate"]).decode().strip()
+        subprocess.check_call(["git", "update-ref", ref_missing_gate, c_missing])
+        created_refs.append(ref_missing_gate)
 
-            p_current = subprocess.run(
-                [sys.executable, HOOK],
-                input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "scripts/pr_scope.sh 139"}}),
-                capture_output=True, text=True, env=ENV_NO_DECONFLICT
-            )
-            extra.append(("T1 stale checkout: gate allowed when current (0 behind)", p_current.returncode, 0))
-        finally:
-            subprocess.check_call(["git", "update-ref", "-d", test_ref])
-    except Exception as e:
-        extra.append(("T1 stale checkout tests failed setup: %s" % e, 1, 0))
+        # 4. Canonical tree where non-gate script differs
+        subprocess.check_call(["git", "read-tree", "HEAD"], env=env_git)
+        mod_nongate = subprocess.check_output(
+            ["git", "hash-object", "-w", "--stdin"],
+            input=b"#!/usr/bin/env bash\n# modified clean_target\nexit 0\n"
+        ).decode().strip()
+        subprocess.check_call(["git", "update-index", "--add", "--cacheinfo", "100755", mod_nongate, "scripts/clean_target.sh"], env=env_git)
+        tree_nongate = subprocess.check_output(["git", "write-tree"], env=env_git).decode().strip()
+        c_nongate = subprocess.check_output(["git", "commit-tree", tree_nongate, "-p", "HEAD", "-m", "nongate differ"]).decode().strip()
+        subprocess.check_call(["git", "update-ref", ref_nongate_differ, c_nongate])
+        created_refs.append(ref_nongate_differ)
+
+        # Test 1: Gate script blob IDENTICAL to canonical ref, HEAD far behind -> NO block
+        env_t1 = dict(ENV_NO_DECONFLICT, _SCM_TEST_CANONICAL_REF=ref_identical_behind)
+        p1 = subprocess.run(
+            [sys.executable, HOOK],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "scripts/pr_scope.sh 139"}}),
+            capture_output=True, text=True, env=env_t1
+        )
+        t1_ok = (p1.returncode == 0 and p1.stderr.strip() == "")
+        extra.append(("T1: identical blob when HEAD far behind allows (scm-lane-b-pr-scope case)", 0 if t1_ok else 1, 0))
+
+        # Test 2: Gate script blob DIFFERENT from canonical ref -> BLOCK with path and git diff
+        env_t2 = dict(ENV_NO_DECONFLICT, _SCM_TEST_CANONICAL_REF=ref_differ)
+        p2 = subprocess.run(
+            [sys.executable, HOOK],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "scripts/pr_scope.sh 139"}}),
+            capture_output=True, text=True, env=env_t2
+        )
+        diff_cmd = "git diff HEAD %s -- scripts/pr_scope.sh" % ref_differ
+        t2_msg = (
+            "scripts/pr_scope.sh" in p2.stderr
+            and ("differs from the canonical version at %s" % ref_differ) in p2.stderr
+            and diff_cmd in p2.stderr
+            and ("git worktree add --detach <path> %s" % ref_differ) in p2.stderr
+            and "SCM_SKIP_STALE_GATE=1" in p2.stderr
+            and "PR #139" in p2.stderr
+        )
+        extra.append(("T1: different blob blocks", p2.returncode, 2))
+        extra.append(("T1: block message contains path, diff command, remediation", 0 if t2_msg else 1, 0))
+
+        # Test 3: Script path absent at HEAD -> NO block (fail open)
+        p3 = subprocess.run(
+            [sys.executable, HOOK],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "scripts/verify_nonexistent_absent.sh"}}),
+            capture_output=True, text=True, env=env_t2
+        )
+        extra.append(("T1: script path absent at HEAD fails open (allowed)", p3.returncode, 0))
+
+        # Test 4: Script path absent at canonical ref -> NO block (fail open)
+        env_t4 = dict(ENV_NO_DECONFLICT, _SCM_TEST_CANONICAL_REF=ref_missing_gate)
+        p4 = subprocess.run(
+            [sys.executable, HOOK],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "python scripts/rules_check.py"}}),
+            capture_output=True, text=True, env=env_t4
+        )
+        extra.append(("T1: script path absent at canonical ref fails open (allowed)", p4.returncode, 0))
+
+        # Test 5: Canonical ref does not exist at all -> NO block (fail open)
+        env_t5 = dict(ENV_NO_DECONFLICT, _SCM_TEST_CANONICAL_REF="refs/test/nonexistent-ref-xyz")
+        p5 = subprocess.run(
+            [sys.executable, HOOK],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "scripts/pr_scope.sh 139"}}),
+            capture_output=True, text=True, env=env_t5
+        )
+        extra.append(("T1: nonexistent canonical ref fails open (allowed)", p5.returncode, 0))
+
+        # Test 6: Non-gate script that differs -> NO block
+        env_t6 = dict(ENV_NO_DECONFLICT, _SCM_TEST_CANONICAL_REF=ref_nongate_differ)
+        p6 = subprocess.run(
+            [sys.executable, HOOK],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "scripts/clean_target.sh --all"}}),
+            capture_output=True, text=True, env=env_t6
+        )
+        extra.append(("T1: non-gate script differing is allowed", p6.returncode, 0))
+
+        # Test 7: SCM_SKIP_STALE_GATE=1 -> NO block
+        p7 = subprocess.run(
+            [sys.executable, HOOK],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "SCM_SKIP_STALE_GATE=1 scripts/pr_scope.sh 139"}}),
+            capture_output=True, text=True, env=env_t2
+        )
+        extra.append(("T1: SCM_SKIP_STALE_GATE=1 override allows", p7.returncode, 0))
+
+        # Test 8: Stale gate A does not block invocation of current gate B
+        p8_b = subprocess.run(
+            [sys.executable, HOOK],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "python scripts/rules_check.py"}}),
+            capture_output=True, text=True, env=env_t2
+        )
+        extra.append(("T1: stale gate A does not block invocation of current gate B", p8_b.returncode, 0))
+    finally:
+        for r in created_refs:
+            subprocess.run(["git", "update-ref", "-d", r], capture_output=True)
+        if os.path.exists(idx_file):
+            os.remove(idx_file)
 
     # --- T2: Dispatch timeout floor tests --------------------------------
     try:
