@@ -180,12 +180,30 @@ resolved for now: no need to re-establish the seat before merging.
    `SwarmEvent::ConnectionEstablished`/`ConnectionClosed` and asserting no
    redundant `LedgerExchangeRequest`. Does not affect current correctness.
 
-6. **`git merge-base --is-ancestor` disagreed with reality.** It reported
-   `fix/transport-saturating-score-bandwidth-bypass` (PR #165) as NOT merged
-   into `tracking` hours after this session merged it. Unresolved -- possibly a
-   stale local ref, possibly a merge-shape assumption. It nearly blocked a 5.7 GB
-   worktree reclaim, and it is load-bearing for `reap_worktrees.sh`. **Do not
-   trust it for reaping until diagnosed.** Failing closed was correct here.
+6. ~~**`git merge-base --is-ancestor` disagreed with reality.**~~
+   **DIAGNOSED AND FIXED 2026-08-16 (PR #173).**
+
+   Root cause: `--is-ancestor` returns **0 = merged, 1 = NOT merged, 128 = REF
+   ERROR**. The check collapsed non-zero to "not merged". PR #165 merged at
+   16:53Z, GitHub deleted the branch, `git fetch --prune` dropped the local ref,
+   and the check then returned **128** -- reported as "not merged".
+
+   That is a **permanent** false negative: the ref never returns, so a
+   merged-and-pruned worktree could never be reclaimed. It failed safe, but a
+   gate that can never open is still broken.
+
+   Fixed in #173 via `scripts/reclaim_safe.py`: 128 yields **UNKNOWN**, never
+   "no" and never SAFE, with a PR-state fallback when the ref is gone. Verdict
+   requires all three of clean + zero unpushed + merged. `reap_worktrees.sh`
+   carried the same bug and is updated.
+
+   **Verified reclaim survey (24 worktrees): 14 SAFE, 8 HOLD, 1 PATH-GONE,
+   0 unpushed anywhere.** PR #165 confirmed MERGED (`81a4bbd2`). 5 GB reclaimed
+   from `scm-android-gate` and `scm-fix-transport-defects`; source trees intact.
+
+   Still open from this: **`e01c-pq-mixing` is registered in `git worktree list`
+   but absent from disk**, so that list is not a trustworthy inventory. Needs
+   `git worktree prune` -- not run, it deletes.
 
 7. **`LNK1318: Unexpected PDB error; LIMIT` is disk exhaustion**, not
    corruption. Observed at 963 MB free / 100% full mid-link. Add it to the
