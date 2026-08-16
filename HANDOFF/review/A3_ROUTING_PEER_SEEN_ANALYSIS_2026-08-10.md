@@ -86,7 +86,7 @@
 +                .update_peer_hints(&peer_id, vec![hint]);
          }
      }
- 
+
      /// Update peer hint vectors for routing table.
      pub fn routing_update_peer_hints(&self, peer_id_hex: String, hints: Vec<Vec<u8>>) {
 ```
