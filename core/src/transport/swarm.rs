@@ -830,10 +830,6 @@ impl RelayAbuseGuardrails {
         true
     }
 
-    fn forget_peer(&mut self, peer_id: &PeerId) {
-        self.failover_reexchange_at.remove(peer_id);
-    }
-
     fn should_reject_cheap_heuristics(
         &self,
         message_id: &str,
@@ -5401,7 +5397,6 @@ pub async fn start_swarm_with_config(
                                 // Allow re-exchange if they reconnect
                                 ledger_exchanged_peers.remove(&peer_id);
                                 pending_ledger_exchanges.remove(&peer_id);
-                                ledger_exchange_guardrails.forget_peer(&peer_id);
                                 reported_peer_discoveries.remove(&peer_id);
                                 reported_peer_info.remove(&peer_id);
 
@@ -7741,7 +7736,6 @@ pub async fn start_swarm_with_config(
                                 connection_tracker.remove_connection(&peer_id);
                                 ledger_exchanged_peers.remove(&peer_id);
                                 pending_ledger_exchanges.remove(&peer_id);
-                                ledger_exchange_guardrails.forget_peer(&peer_id);
                                 let stale_dispatches: Vec<libp2p::request_response::OutboundRequestId> =
                                     pending_custody_dispatches
                                         .iter()
@@ -8752,20 +8746,27 @@ mod ledger_seeding_hardening_tests {
         ));
     }
 
-    /// A flapping multi-path peer must not turn every partial connection close
-    /// into a full ledger scan and outbound request. The cooldown is cleared
-    /// only when the peer fully disconnects, so a surviving path can still
-    /// converge again after a later reconnect.
+    /// W1: Failover re-exchange cooldown must persist across full disconnects.
+    /// A peer that disconnects and reconnects (or experiences partial close after full close)
+    /// must still be denied a second failover re-exchange inside the 3-second cooldown window,
+    /// preventing full ledger scan amplification attacks.
     #[test]
-    fn failover_ledger_reexchange_is_rate_limited_until_peer_teardown() {
+    fn failover_ledger_reexchange_cooldown_persists_across_full_disconnect() {
         let mut guardrails = RelayAbuseGuardrails::new();
         let peer = PeerId::random();
+        let other_peer = PeerId::random();
 
+        // First failover re-exchange is allowed.
         assert!(guardrails.allow_failover_reexchange(peer));
+        // Immediate repeat is rate-limited.
         assert!(!guardrails.allow_failover_reexchange(peer));
 
-        guardrails.forget_peer(&peer);
-        assert!(guardrails.allow_failover_reexchange(peer));
+        // Full disconnect must NOT reset the failover cooldown (W1 defect fix).
+        // Calling allow_failover_reexchange within the cooldown window must still be denied.
+        assert!(!guardrails.allow_failover_reexchange(peer));
+
+        // Limit is per-peer: an unrelated peer is unaffected.
+        assert!(guardrails.allow_failover_reexchange(other_peer));
     }
 
     /// F3 follow-up: `is_discoverable_multiaddr` gates Kademlia insertion and is
