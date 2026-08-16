@@ -11,6 +11,52 @@ Entry point: `/CTO`. This file is the whole context load.
 > re-derived table, the verified merge mechanics, and the routing plan.
 > Sections §1, §4, §5, §6, §7 and §8 of this file remain accurate.
 
+## 0. STANDING RULE — keep this file current
+
+**Update this file at the END of every session, and immediately on any
+important change.** Operator directive, 2026-08-16, standing.
+
+"Important" means: a merge or close, a gate result, a decision made or reversed,
+a blocker found or cleared, a claim in here proven wrong. Do not batch these to
+the end — a session that dies mid-run leaves the next one reading fiction.
+
+When a section here is overtaken by events, **mark it superseded and say what
+replaced it. Do not delete it.** The history of a wrong call is how the next
+session avoids re-making it; every §8 lesson exists because someone deleted the
+context instead of the conclusion.
+
+### Seat status
+
+**2026-08-16: this is the ONLY live CTO session.** The other sessions listed by
+`mcp__ccd_session_mgmt__list_sessions` as `isRunning: true` — "Cto resume v040",
+"Scm cto 1000 hst" — are **stale processes, not active seats** (operator
+confirmed). The §8 "one CTO seat" caution stands for the future, but it is
+resolved for now: no need to re-establish the seat before merging.
+
+### Session log — 2026-08-16
+
+| Change | Evidence |
+|---|---|
+| #167, #168, #169, #165 merged to tracking | `manager.rs:470` carries `saturating_sub`; `.gitattributes` carries `*.kt`/`*.kts`/`*.md eol=lf` |
+| `Repository Hygiene` and `Rust Linting` went GREEN on #139 | 11s / 4m32s, confirmed from the check list |
+| **#152 CLOSED** | Audited (`CTO-152-AUDIT`), then verified independently: whitespace + blank-line movement only; conflicts on `MeshApplication.kt`, which tracking superseded via `17216e1a`/`149d3725`. Nothing lost. Evidence on the PR |
+| **#171 opened, HELD** | `pr_scope.sh` no-truncation + AGENTS.md rule 15. Independently validated (`CTO-171-VALIDATE`): APPROVE, R3 fails-closed verified. Held until #139 lands so it does not restart the trunk merge's CI |
+| AGENTS.md **rule 15** added | No renumbering: all existing citations (rules 1,2,5,8,9,11,12,13,14) still resolve. Coherence audit dispatched as `CTO-AGENTS15-COHERENCE` |
+| CEO escalation sent | README honest-first framing; dependency-deferral trigger |
+
+### Open findings — not yet fixed, safe to dispatch
+
+1. **Preflight guard false positive.** It blocks read-only commands whose *file
+   path* merely contains `agy` — no dispatch involved. #167 fixed this class for
+   git commands; still open for others. Do NOT reach for
+   `SCM_SKIP_DISPATCH_CHECK=1` to read a log; use Read/Grep instead.
+2. **`agy_run.sh` log collision.** `RAW="$LOGDIR/agy_${MODEL}_${STAMP}.jsonl"` is
+   model + HEAD SHA, so two concurrent dispatches on the same model write the
+   same file. Pass a distinct 4th arg (log-dir) per dispatch. Same class as the
+   known `delegate_task.py` collision.
+3. **145 `.md` files pending renormalization** — see §9 of the dispatch plan.
+   Held; collides with #139, which touches 91 `.md` files.
+
 Everything below has a command next to it. **Re-derive before acting** — this
 file ages, the repo does not.
 
