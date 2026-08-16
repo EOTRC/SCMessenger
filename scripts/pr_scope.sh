@@ -17,6 +17,25 @@
 # So the question stopped being rhetorical and became this script. Run it before
 # every merge. It prints reasons NOT to, or says there are none.
 #
+# On 2026-08-15 PR #139 produced a FALSE NEGATIVE on the crypto review gate
+# because `gh pr view --json files` returns at most 100 files, and PR #139
+# changes 215 files (232 in full diff). The six gated files:
+#   core/src/crypto/backup.rs
+#   core/src/transport/addr_filter.rs
+#   core/src/transport/behaviour.rs
+#   core/src/transport/dial_policy.rs
+#   core/src/transport/observation.rs
+#   core/src/transport/swarm.rs
+# were past file #100, so the script printed [OK] clear while +1,645/-154 lines
+# of gated crypto and transport changes with a HIGH severity bug went unseen.
+# The script itself failed open, on the largest PR in the repo, on the exact check
+# it was built for.
+#
+# Fix: derive file lists from git (`git diff --name-only origin/<base>...origin/<head>`),
+# not the GitHub API. Fall back to the API only if git refs cannot be fetched (loudly
+# reported in output), and fail closed if the API returns exactly 100 files
+# (truncation tripwire).
+#
 #   scripts/pr_scope.sh 150
 #
 # Exit 0 = no blockers found. Exit 1 = at least one blocker. Read-only.
@@ -36,9 +55,42 @@ if [ -z "$J" ]; then
   exit 2
 fi
 
+BASE_REF=$(echo "$J" | python3 -c 'import json,sys;print(json.load(sys.stdin)["baseRefName"])')
+HEAD_REF=$(echo "$J" | python3 -c 'import json,sys;print(json.load(sys.stdin)["headRefName"])')
+
 BLOCKERS=0
 note() { echo "  [BLOCKER] $*"; BLOCKERS=$((BLOCKERS+1)); }
 ok()   { echo "  [OK]      $*"; }
+
+# Derive file list from git (reliable, no 100-file API pagination limit).
+# Fall back to GitHub API only if git fetch/diff fails.
+FILE_SOURCE="git"
+FILES_LIST=""
+API_FILES_COUNT=0
+
+if git fetch origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" "+refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}" >/dev/null 2>&1 && \
+   git rev-parse --verify "origin/${BASE_REF}" >/dev/null 2>&1 && \
+   git rev-parse --verify "origin/${HEAD_REF}" >/dev/null 2>&1; then
+  FILES_LIST=$(git diff --name-only "origin/${BASE_REF}...origin/${HEAD_REF}" 2>/dev/null)
+elif git fetch origin "${BASE_REF}" "${HEAD_REF}" >/dev/null 2>&1 && \
+     git rev-parse --verify "origin/${BASE_REF}" >/dev/null 2>&1 && \
+     git rev-parse --verify "origin/${HEAD_REF}" >/dev/null 2>&1; then
+  FILES_LIST=$(git diff --name-only "origin/${BASE_REF}...origin/${HEAD_REF}" 2>/dev/null)
+elif git fetch origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" "+refs/pull/${PR}/head:refs/remotes/origin/pr/${PR}" >/dev/null 2>&1 && \
+     git rev-parse --verify "origin/${BASE_REF}" >/dev/null 2>&1 && \
+     git rev-parse --verify "origin/pr/${PR}" >/dev/null 2>&1; then
+  FILES_LIST=$(git diff --name-only "origin/${BASE_REF}...origin/pr/${PR}" 2>/dev/null)
+else
+  FILE_SOURCE="api"
+  FILES_LIST=$(echo "$J" | python3 -c 'import json,sys;print("\n".join(f["path"] for f in json.load(sys.stdin)["files"]))')
+  API_FILES_COUNT=$(echo "$J" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["files"]))')
+fi
+
+TOTAL_FILES=$(python3 -c '
+import sys
+files = [line.strip() for line in sys.stdin if line.strip()]
+print(len(files))
+' <<< "$FILES_LIST")
 
 echo "=============================================================="
 echo " PR #$PR  $(echo "$J" | python3 -c 'import json,sys;print(json.load(sys.stdin)["title"])')"
@@ -52,35 +104,47 @@ d = json.load(sys.stdin)
 print("  state       : %s  mergeable=%s  %s" % (d["state"], d["mergeable"], d["mergeStateStatus"]))
 print("  base <- head: %s <- %s" % (d["baseRefName"], d["headRefName"]))
 print("  size        : +%d/-%d across %d files, %d commits" % (
-    d["additions"], d["deletions"], len(d["files"]), len(d["commits"])))
+    d["additions"], d["deletions"], '"$TOTAL_FILES"', len(d["commits"])))
 '
 echo
 echo "-- reasons not to merge --"
 
+# Fallback warning and truncation tripwire
+if [ "$FILE_SOURCE" = "api" ]; then
+  note "FALLBACK TO GITHUB API: git fetch failed; file list derived from API (max 100 files)"
+  if [ "$API_FILES_COUNT" -eq 100 ]; then
+    note "TRUNCATION TRIPWIRE: API returned exactly 100 files (diff likely truncated by API limit)"
+  fi
+fi
+
 # 1. Scope: a PR far larger than its title suggests is usually mis-based.
-FILES=$(echo "$J" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["files"]))')
 COMMITS=$(echo "$J" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["commits"]))')
 if [ "$COMMITS" -gt 20 ]; then
   note "$COMMITS commits. Is this branch based on the branch you are merging INTO?"
   note "  Check: git log --oneline <base>..<head> | wc -l"
 else
-  ok "$COMMITS commits, $FILES files -- scope is reviewable"
+  ok "$COMMITS commits, $TOTAL_FILES files -- scope is reviewable"
 fi
 
 # 2. Merge-blocked directories (AGENTS.md rule 8).
-GATED=$(echo "$J" | python3 -c '
-import json,sys,re
-d=json.load(sys.stdin)
-pat=re.compile(r"^core/src/(crypto|transport|routing|privacy)/")
-hits=[f["path"] for f in d["files"] if pat.match(f["path"])]
+GATED=$(python3 -c '
+import sys, re
+pat = re.compile(r"^core/src/(crypto|transport|routing|privacy)/")
+files = [line.strip() for line in sys.stdin if line.strip()]
+hits = [f for f in files if pat.match(f)]
 print("\n".join(hits))
-')
+' <<< "$FILES_LIST")
+
 if [ -n "$GATED" ]; then
   note "touches merge-blocked directories (AGENTS.md rule 8):"
   echo "$GATED" | head -8 | sed 's/^/              /'
   note "  requires a crypto-security-auditor verdict before merge"
 else
-  ok "clear of core/src/{crypto,transport,routing,privacy}"
+  if [ "$FILE_SOURCE" = "api" ] && [ "$API_FILES_COUNT" -eq 100 ]; then
+    note "cannot verify merge-blocked directories: API file list truncated at 100 files"
+  else
+    ok "clear of core/src/{crypto,transport,routing,privacy}"
+  fi
 fi
 
 # 3. Check state. FAILS CLOSED.
