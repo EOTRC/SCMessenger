@@ -57,6 +57,39 @@ resolved for now: no need to re-establish the seat before merging.
 3. **145 `.md` files pending renormalization** — see §9 of the dispatch plan.
    Held; collides with #139, which touches 91 `.md` files.
 
+4. **Rule 15 propagation backlog — the REAL list.** `CTO-AGENTS15-COHERENCE`
+   returned "270 occurrences across 74 files". **That number is wrong; do not
+   dispatch against it.** It pattern-matched `head`/`tail`/`[:N]`
+   indiscriminately and counted argv unpacking (`sys.argv[1:4]`), display
+   formatting (`pid[:22]`), deliberate single-value extraction (`adb version |
+   head -1`), and even the comment lines in `pr_scope.sh` that *describe* the
+   fix. It also under-reported, because the packet scoped the search to
+   `scripts/` and `.claude/hooks/` and therefore missed `.codex/`.
+
+   The genuine defect is narrow: **a list of violations, errors, or findings
+   shown to a decision-maker, silently cut short.** Verified sites:
+
+   | File:line | Truncation | Hides |
+   |---|---|---|
+   | `scripts/verify_all_builds.sh:24,31,38` | `tail -5` | clippy / gradle / iOS **build failure output** |
+   | `scripts/verify_incremental_gate.py` (x5) | `stderr[:1000]` | compiler errors |
+   | `scripts/verify_delivery_state_monotonicity.sh:64` | `regressions[:10]` | delivery-state regressions |
+   | `scripts/verify_swift_violations.py:40` | `bad[:15]` | Swift violations |
+   | `.claude/hooks/preflight_guard.py:571` | `risky[:4]` | risky ops shown before a destructive command |
+   | `.claude/hooks/check_no_emoji.py:45` | `matches[:10]` | emoji violations |
+   | `.codex/hooks/check_no_emoji.py:45` | `matches[:10]` | same file, second copy |
+   | `scripts/rules_check.py:78` | `hits[:8]` | rule violations |
+   | `scripts/repo_audit.sh:27` | `head -n 200` | audit hits |
+   | `scripts/triage_lane.sh:72` | `tail -25` | `git diff --stat` between pass and fail |
+   | `scripts/apply_branch_protection.sh:77,80` | `head -40` / `head -20` | branch-protection API state |
+
+   `verify_all_builds.sh` is the worst of these: a script whose entire job is to
+   prove the build is good shows only the last 5 lines when it is not.
+
+   **Lesson for future dispatches:** a grep-shaped question returns
+   grep-shaped answers. Ask for the *semantic* defect and require the worker to
+   justify each hit, or budget for the CTO to sort the census by hand.
+
 Everything below has a command next to it. **Re-derive before acting** — this
 file ages, the repo does not.
 
