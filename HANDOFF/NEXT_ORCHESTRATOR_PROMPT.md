@@ -15,7 +15,7 @@ PR #133 merged (all 29 CI green). PR #134 (remaining work) and PR #135 (identity
 **Spec:** `HANDOFF/todo/QWEN_IDENTITY_CANONICALIZATION_CRITICAL.md`
 **Root cause:** `HANDOFF/audit/IDENTITY_HASH_VS_PUBKEY_CONFLICT.md`
 
-### 2. Cloud Node — 100.56.248.69
+### 2. Cloud Node (dynamic IP: see HANDOFF/gpt/AWS_RELAY_CURRENT_ADDRESS.md)
 SSH blocked (key auth). User: "setup by AI via IAM user — no passwords."
 **Infra scripts:** `infra/aws/farm-sim-manage.sh`, `infra/aws/provision-relay.sh`
 **Deliverable:** `HANDOFF/audit/CLOUD_NODE_RUN2_VERIFICATION_2026-08-04.md`

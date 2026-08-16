@@ -4,6 +4,14 @@ Status: Audit complete, no files modified
 Scope: All 2,736 git-tracked files in the repository
 Author: analysis pass (read-only); no build tools invoked, no tracked file edited
 
+> [!NOTE]
+> **Update (2026-08-15)**: `100.56.248.69` is DEAD (instance `i-0d302298a375dc4ec` no longer exists).
+> The active always-on cloud node is `i-006b14491d421bd0d` (us-east-1, t3.micro, tagged `scm-always-on-node`).
+> The node IP address is dynamic by design because the AWS account holds zero Elastic IPs and `ec2:AllocateAddress`
+> is explicitly denied in IAM policy `SCMessengerRelayFreeTierOnly`. Do NOT hardcode any fresh IP; look up the
+> live address via EC2 API (`aws ec2 describe-instances --filters "Name=tag:Name,Values=scm-always-on-node" ...`)
+> or check `HANDOFF/gpt/AWS_RELAY_CURRENT_ADDRESS.md`.
+
 ## Method
 
 A dotted-quad IPv4 regex (`(?<![0-9A-Za-z.])((?:\d{1,3}\.){3}\d{1,3})(?![0-9A-Za-z.])`)
