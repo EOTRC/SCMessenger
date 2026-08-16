@@ -21,6 +21,13 @@ Guards:
                           already required operator approval for these; on
                           2026-08-08 a concurrent agent ran four of them in
                           sequence and destroyed another session's work.
+  5. repeat mistakes   -- patterns proven to fail repeatedly in this repo.
+  6. stale checkout    -- repo gates run from a stale checkout silently run the
+                          stale gate script, and stale gates fail in the safe-
+                          looking direction. On 2026-08-15, a stale pr_scope.sh
+                          reported [OK] on PR #139 because of an old 100-file
+                          API cap, missing 6 merge-blocked crypto/transport
+                          files that the current gate caught.
 
 MATCHING: commands are tokenized with shlex and split into shell segments, and a
 guard only fires when the trigger sits at a COMMAND POSITION. Substring matching
@@ -45,6 +52,8 @@ process before the command does.
   SCM_SKIP_DISPATCH_CHECK=1 skip guard 2
   SCM_SKIP_DECONFLICT=1     skip guard 3
   SCM_ALLOW_DESTRUCTIVE=1   skip guard 4
+  SCM_SKIP_LESSONS=1        skip guard 5
+  SCM_SKIP_STALE_GATE=1     skip guard 6
 """
 
 import json
@@ -686,6 +695,177 @@ def guard_lessons(segs, raw):
             )
 
 
+# --- Guard 6: stale checkout ------------------------------------------------
+#
+# A repo gate run from a stale checkout silently runs the STALE gate script,
+# and stale gates fail in the safe-looking direction.
+#
+# On 2026-08-15, two CTO sessions ran concurrently. The shared checkout sat 23
+# commits behind tracking. `scripts/pr_scope.sh` there was therefore the OLD
+# version, which derived its file list from `gh pr view --json files` -- an API
+# that silently capped at 100 files. PR #139 changed 253 files. Run from the
+# stale checkout, the gate printed:
+#     [OK]      clear of core/src/{crypto,transport,routing,privacy}
+# Run from a current checkout, the SAME gate on the SAME PR printed:
+#     [BLOCKER] touches merge-blocked directories (AGENTS.md rule 8):
+#                 core/src/crypto/backup.rs
+#                 core/src/transport/addr_filter.rs
+#                 core/src/transport/behaviour.rs
+#                 core/src/transport/dial_policy.rs
+#                 core/src/transport/observation.rs
+#                 core/src/transport/swarm.rs
+#
+# The gate reported PASS while six merge-blocked files were invisible to it.
+# The repair was already committed (#158), but was not in the checkout where the
+# runbook instructed people to run it.
+#
+# This guard blocks when a repo gate/verification script is invoked from a
+# working tree whose HEAD is behind base refs without performing network operations.
+
+_GATE_SCRIPT_NAMES = {
+    "pr_scope.sh",
+    "docs_sync_check.sh",
+    "docs_sync_check.ps1",
+    "triage_lane.sh",
+    "preflight.sh",
+    "preflight_disk.sh",
+    "preflight_disk.ps1",
+    "build_verify.sh",
+    "rules_check.py",
+    "prepush_check.py",
+    "orchestration_contract.py",
+    "repo_audit.sh",
+    "audit_unsafe.sh",
+    "audit_session_logs.sh",
+    "validate_tag.sh",
+    "validate_v020_final.sh",
+    "verify_incremental_gate.py",
+    "verify_swift_violations.py",
+}
+
+_GATE_SCRIPT_RE = re.compile(
+    r"(?:^|[/\\])"
+    r"(?:pr_scope\.sh|docs_sync_check\.(?:sh|ps1)|triage_lane\.sh|preflight(?:\.sh|_disk\.(?:sh|ps1))|"
+    r"build_verify\.sh|rules_check\.py|prepush_check\.py|orchestration_contract\.py|"
+    r"repo_audit\.sh|audit_unsafe\.sh|audit_session_logs\.sh|validate_tag\.sh|validate_v020_final\.sh|"
+    r"verify_[a-zA-Z0-9_-]+\.(?:sh|py|ps1)|check_[a-zA-Z0-9_-]+\.(?:sh|py|ps1)|"
+    r"[a-zA-Z0-9_-]+_(?:check|verify)[a-zA-Z0-9_-]*\.(?:sh|py|ps1))$",
+    re.IGNORECASE,
+)
+
+_RAW_GATE_RE = re.compile(
+    r"(?:^|[\s/\\\"'])(?:scripts/|\.claude/skills/|\.agents/skills/)?"
+    r"(pr_scope\.sh|docs_sync_check\.(?:sh|ps1)|triage_lane\.sh|preflight(?:\.sh|_disk\.(?:sh|ps1))|"
+    r"build_verify\.sh|rules_check\.py|prepush_check\.py|orchestration_contract\.py|"
+    r"repo_audit\.sh|audit_unsafe\.sh|audit_session_logs\.sh|validate_tag\.sh|validate_v020_final\.sh|"
+    r"verify_[a-zA-Z0-9_-]+\.(?:sh|py|ps1)|check_[a-zA-Z0-9_-]+\.(?:sh|py|ps1)|"
+    r"[a-zA-Z0-9_-]+_(?:check|verify)[a-zA-Z0-9_-]*\.(?:sh|py|ps1))\b",
+    re.IGNORECASE,
+)
+
+_CANONICAL_REF = "origin/tracking/pre-v040-tag-work"
+
+
+def is_gate_script(tok):
+    clean = tok.strip("'\"")
+    bname = os.path.basename(clean.replace("\\", "/")).lower()
+    return bname in _GATE_SCRIPT_NAMES or _GATE_SCRIPT_RE.search(clean) is not None
+
+
+def _get_blob_oid(ref, path):
+    """Return git blob object ID for path at ref, or None if missing or on error."""
+    try:
+        p = subprocess.run(
+            ["git", "rev-parse", "--verify", "%s:%s" % (ref, path)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if p.returncode == 0:
+            oid = p.stdout.strip()
+            if oid:
+                return oid
+    except Exception:
+        pass
+    return None
+
+
+def resolve_script_path(tok):
+    clean = tok.strip("'\"").replace("\\", "/")
+    if clean.startswith("./"):
+        clean = clean[2:]
+    return clean
+
+
+def _resolve_repo_path(path):
+    """Resolve relative path against HEAD if a bare script name was used."""
+    norm = resolve_script_path(path)
+    if _get_blob_oid("HEAD", norm) is not None:
+        return norm
+    if "/" not in norm:
+        cand = "scripts/" + norm
+        if _get_blob_oid("HEAD", cand) is not None:
+            return cand
+    return norm
+
+
+def guard_stale_checkout(segs, raw):
+    if override("SCM_SKIP_STALE_GATE", raw):
+        return
+
+    gate_scripts = []
+    if segs is not None:
+        for seg in segs:
+            for tok in seg:
+                if is_gate_script(tok):
+                    gate_scripts.append(tok)
+    else:
+        for m in _RAW_GATE_RE.finditer(raw):
+            gate_scripts.append(m.group(1))
+
+    if not gate_scripts:
+        return
+
+    canonical_ref = (
+        os.environ.get("_SCM_TEST_CANONICAL_REF")
+        or os.environ.get("_SCM_TEST_STALE_BASE_REFS")
+        or _CANONICAL_REF
+    )
+
+    for tok in gate_scripts:
+        script_path = _resolve_repo_path(tok)
+        head_oid = _get_blob_oid("HEAD", script_path)
+        if not head_oid:
+            continue  # Path missing at HEAD or git error -> fail open
+
+        canonical_oid = _get_blob_oid(canonical_ref, script_path)
+        if not canonical_oid:
+            continue  # Path missing at ref, ref missing, or git error -> fail open
+
+        if head_oid != canonical_oid:
+            block(
+                "[BLOCKED] repo gate differs from canonical version.\n"
+                "\n"
+                "`%s` differs from the canonical version at %s.\n"
+                "\n"
+                "A repo gate run from a stale checkout silently runs the STALE gate script,\n"
+                "and stale gates fail in the safe-looking direction. On 2026-08-15, a stale\n"
+                "`scripts/pr_scope.sh` (lacking #158) reported [OK] on PR #139 because of an old\n"
+                "100-file API cap, missing 6 merge-blocked crypto/transport files that the current\n"
+                "gate caught.\n"
+                "\n"
+                "To see what changed:\n"
+                "  git diff HEAD %s -- %s\n"
+                "\n"
+                "Create a worktree at the canonical ref and run it there:\n"
+                "  git worktree add --detach <path> %s\n"
+                "\n"
+                "Detail: docs/rules/BUILD_AND_CI.md, AGENTS.md rule 13\n"
+                "Override: SCM_SKIP_STALE_GATE=1"
+                % (script_path, canonical_ref, canonical_ref, script_path, canonical_ref)
+            )
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -711,6 +891,7 @@ def main():
         guard_dispatch(segs, raw)
         guard_deconflict(segs, raw)
         guard_lessons(segs, raw)
+        guard_stale_checkout(segs, raw)
     except SystemExit:
         raise
     except Exception:
