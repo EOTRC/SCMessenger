@@ -69,6 +69,18 @@ _INSPECT = {
     "awk", "sed", "printf", "wc", "find", "ls", "diff",
 }
 
+# Read-only git subcommands. A segment led by `git <one of these>` is inspecting
+# the repo, so a script NAME appearing in it is a search term, not an
+# invocation. Without this, `git grep -l delegate_task.py` and
+# `git show <ref>:scripts/delegate_task.py` both tripped the dispatch guard --
+# twice in one session on 2026-08-15, each time pushing the operator toward
+# SCM_SKIP_DISPATCH_CHECK=1. A guard that cries wolf trains people to silence
+# it, which is worse than not having it.
+_GIT_READONLY = {
+    "grep", "show", "log", "diff", "status", "ls-files", "ls-tree",
+    "cat-file", "blame", "rev-parse", "rev-list", "merge-base", "describe",
+}
+
 _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 # `cmd <<'MARK' ... MARK` -- the body is DATA, not commands. Without stripping
@@ -210,12 +222,30 @@ def segments(command, depth=0):
     return expanded
 
 
+def is_readonly_git(seg):
+    """True for `git <read-only subcommand> ...`.
+
+    `git grep -l delegate_task.py` and `git show <ref>:scripts/delegate_task.py`
+    name a script as a SEARCH TERM or a PATH, never as something to run.
+    """
+    if basename(seg[0]) != "git" or len(seg) < 2:
+        return False
+    for tok in seg[1:]:
+        if tok.startswith("-"):
+            continue          # skip global flags like -C <dir>, --no-pager
+        return tok in _GIT_READONLY
+    return False
+
+
 def actionable(command):
     """Segments that actually execute something, inspection segments removed."""
     segs = segments(command)
     if segs is None:
         return None
-    return [s for s in segs if basename(s[0]) not in _INSPECT]
+    return [
+        s for s in segs
+        if basename(s[0]) not in _INSPECT and not is_readonly_git(s)
+    ]
 
 
 def is_cargo_clean(seg):
