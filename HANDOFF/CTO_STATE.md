@@ -27,21 +27,39 @@ context instead of the conclusion.
 
 ## 0b. OPERATOR APPROVAL GATE — standing, 2026-08-16
 
-**No change is made without operator approval.** Operator directive, standing.
+**The test is DESTRUCTIVENESS, not whether it writes.** Operator directive,
+standing, refined 2026-08-16.
 
-Interpretation, stated explicitly so it can be corrected rather than assumed:
+The operator's reasoning, which is the rule: *opening a PR "isn't destructive,
+and really only helps to safely preserve data, as it offers a place to track the
+changes."* Gating work-preservation strands work in worktrees — which is how
+this repo has lost things. We are moving to **small, frequent PRs**; a
+200-commit PR is what made per-merge buyoff necessary, and that is going away.
 
-| Needs approval FIRST | Proceed freely |
+| Needs approval FIRST (destructive / hard to reverse) | Proceed freely (preserves work, or read-only) |
 |---|---|
-| Any write to the repo (edit, new file, commit) | Reading anything |
-| Any `git push` | `git log`/`diff`/`merge-tree`/`rev-list` — read-only git |
-| Any merge, close, or reopen of a PR | Running `pr_scope.sh`, `gh pr checks`, reading CI logs |
-| Any PR comment or review posted | Dispatching a **read-only** SCANNER / VALIDATOR |
-| Branch protection, tags, releases | Writing to `tmp/` (scratch, packets, worker output) |
-| Dispatching an IMPLEMENTER (a worker that writes) | Reporting findings and recommendations |
+| **Merging** anything | Reading anything; read-only git (`log`/`diff`/`merge-tree`/`rev-list`) |
+| **Closing or reopening** a PR — discards from the queue | **Opening a PR. PR comments. PR body/title updates.** |
+| Pushing to a **shared** branch (`main`, or the head of a PR you do not own) | Committing and pushing to **your own** branch |
+| Force-push, branch deletion, history rewrite | Writing files in **your own** worktree |
+| Tags, releases, branch protection | `pr_scope.sh`, `gh pr checks`, CI logs |
+| Deleting anything — files, worktrees, branches | Compile/test verification (deconflict builds first) |
+| Touching the shared checkout's working tree | Dispatching read-only SCANNER / VALIDATOR |
+| | Dispatching an IMPLEMENTER **into an isolated worktree** |
+| | `tmp/` scratch; reporting findings and recommendations |
 
-Investigation is not a change. Verification is not a change. **Producing or
-publishing anything is.**
+Investigation is not a change. Verification is not a change. Preserving work in
+a tracked place is not a change. **Destroying, discarding, or releasing is.**
+
+Two calls the CTO made by inference rather than instruction — correct them if
+wrong: **closing** a PR is treated as gated (it discards rather than preserves,
+even though it is reopenable), and **IMPLEMENTER dispatch is free when
+isolated**, because an isolated writer produces a branch and a PR, which is
+preservation. An implementer that would touch the shared checkout or a shared
+branch is gated.
+
+A green gate is still not approval: `pr_scope.sh` exiting 0 means no reason was
+*found*, not that the operator said yes.
 
 Present the evidence, state the recommendation, then wait. A green gate is not
 approval; `pr_scope.sh` exiting 0 means no reason was *found*, not that the
