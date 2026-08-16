@@ -27,8 +27,59 @@ context instead of the conclusion.
 
 ## 0b. OPERATOR APPROVAL GATE — standing, 2026-08-16
 
-**The test is DESTRUCTIVENESS, not whether it writes.** Operator directive,
-standing, refined 2026-08-16.
+### Who may merge — role-bound, not negotiable
+
+| Role | May merge? |
+|---|---|
+| **CTO** (this seat) | **YES** — under the confidence test below. Merging is a CTO decision |
+| ORCHESTRATOR / CONTROLLER | **NO.** Coordinates, dispatches, integrates verified output. Never merges |
+| Worker lanes — SCANNER, IMPLEMENTER, VALIDATOR, agy, any HTTP lane | **NEVER.** They open PRs and report. A worker holding merge rights defeats every gate above it |
+| OPERATOR | Always, and overrides this table |
+
+A worker asking the CTO to merge is a dispatch event, not permission. A green
+gate is not approval either: `pr_scope.sh` exiting 0 means no reason was
+*found*.
+
+### The confidence test — deterministic, run it in order
+
+Before any **irrevocable or potentially destructive** action:
+
+1. **Am I at 100%?** All five must hold, or the answer is no:
+   - every gate green, or every blocker named out loud with evidence answering it
+   - every required review exists as a **durable artifact**, not a recollection
+   - **zero UNKNOWNs.** Undetermined is never treated as safe
+   - the blast radius is bounded and I can state it
+   - I verified the load-bearing claim myself, with a command, this session
+2. **At 100%** -> execute. Do not ask. Sequencing is the CTO's to own.
+3. **Below 100%** -> confer with the CEO session. Reach 100% or consensus, then
+   execute.
+4. **CEO and CTO cannot both reach 100%** -> escalate to the operator with both
+   positions stated. Do not split the difference.
+
+"I think it's fine" is below 100%. "The worker said so" is below 100%. "It
+passed CI" alone is below 100% when a review artifact is also required.
+
+### Blast radius — only as big as it needs to be
+
+**Keep the blast radius only as big as it needs to be, within the constraints
+currently available.**
+
+Both halves bind. Minimise scope, sequence so a failure is small and
+attributable, prefer several small merges to one large one, and never inflate a
+change already in flight with unrelated work. But minimise **within what is
+actually achievable now** — #139 is 204 commits because `tracking` is the
+long-lived integration branch and collapsing that is not available today. The
+rule asks for the smallest radius reachable, not an impossible one.
+
+Worked example, 2026-08-16: #174 (required for D1) merged alone, while #171 and
+#173 — tooling with no bearing on D1 — were held until after the trunk merge.
+Batching them would have saved two ~50 minute CI cycles and inflated the largest
+PR in the repo. Wall clock was the cheaper thing to spend.
+
+---
+
+**The test for gating is DESTRUCTIVENESS, not whether it writes.** Operator
+directive, standing, refined 2026-08-16.
 
 The operator's reasoning, which is the rule: *opening a PR "isn't destructive,
 and really only helps to safely preserve data, as it offers a place to track the
@@ -36,17 +87,16 @@ changes."* Gating work-preservation strands work in worktrees — which is how
 this repo has lost things. We are moving to **small, frequent PRs**; a
 200-commit PR is what made per-merge buyoff necessary, and that is going away.
 
-| Needs approval FIRST (destructive / hard to reverse) | Proceed freely (preserves work, or read-only) |
-|---|---|
-| **Merging** anything | Reading anything; read-only git (`log`/`diff`/`merge-tree`/`rev-list`) |
-| **Closing or reopening** a PR — discards from the queue | **Opening a PR. PR comments. PR body/title updates.** |
-| Pushing to a **shared** branch (`main`, or the head of a PR you do not own) | Committing and pushing to **your own** branch |
-| Force-push, branch deletion, history rewrite | Writing files in **your own** worktree |
-| Tags, releases, branch protection | `pr_scope.sh`, `gh pr checks`, CI logs |
-| Deleting anything — files, worktrees, branches | Compile/test verification (deconflict builds first) |
-| Touching the shared checkout's working tree | Dispatching read-only SCANNER / VALIDATOR |
-| | Dispatching an IMPLEMENTER **into an isolated worktree** |
-| | `tmp/` scratch; reporting findings and recommendations |
+| Operator approval FIRST (irreversible, or outside CTO authority) | CTO executes at 100% confidence | Proceed freely (preserves work, or read-only) |
+|---|---|---|
+| Tags, releases, branch protection | **Merging** (see the confidence test) | Reading anything; read-only git (`log`/`diff`/`merge-tree`/`rev-list`) |
+| Force-push, history rewrite | Closing/reopening a PR | **Opening a PR. PR comments. PR body/title updates.** |
+| Deleting a branch or worktree registration | Reclaiming `target/` in a SAFE worktree | Committing and pushing to **your own** branch |
+| Anything touching the shared checkout's working tree | Pushing to a shared branch you own | Writing files in **your own** worktree |
+| Deleting files or worktrees outside a SAFE `target/` | Dispatching an IMPLEMENTER into an isolated worktree | `pr_scope.sh`, `gh pr checks`, CI logs |
+| | | Compile/test verification (deconflict builds first) |
+| | | Dispatching read-only SCANNER / VALIDATOR |
+| | | `tmp/` scratch; reporting findings and recommendations |
 
 Investigation is not a change. Verification is not a change. Preserving work in
 a tracked place is not a change. **Destroying, discarding, or releasing is.**
@@ -93,6 +143,33 @@ CTO had already talked himself into "it looks fixed". Do not shorten it.
 6. **Artifacts, not chat.** Verdicts go to `docs/security/` or the PR. A review
    that exists only in a session transcript did not happen — and untracked work
    in this shared checkout has been destroyed before, so commit it.
+
+7. **A REPEAT MISTAKE IS A PROCESS DEFECT, NOT A MEMORY LAPSE.** Operator
+   directive, standing 2026-08-16. The second occurrence of any mistake stops
+   being about the mistake and becomes about the process that failed to catch
+   it. When one happens: run an RCA, then **change the mechanism** — do not
+   write a better reminder.
+
+   **The governing finding: a lesson stored as prose gets re-learned; a lesson
+   stored as a gate does not.**
+
+   Evidence, from this repo. Rule 14 has an executable form (`pr_scope.sh`) and
+   has held. Rule 13 has none. The trailing-whitespace lesson had none — it sat
+   in §8 as prose, the CTO **quoted it earlier the same day**, and then committed
+   a worker-produced artifact verbatim and turned `Repository Hygiene` red on the
+   trunk merge for the second time, in the same lane, on the same PR (#174).
+   Re-reading was never going to be the fix.
+
+   So the RCA question is never "why did I forget?" It is **"what gate was
+   missing, and can I build it?"** If a gate genuinely cannot exist, say so
+   explicitly and accept the residual risk in writing — that is a decision, not
+   an oversight.
+
+   Corollary for delegation: **worker-produced files are not exempt from the
+   repo's gates.** Worker *code* gets compiled and reviewed; worker *artifacts*
+   — markdown, reports, docs — were being committed on sight. Run
+   `git diff --cached --check` (and the emoji check) against anything a worker
+   generated, before committing it.
 
 Mechanics that keep dispatch healthy: isolated worktree per writer, never the
 shared checkout; deconflict builds (`tasklist` for cargo/gradle/java) before any
