@@ -83,7 +83,10 @@ mod layer1_domain_assertions {
         });
 
         assert!(manager.is_peer_connected(peer1));
-        assert_eq!(manager.transports_for_peer(peer1), vec![TransportType::Internet]);
+        assert_eq!(
+            manager.transports_for_peer(peer1),
+            vec![TransportType::Internet]
+        );
 
         // 3. Establish connection to peer1 on Internet
         manager.handle_event(TransportEvent::ConnectionEstablished {
@@ -92,7 +95,10 @@ mod layer1_domain_assertions {
         });
 
         assert_eq!(manager.peers_on_transport(TransportType::Internet).len(), 1);
-        assert_eq!(manager.peers_on_transport(TransportType::Internet)[0], peer1);
+        assert_eq!(
+            manager.peers_on_transport(TransportType::Internet)[0],
+            peer1
+        );
 
         // 4. Discover & establish peer1 on Local as well (multi-transport)
         manager.handle_event(TransportEvent::PeerDiscovered {
@@ -444,7 +450,9 @@ mod layer2_branch_coverage {
         // 5. is_peer_connected on unknown peer -> false
         assert!(!manager.is_peer_connected(peer));
         assert!(manager.transports_for_peer(peer).is_empty());
-        assert!(manager.peers_on_transport(TransportType::Internet).is_empty());
+        assert!(manager
+            .peers_on_transport(TransportType::Internet)
+            .is_empty());
     }
 
     #[test]
@@ -751,7 +759,10 @@ mod layer4_multi_hop_call_depth {
 
         // Initialize peer escalation state
         escalation
-            .init_peer(target_peer, vec![TransportType::BLE, TransportType::Internet])
+            .init_peer(
+                target_peer,
+                vec![TransportType::BLE, TransportType::Internet],
+            )
             .expect("Peer escalation init");
 
         // 2. Hop 2: Connect peer via BLE initially

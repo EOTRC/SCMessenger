@@ -1,9 +1,9 @@
 # D4 Exit Criterion: AWS Always-On Node Rebuild Runbook
 
-**Status:** Ready for execution upon SHA freeze and CI image publication  
-**Target:** D4 Milestone (Pixel 6a <-> AWS Node Verified E2E Delivery Receipt)  
-**Author:** Orchestrator Lane C  
-**Date:** 2026-08-15  
+**Status:** Ready for execution upon SHA freeze and CI image publication
+**Target:** D4 Milestone (Pixel 6a <-> AWS Node Verified E2E Delivery Receipt)
+**Author:** Orchestrator Lane C
+**Date:** 2026-08-15
 
 ---
 

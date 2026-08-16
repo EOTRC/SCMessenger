@@ -1,8 +1,8 @@
 # SCMessenger v0.4.0-alpha.1 — Release Notes
 
-**Release Date:** August 2026  
-**Target Builds:** Android APK (`app-release.apk`) / Desktop CLI (`scm-*`) / Web Daemon  
-**Previous Tag:** `v0.1.9` (March 2026)  
+**Release Date:** August 2026
+**Target Builds:** Android APK (`app-release.apk`) / Desktop CLI (`scm-*`) / Web Daemon
+**Previous Tag:** `v0.1.9` (March 2026)
 
 ---
 
@@ -14,16 +14,16 @@ The most recent published release prior to this milestone was `v0.1.9` (March 20
 
 Before installing or testing this build, please review these explicit limitations:
 
-1. **No Independent Security Audit:**  
+1. **No Independent Security Audit:**
    The cryptographic primitives, Double Ratchet implementation, and transport protocols have been reviewed only by the developers and automated analysis tooling who built them. No independent, third-party security firm has audited this codebase. Treat all privacy and security properties as development intentions, not certified guarantees.
 
-2. **Post-Quantum Cryptography is Hybrid & Partial:**  
+2. **Post-Quantum Cryptography is Hybrid & Partial:**
    While hybrid post-quantum key encapsulation (X25519 + ML-KEM-768) and signatures (Ed25519 + ML-DSA-65) are implemented in the Rust core, post-quantum suites are not yet uniformly enforced across every platform adapter and fallback path.
 
-3. **Threat Model Boundaries (What It Does NOT Protect):**  
+3. **Threat Model Boundaries (What It Does NOT Protect):**
    SCMessenger assumes the network is hostile and that no centralized server can be trusted. It protects message **content** end-to-end and aims to make **who is talking to whom** expensive to determine through transport racing and relayed store-and-forward custody. It does **not** protect against a compromised operating system, physical access to an unlocked device, keyboard loggers, or an adversary observing physical radio emanations in your immediate room.
 
-4. **Alpha Quality & Battery Optimizations:**  
+4. **Alpha Quality & Battery Optimizations:**
    Background BLE connections can be throttled or terminated by aggressive OS battery optimizations on certain Android vendor skins (e.g., MIUI, OneUI). If a message does not deliver immediately, ensure the app remains open or background battery restrictions are disabled.
 
 **Do not use this build for sensitive communications where a software defect could cause physical, legal, or financial harm.** Use it to experiment, test the decentralized mesh, verify offline transports, and report bugs.
