@@ -210,7 +210,47 @@ already applied to the file list. Micro task, free lane.
 
 ---
 
-## 9. Still open -- do not guess
+## 9. Post-tag queue -- held deliberately, with the reason
+
+### Markdown renormalization (145 files) -- HOLD until after the tag
+
+#169 declared `*.md text eol=lf` in `.gitattributes` but only renormalized the
+files it happened to touch. **145 `.md` files still hold CRLF blobs**, so every
+fresh clone or `git worktree add` now shows them modified. Verified content-free:
+`git diff --ignore-all-space --ignore-cr-at-eol` reduces all 145 to nothing.
+
+This is an operational hazard, not a cosmetic one. An agent seeing 145 files it
+did not touch is one `git checkout -- .` from repeating 2026-08-08.
+
+**Collision risk was surveyed and is zero right now.** All 23 worktrees checked;
+the only uncommitted `.md` in the tree belongs to this session.
+
+**The real blocker is #139, which touches 91 `.md` files.** Renormalizing on
+`tracking` lands the 145 files inside the trunk merge and restarts its full CI
+(~50 min, observed: four merges at 16:53 restarted all 30 checks). Renormalizing
+on `main` conflicts with those 91 files head-on. There is no third place to put
+it while #139 is open.
+
+**After the tag this is trivial** -- `main == tracking`, no long-lived
+`.md` PR exists:
+
+```
+git add --renormalize .
+git commit -m "chore(hygiene): renormalize .md line endings declared by #169"
+```
+
+Operator decision 2026-08-16: hold. De-risking the collision was achievable and
+was done; the hold stands on the #139 conflict, not on residual risk.
+
+### Worktree reaping
+
+23 worktrees exist, several for branches already merged (#165, #167, #168, #169).
+`scripts/reap_worktrees.sh` refuses DIRTY worktrees, so it is safe to run.
+Post-tag.
+
+---
+
+## 10. Still open -- do not guess
 
 Carried forward from `CTO_STATE.md` §7, unchanged:
 
