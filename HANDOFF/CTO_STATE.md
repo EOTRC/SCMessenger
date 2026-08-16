@@ -206,6 +206,36 @@ all PASSED on `main`. The lane was red on one formatting diff.
 
 ## 4. Security review of #139 — verdict on record
 
+> **CORRECTED 2026-08-16. THIS SECTION WAS WRONG ABOUT THE GATE.**
+>
+> It records the verdict as "NEEDS FIXES. No CRITICAL hole" and reads as though
+> the crypto gate is satisfied. **It is not.** The actual artifacts in
+> `docs/security/` are a three-link chain that ends unresolved:
+>
+> | Artifact | Commit | Verdict |
+> |---|---|---|
+> | `PR139_ADVERSARIAL_REVIEW_2026-08-08.md` | `6cb7033a` | **BLOCK** — F1 CRITICAL (RFC1918 ledger disclosure gate never checked the requester; internal subnet map + peer-id-to-private-address binding to any unauthenticated remote) plus F2–F5 HIGH |
+> | `PR139_REMEDIATION_2026-08-08.md` | — | remediation claimed |
+> | `PR139_REVIEW_15dbcde0_2026-08-09.md` | `15dbcde0` | **BLOCK** — supersedes the first for that range; everything else clean; new **W1**: failover re-exchange is an unrated outbound amplifier |
+>
+> **The last recorded verdict on this PR is BLOCK, and no artifact clears W1.**
+> The section below never mentions F1 or W1 at all. Whoever wrote it was
+> describing a different, later review of a narrower diff — the §8 lesson
+> ("your own past statements are claims") applied to this file itself.
+>
+> CTO code reading on 2026-08-16 indicates both are fixed at the current head —
+> W1 gated behind `allow_failover_reexchange` on native (`swarm.rs:5343`) and
+> WASM (`:7708`) with tests at `:8764-8768`; F1 now requires the requester's
+> observed address, fails closed on `None`, rejects `P2pCircuit` on both sides,
+> excludes CGNAT, and narrows to /24 or /64 (`addr_filter.rs:470`).
+>
+> **That reading is NOT a review.** AGENTS.md rule 8 requires an adversarial
+> sign-off and `docs/ORCHESTRATION.md` forbids the controller from making that
+> call. `CTO-139-CRYPTO-REVERIFY` is dispatched to produce the missing artifact
+> at `docs/security/PR139_REVERIFY_2026-08-16.md`.
+>
+> **Do not merge #139 until that verdict exists and says APPROVE.**
+
 A `crypto-security-auditor` pass ran against the six merge-blocked files #139
 touches (`core/src/crypto/backup.rs`, and `addr_filter/behaviour/dial_policy/
 observation/swarm` under `core/src/transport/`; +1,645/-154).
