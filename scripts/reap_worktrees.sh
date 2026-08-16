@@ -32,9 +32,16 @@ MAIN=$(git rev-parse --show-toplevel)
 printf '%-58s %-26s %-10s %s\n' "WORKTREE" "BRANCH" "STATE" "DISPOSITION"
 printf '%.0s-' {1..118}; echo
 
+TMPDIR="$MAIN/tmp"
+mkdir -p "$TMPDIR"
+WT_FILE="$TMPDIR/_wt.txt"
+trap 'rm -f "$WT_FILE"' EXIT
+
 safe_list=()
-git worktree list --porcelain 2>/dev/null > /tmp/_wt.txt
+git worktree list --porcelain 2>/dev/null > "$WT_FILE"
 path=""; branch=""; head=""
+DURABLE=("origin/tracking/pre-v040-tag-work" "origin/main")
+
 while IFS= read -r line; do
   case "$line" in
     worktree\ *) path="${line#worktree }" ;;
@@ -55,24 +62,57 @@ while IFS= read -r line; do
         path=""; branch=""; head=""; continue
       fi
 
-      dirty=$(git -C "$path" status --porcelain 2>/dev/null | head -1)
-      if [ -n "$dirty" ]; then
-        n=$(git -C "$path" status --porcelain 2>/dev/null | wc -l)
+      # Filter out unstaged markdown line-ending churn from #169
+      real_dirty=$(git -C "$path" status --porcelain 2>/dev/null | grep -vE "^ M .*\.md\"?$" || true)
+      if [ -n "$real_dirty" ]; then
+        n=$(printf "%s\n" "$real_dirty" | grep -c . || echo "0")
         printf '%-58s %-26s %-10s %s\n' "$short" "${branch:-?}" "DIRTY" "KEEP -- $n uncommitted path(s); ask the owner"
         path=""; branch=""; head=""; continue
       fi
 
-      if git merge-base --is-ancestor "$head" origin/main 2>/dev/null; then
-        printf '%-58s %-26s %-10s %s\n' "$short" "${branch:-?}" "clean" "SAFE -- merged into origin/main"
+      unpushed=$(git -C "$path" rev-list --count "$head" --not --remotes 2>/dev/null || echo "?")
+      if [ "$unpushed" != "0" ]; then
+        printf '%-58s %-26s %-10s %s\n' "$short" "${branch:-?}" "UNPUSHED" "KEEP -- $unpushed commit(s) on no remote"
+        path=""; branch=""; head=""; continue
+      fi
+
+      is_merged=0
+      merge_detail=""
+      errors=0
+      for ref in "${DURABLE[@]}"; do
+        git -C "$path" merge-base --is-ancestor "$head" "$ref" 2>/dev/null
+        rc=$?
+        if [ "$rc" -eq 0 ]; then
+          is_merged=1
+          merge_detail="merged into $ref"
+          break
+        elif [ "$rc" -ne 1 ]; then
+          errors=1
+        fi
+      done
+
+      if [ "$is_merged" -eq 0 ]; then
+        # Fall back to GitHub PR query
+        pr_num=$(gh pr list --state merged --search "$head" --json number --jq '.[0].number' 2>/dev/null || true)
+        if [ -n "$pr_num" ] && [ "$pr_num" != "null" ]; then
+          is_merged=1
+          merge_detail="merged via PR #$pr_num"
+        fi
+      fi
+
+      if [ "$is_merged" -eq 1 ]; then
+        printf '%-58s %-26s %-10s %s\n' "$short" "${branch:-?}" "clean" "SAFE -- $merge_detail"
         safe_list+=("$path")
+      elif [ "$errors" -ne 0 ]; then
+        printf '%-58s %-26s %-10s %s\n' "$short" "${branch:-?}" "UNKNOWN" "KEEP -- git merge-base error (exit 128)"
       else
-        ahead=$(git rev-list --count origin/main.."$head" 2>/dev/null || echo "?")
+        ahead=$(git -C "$path" rev-list --count origin/main.."$head" 2>/dev/null || echo "?")
         printf '%-58s %-26s %-10s %s\n' "$short" "${branch:-?}" "clean" "KEEP -- $ahead commit(s) not in main"
       fi
       path=""; branch=""; head=""
       ;;
   esac
-done < /tmp/_wt.txt
+done < "$WT_FILE"
 
 echo
 echo "safe to remove: ${#safe_list[@]}"
