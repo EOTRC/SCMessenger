@@ -119,6 +119,12 @@ resolved for now: no need to re-establish the seat before merging.
 | **#171 opened, HELD** | `pr_scope.sh` no-truncation + AGENTS.md rule 15. Independently validated (`CTO-171-VALIDATE`): APPROVE, R3 fails-closed verified. Held until #139 lands so it does not restart the trunk merge's CI |
 | AGENTS.md **rule 15** added | No renumbering: all existing citations (rules 1,2,5,8,9,11,12,13,14) still resolve. Coherence audit dispatched as `CTO-AGENTS15-COHERENCE` |
 | CEO escalation sent | README honest-first framing; dependency-deferral trigger |
+| **The #139 crypto gate was found NOT satisfied** | Last recorded verdict was BLOCK. See the correction banner on §4 |
+| **W1 found still live**, refuting the CTO's own reading | `CTO-139-CRYPTO-REVERIFY` -> `docs/security/PR139_REVERIFY_2026-08-16.md`. F1 FIXED, everything else CLEAN, W1 NOT FIXED |
+| **W1 fixed** -> PR #172 | `forget_peer` removed with both call sites (native `:5397`, WASM `:7736`). Independently validated: `docs/security/W1_FIX_VALIDATION_2026-08-16.md` -- APPROVE_WITH_FINDINGS, W1 CLOSED, REGRESSION RISK NONE |
+| W1 fix gates pass | target test 1 passed/0 failed; `cargo test --workspace --no-run` **CARGO_EXIT=0**, zero errors |
+| **19 GB reclaimed** | 76 PDB files in `.scm-shared-target/debug/deps` held 19 GB of 27 GB. Disk 100% -> 92% |
+| Operator approved the merge sequence | #172 -> tracking, then #139 -> main. Stop before branch protection and the tag |
 
 ### Open findings — not yet fixed, safe to dispatch
 
@@ -165,6 +171,39 @@ resolved for now: no need to re-establish the seat before merging.
    **Lesson for future dispatches:** a grep-shaped question returns
    grep-shaped answers. Ask for the *semantic* defect and require the worker to
    justify each hit, or budget for the CTO to sort the census by hand.
+
+5. **W1 regression protection is thin** (from `W1_FIX_VALIDATION_2026-08-16.md`
+   V5, non-blocking). With `forget_peer` gone the unit test cannot exercise the
+   disconnect path, so it simulates the scenario in a comment. A future refactor
+   could reintroduce a map-clearing call in `start_swarm_with_config` and the
+   test would still pass. Closing it needs an integration test driving
+   `SwarmEvent::ConnectionEstablished`/`ConnectionClosed` and asserting no
+   redundant `LedgerExchangeRequest`. Does not affect current correctness.
+
+6. **`git merge-base --is-ancestor` disagreed with reality.** It reported
+   `fix/transport-saturating-score-bandwidth-bypass` (PR #165) as NOT merged
+   into `tracking` hours after this session merged it. Unresolved -- possibly a
+   stale local ref, possibly a merge-shape assumption. It nearly blocked a 5.7 GB
+   worktree reclaim, and it is load-bearing for `reap_worktrees.sh`. **Do not
+   trust it for reaping until diagnosed.** Failing closed was correct here.
+
+7. **`LNK1318: Unexpected PDB error; LIMIT` is disk exhaustion**, not
+   corruption. Observed at 963 MB free / 100% full mid-link. Add it to the
+   CLAUDE.md list beside `STATUS_STACK_BUFFER_OVERRUN` and "can't find crate".
+   The reclaim that fixes it: delete `*.pdb` in
+   `$CARGO_TARGET_DIR/debug/deps` -- 76 files held 19 GB. Debug symbols only,
+   regenerated on link. **Never** touch `core/target/generated-sources/`.
+
+8. **`scripts/clean_target.sh --dry-run` is not a real flag.** CLAUDE.md's
+   routing table instructs running it before deleting artifacts; the script does
+   not implement it and just prints usage. The documented safety step does not
+   do what the doc says. Real modes are `--triples` and `--deps`.
+
+9. **agy has a ~90s PER-TOOL timeout, separate from `--print-timeout`.** A
+   worker with `--print-timeout 45m` still died polling a cold `cargo` build in
+   90-second slices for 20 minutes -- and the build had actually SUCCEEDED. Do
+   not ask an agy worker to run a cold full build: have it make the change and
+   commit, then run the compile gate separately.
 
 Everything below has a command next to it. **Re-derive before acting** — this
 file ages, the repo does not.
