@@ -488,15 +488,49 @@ def discards_working_tree(seg):
     return False
 
 
+_WORKTREE_TARGETS_CACHE = None
+
+
+def _registered_worktree_targets():
+    global _WORKTREE_TARGETS_CACHE
+    if _WORKTREE_TARGETS_CACHE is not None:
+        return _WORKTREE_TARGETS_CACHE
+    targets = set()
+    try:
+        p = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if p.returncode == 0:
+            for line in p.stdout.splitlines():
+                if line.startswith("worktree "):
+                    wt = line.split(" ", 1)[1].strip()
+                    if wt:
+                        norm_wt = os.path.abspath(wt).replace("\\", "/").rstrip("/").lower()
+                        targets.add(norm_wt + "/target")
+    except Exception:
+        pass
+    _WORKTREE_TARGETS_CACHE = targets
+    return _WORKTREE_TARGETS_CACHE
+
+
 def _sanctioned_delete_path(path):
     norm = path.replace("\\", "/").rstrip(",").strip("'\"")
     low = norm.lower()
     if "appdata/local/temp" in low or low.startswith("/tmp/"):
         return True  # scratchpad / system temp, outside the repo
     stripped = norm[2:] if norm.startswith("./") else norm
-    return stripped.startswith(_DELETE_OK_PREFIXES) or stripped.startswith(
+    if stripped.startswith(_DELETE_OK_PREFIXES) or stripped.startswith(
         ("tmp/", "target/")
-    )
+    ):
+        return True
+    abs_norm = os.path.abspath(norm).replace("\\", "/").rstrip("/").lower()
+    for wt_target in _registered_worktree_targets():
+        if abs_norm == wt_target or abs_norm.startswith(wt_target + "/"):
+            return True
+    return False
 
 
 def recursive_force_delete(seg):
@@ -672,7 +706,7 @@ _LESSONS = [
     ),
     (
         # Reading $? after a pipeline.
-        re.compile(r"\|[^|]*\n?[^&|]*\$\?"),
+        re.compile(r"\|[^;&|\n]+[;&|\n]+[^;&|\n]*\$\?"),
         "reading $? after a pipe",
         "The pipeline's exit status is the LAST command's, so a piped gate can\n"
         "never fail. `cargo fmt --check | head; echo $?` always prints 0.\n\n"

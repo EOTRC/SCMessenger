@@ -88,7 +88,18 @@ CASES = [
     ("normal push allowed", "git push origin main", 0),
     ("rm -rf under tmp/ allowed", "rm -rf tmp/scratch", 0),
     ("rm -rf repo path blocked", "rm -rf docs/rules", 2),
+    ("rm -rf worktree target allowed", "rm -rf ../scm-anchor-860/target", 0),
+    ("rm -rf worktree target subpath allowed", "rm -rf ../scm-anchor-860/target/debug", 0),
+    ("rm -rf worktree non-target blocked", "rm -rf ../scm-anchor-860/src", 2),
+    ("rm -rf non-worktree target blocked", "rm -rf ../unregistered-worktree-xyz/target", 2),
     ("rm -f single file allowed", "rm -f tmp/x.log", 0),
+
+    # Lessons: $? after pipeline vs unpiped command
+    ("lesson: reading $? immediately after pipe blocked", "cargo fmt --check | head; echo $?", 2),
+    ("lesson: reading $? after pipe assignment blocked", "cargo test | tee test.log; rc=$?", 2),
+    ("lesson: unpiped command following pipe allowed to read $?", "echo hello | grep h; python test.py; echo $?", 0),
+    ("lesson: unpiped git command after pipe allowed to read $?", "git branch | grep foo; git checkout bar; echo $?", 0),
+    ("lesson: multiline unpiped command after pipe allowed to read $?", "cat file.txt | grep pattern\ncargo check\nrc=$?", 0),
 
     # Escape hatches must work as an INLINE prefix. The hook runs as its own
     # process before the command, so an inline `VAR=1` never reaches its
