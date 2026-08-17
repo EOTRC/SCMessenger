@@ -28,6 +28,9 @@ Guards:
                           reported [OK] on PR #139 because of an old 100-file
                           API cap, missing 6 merge-blocked crypto/transport
                           files that the current gate caught.
+  7. commit hygiene    -- git commit with staged trailing whitespace, blank-
+                          line-at-EOF, or emoji. Repository Hygiene went red
+                          twice on PR #139 from committing unverified artifacts.
 
 MATCHING: commands are tokenized with shlex and split into shell segments, and a
 guard only fires when the trigger sits at a COMMAND POSITION. Substring matching
@@ -54,6 +57,7 @@ process before the command does.
   SCM_ALLOW_DESTRUCTIVE=1   skip guard 4
   SCM_SKIP_LESSONS=1        skip guard 5
   SCM_SKIP_STALE_GATE=1     skip guard 6
+  SCM_SKIP_COMMIT_HYGIENE=1 skip guard 7
 """
 
 import json
@@ -900,6 +904,198 @@ def guard_stale_checkout(segs, raw):
             )
 
 
+# --- Guard 7: commit hygiene ------------------------------------------------
+#
+# Repository Hygiene went red on PR #139 on 2026-08-15 and again on 2026-08-16
+# from committing files verbatim carrying trailing whitespace.
+# AGENTS.md rule 1 bans emoji across all code and docs; staged commits were a gap.
+#
+# This guard blocks `git commit` when staged content contains whitespace errors
+# (trailing whitespace, blank-line-at-EOF) or emoji characters.
+
+_EMOJI_EXEMPT_PREFIXES = ("docs/historical/",)
+_BINARY_SUFFIXES = (
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".so", ".a", ".dll",
+    ".dylib", ".jar", ".aar", ".apk", ".keystore", ".jks", ".zip", ".gz",
+    ".xcframework", ".ttf", ".otf", ".woff", ".woff2", ".bin", ".exe",
+)
+
+_RAW_COMMIT = re.compile(r"\bgit\b(?:\s+-[^\s]+(?:\s+[^\s]+)?)*\s+commit\b")
+_RAW_COMMIT_HELP = re.compile(
+    r"\bgit\b(?:\s+-[^\s]+(?:\s+[^\s]+)?)*\s+commit\b.*?\s(--help|-h)\b"
+)
+
+
+def is_blocked_emoji_codepoint(codepoint: int) -> bool:
+    """Return whether a code point is within the repository's blocked ranges."""
+    return (
+        0x1F300 <= codepoint <= 0x1FAFF
+        or 0x1F1E6 <= codepoint <= 0x1F1FF
+        or 0x2600 <= codepoint <= 0x27BF
+    )
+
+
+def parse_git_commit(seg):
+    """Return (True, target_cwd) if seg is an actual git commit invocation, else (False, None)."""
+    if not seg or basename(seg[0]) != "git":
+        return False, None
+    idx = 1
+    subcmd = None
+    target_cwd = None
+    while idx < len(seg):
+        tok = seg[idx]
+        if tok == "-C" and idx + 1 < len(seg):
+            target_cwd = seg[idx + 1]
+            idx += 2
+            continue
+        if (
+            tok in ("-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--exec-path")
+            and idx + 1 < len(seg)
+        ):
+            idx += 2
+            continue
+        if tok.startswith("-"):
+            idx += 1
+            continue
+        subcmd = tok
+        break
+
+    if subcmd != "commit":
+        return False, None
+
+    commit_args = seg[idx + 1:]
+    if any(t in ("--help", "-h") for t in commit_args):
+        return False, None
+
+    return True, target_cwd
+
+
+def check_staged_whitespace(cwd=None):
+    """Run `git diff --cached --check` to detect whitespace errors in staged content.
+
+    Returns all offending lines reported by git (empty if clean).
+    """
+    try:
+        cmd = ["git", "diff", "--cached", "--check"]
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=15, cwd=cwd)
+        combined = (p.stdout or "") + (p.stderr or "")
+        lines = [line.strip() for line in combined.splitlines() if line.strip()]
+        if p.returncode != 0 and lines:
+            return lines
+        elif lines and any(
+            "whitespace" in l.lower() or "blank line" in l.lower() for l in lines
+        ):
+            return lines
+        return []
+    except Exception:
+        return []
+
+
+def check_staged_emojis(cwd=None):
+    """Scan staged text content for emoji characters.
+
+    Returns a list of violation lines, e.g. 'path/file.txt:12: contains emoji (U+1F600)'.
+    """
+    try:
+        cmd = ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"]
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=15, cwd=cwd)
+        if p.returncode != 0 or not p.stdout.strip():
+            return []
+        staged = [line.strip() for line in p.stdout.splitlines() if line.strip()]
+        violations = []
+        for path in staged:
+            norm = path.replace("\\", "/")
+            if any(norm.startswith(pfx) for pfx in _EMOJI_EXEMPT_PREFIXES):
+                continue
+            if any(norm.endswith(sfx) for sfx in _BINARY_SUFFIXES):
+                continue
+            p_show = subprocess.run(
+                ["git", "show", ":" + norm],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=10,
+                cwd=cwd,
+            )
+            if p_show.returncode != 0 or not p_show.stdout:
+                continue
+            for lineno, line in enumerate(p_show.stdout.splitlines(), start=1):
+                hits = [c for c in line if is_blocked_emoji_codepoint(ord(c))]
+                if hits:
+                    cps = ", ".join(f"U+{ord(c):04X}" for c in hits)
+                    violations.append(f"{norm}:{lineno}: contains emoji ({cps})")
+        return violations
+    except Exception:
+        return []
+
+
+def guard_commit_hygiene(segs, raw):
+    if override("SCM_SKIP_COMMIT_HYGIENE", raw) or override("SCM_ALLOW_COMMIT_HYGIENE", raw):
+        return
+
+    commit_found = False
+    target_cwd = None
+
+    if segs is not None:
+        for seg in segs:
+            is_commit, cwd = parse_git_commit(seg)
+            if is_commit:
+                commit_found = True
+                target_cwd = cwd
+                break
+    else:
+        if (
+            _RAW_COMMIT.search(raw)
+            and not _RAW_COMMIT_HELP.search(raw)
+            and not re.search(r"\bgit\s+commit-(?:tree|graph)\b", raw)
+        ):
+            commit_found = True
+
+    if not commit_found:
+        return
+
+    ws_errors = check_staged_whitespace(cwd=target_cwd)
+    emoji_errors = check_staged_emojis(cwd=target_cwd)
+
+    if not ws_errors and not emoji_errors:
+        return
+
+    sections = []
+    if ws_errors:
+        sections.append(
+            "Trailing whitespace or blank-line-at-EOF found in staged content:\n"
+            + "\n".join("  " + err for err in ws_errors)
+            + "\n\n"
+            "Committing trailing whitespace turns Repository Hygiene red on CI\n"
+            "(AGENTS.md rule 15, HANDOFF/CTO_STATE.md section 8).\n\n"
+            "To inspect:\n"
+            "  git diff --cached --check\n\n"
+            "To fix trailing whitespace in a file:\n"
+            "  # Remove trailing whitespace and re-stage:\n"
+            "  git add <file>"
+        )
+
+    if emoji_errors:
+        sections.append(
+            "Emoji character(s) found in staged content:\n"
+            + "\n".join("  " + err for err in emoji_errors)
+            + "\n\n"
+            "Per AGENTS.md rule 1, no emoji anywhere (code, docs, comments, logs).\n"
+            "Use plain-text tags ([OK], [ERROR], [WARNING], [INFO]) instead.\n\n"
+            "To fix:\n"
+            "  Replace emoji with plain-text tags and re-stage:\n"
+            "  git add <file>"
+        )
+
+    block(
+        "[BLOCKED] staged content violates commit hygiene rules.\n\n"
+        + "\n\n".join(sections)
+        + "\n\nDetail: AGENTS.md rule 1 & rule 15, HANDOFF/CTO_STATE.md section 8\n"
+        "Override: SCM_SKIP_COMMIT_HYGIENE=1"
+    )
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -926,6 +1122,7 @@ def main():
         guard_deconflict(segs, raw)
         guard_lessons(segs, raw)
         guard_stale_checkout(segs, raw)
+        guard_commit_hygiene(segs, raw)
     except SystemExit:
         raise
     except Exception:

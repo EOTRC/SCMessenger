@@ -59,6 +59,12 @@ CASES = [
     ("git status", "git status --short", 0),
     ("empty command", "", 0),
     ("whitespace only", "   ", 0),
+    ("git commit with nothing staged allowed", "git commit -m 'clean'", 0),
+    ("git commit --help allowed", "git commit --help", 0),
+    ("git commit -h allowed", "git commit -h", 0),
+    ("git commit-tree allowed", "git commit-tree HEAD^{tree} -m 'plumbing'", 0),
+    ("git log --grep=commit allowed", "git log --grep='commit'", 0),
+    ("echo git commit allowed", "echo 'git commit -m test'", 0),
 
     # --- Destructive-operation guard -------------------------------------
     # The first four are the VERBATIM commands a concurrent Antigravity session
@@ -342,6 +348,113 @@ def main():
         extra.append(("T2 timeout floor: no warning for non-build prompt under 90m", 0 if "[WARNING]" not in p_nobuild.stderr else 1, 0))
     except Exception as e:
         extra.append(("T2 timeout floor tests failed setup: %s" % e, 1, 0))
+
+    # --- T3: Commit hygiene staged content tests ------------------------
+    fixture_ws = "tmp/test_fixture_ws.txt"
+    fixture_emoji = "tmp/test_fixture_emoji.txt"
+    fixture_clean = "tmp/test_fixture_clean.txt"
+    try:
+        os.makedirs("tmp", exist_ok=True)
+
+        # 1. Clean staged file -> commit allowed
+        with open(fixture_clean, "w", encoding="utf-8", newline="\n") as f:
+            f.write("clean line 1\nclean line 2\n")
+        subprocess.run(["git", "add", "-f", fixture_clean], capture_output=True, check=True)
+        p_clean = subprocess.run(
+            [sys.executable, HOOK],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "git commit -m 'clean commit'"}}),
+            capture_output=True, text=True, env=ENV_NO_DECONFLICT,
+        )
+        extra.append(("T3: staged clean file allows commit", p_clean.returncode, 0))
+        subprocess.run(["git", "rm", "-f", "--cached", fixture_clean], capture_output=True)
+
+        # 2. Staged file with trailing whitespace -> commit blocked, lists offence
+        with open(fixture_ws, "w", encoding="utf-8", newline="\n") as f:
+            f.write("line with trailing whitespace   \nsecond line\n\n")
+        subprocess.run(["git", "add", "-f", fixture_ws], capture_output=True, check=True)
+        p_ws = subprocess.run(
+            [sys.executable, HOOK],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "git commit -m 'ws commit'"}}),
+            capture_output=True, text=True, env=ENV_NO_DECONFLICT,
+        )
+        extra.append(("T3: staged file with trailing whitespace blocks commit", p_ws.returncode, 2))
+        ws_msg_ok = (
+            fixture_ws in p_ws.stderr
+            and "trailing whitespace" in p_ws.stderr.lower()
+            and "git diff --cached --check" in p_ws.stderr
+            and "SCM_SKIP_COMMIT_HYGIENE=1" in p_ws.stderr
+        )
+        extra.append(("T3: whitespace block message contains file, diff cmd, override", 0 if ws_msg_ok else 1, 0))
+
+        # 2b. Read-only commands not blocked even when trailing whitespace is staged
+        p_ws_help = subprocess.run(
+            [sys.executable, HOOK],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "git commit --help"}}),
+            capture_output=True, text=True, env=ENV_NO_DECONFLICT,
+        )
+        extra.append(("T3: git commit --help allowed even when whitespace staged", p_ws_help.returncode, 0))
+
+        p_ws_log = subprocess.run(
+            [sys.executable, HOOK],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "git log --grep='commit'"}}),
+            capture_output=True, text=True, env=ENV_NO_DECONFLICT,
+        )
+        extra.append(("T3: git log --grep=commit allowed when whitespace staged", p_ws_log.returncode, 0))
+
+        # 2c. Override allowed with SCM_SKIP_COMMIT_HYGIENE=1
+        p_ws_override = subprocess.run(
+            [sys.executable, HOOK],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "SCM_SKIP_COMMIT_HYGIENE=1 git commit -m 'ws commit'"}}),
+            capture_output=True, text=True, env=ENV_NO_DECONFLICT,
+        )
+        extra.append(("T3: SCM_SKIP_COMMIT_HYGIENE=1 override allows whitespace commit", p_ws_override.returncode, 0))
+
+        subprocess.run(["git", "rm", "-f", "--cached", fixture_ws], capture_output=True)
+
+        # 3. Staged file with emoji -> commit blocked, lists codepoint
+        with open(fixture_emoji, "w", encoding="utf-8", newline="\n") as f:
+            f.write("clean line\nline with emoji \U0001F600 here\n")
+        subprocess.run(["git", "add", "-f", fixture_emoji], capture_output=True, check=True)
+        p_emoji = subprocess.run(
+            [sys.executable, HOOK],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "git commit -m 'emoji commit'"}}),
+            capture_output=True, text=True, env=ENV_NO_DECONFLICT,
+        )
+        extra.append(("T3: staged file containing emoji blocks commit", p_emoji.returncode, 2))
+        emoji_msg_ok = (
+            fixture_emoji in p_emoji.stderr
+            and "U+1F600" in p_emoji.stderr
+            and "AGENTS.md rule 1" in p_emoji.stderr
+            and "SCM_SKIP_COMMIT_HYGIENE=1" in p_emoji.stderr
+        )
+        extra.append(("T3: emoji block message contains file, codepoint, rule reference", 0 if emoji_msg_ok else 1, 0))
+
+        # 3b. Read-only commands not blocked even when emoji is staged
+        p_emoji_help = subprocess.run(
+            [sys.executable, HOOK],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "git commit -h"}}),
+            capture_output=True, text=True, env=ENV_NO_DECONFLICT,
+        )
+        extra.append(("T3: git commit -h allowed even when emoji staged", p_emoji_help.returncode, 0))
+
+        # 3c. Override allowed with SCM_SKIP_COMMIT_HYGIENE=1
+        p_emoji_override = subprocess.run(
+            [sys.executable, HOOK],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "SCM_SKIP_COMMIT_HYGIENE=1 git commit -m 'emoji commit'"}}),
+            capture_output=True, text=True, env=ENV_NO_DECONFLICT,
+        )
+        extra.append(("T3: SCM_SKIP_COMMIT_HYGIENE=1 override allows emoji commit", p_emoji_override.returncode, 0))
+
+        subprocess.run(["git", "rm", "-f", "--cached", fixture_emoji], capture_output=True)
+
+    finally:
+        for fpath in (fixture_ws, fixture_emoji, fixture_clean):
+            subprocess.run(["git", "rm", "-f", "--cached", fpath], capture_output=True)
+            if os.path.exists(fpath):
+                try:
+                    os.remove(fpath)
+                except OSError:
+                    pass
 
     npass = nfail = 0
     results = [(d, run(c), e) for d, c, e in CASES] + extra
