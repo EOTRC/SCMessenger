@@ -318,15 +318,16 @@ impl InternetRelay {
             stat.bytes_transferred += message_data.len() as u64;
             stat.last_activity = current_unix_timestamp();
 
-            // Rough bandwidth check: if we're averaging over time, check if we exceed limit
+            // Rough bandwidth check: clamp duration to minimum 1s so initial second enforces limit
             let conn_duration = stat.last_activity.saturating_sub(stat.connected_at);
-            if conn_duration > 0 {
-                let avg_bandwidth = (stat.bytes_transferred * 8)
-                    .checked_div(conn_duration)
-                    .unwrap_or(u64::MAX);
-                if avg_bandwidth > self.config.relay_bandwidth_limit_bps {
-                    return Err(InternetTransportError::BandwidthExceeded(peer_key.clone()));
-                }
+            let window = conn_duration.max(1);
+            let avg_bandwidth = stat
+                .bytes_transferred
+                .saturating_mul(8)
+                .checked_div(window)
+                .unwrap_or(u64::MAX);
+            if avg_bandwidth > self.config.relay_bandwidth_limit_bps {
+                return Err(InternetTransportError::BandwidthExceeded(peer_key.clone()));
             }
         }
 
@@ -829,5 +830,28 @@ mod tests {
 
         relay.shutdown().await.unwrap();
         assert_eq!(relay.get_active_relay_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_zero_duration_bandwidth_limit_enforced() {
+        let config = InternetTransportConfig {
+            relay_bandwidth_limit_bps: 1000, // 1000 bps = 125 bytes/sec
+            ..Default::default()
+        };
+        let relay = InternetRelay::new(config).expect("Failed to create relay");
+        let peer = PeerId::random();
+        let addrs = vec!["/ip4/127.0.0.1/tcp/4444".parse().unwrap()];
+        relay.register_relay_peer(peer, addrs, true).unwrap();
+
+        // 0-byte payload should pass
+        assert!(relay.relay_for_peer(peer, vec![]).await.is_ok());
+
+        // Payload exceeding 1000 bps in same second (e.g. 500 bytes = 4000 bits > 1000 bps)
+        let large_payload = vec![0xaa; 500];
+        let result = relay.relay_for_peer(peer, large_payload).await;
+        assert!(matches!(
+            result,
+            Err(InternetTransportError::BandwidthExceeded(_))
+        ));
     }
 }

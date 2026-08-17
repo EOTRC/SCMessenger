@@ -40,7 +40,7 @@ Tag checklist (operator-executed, terminal):
 |---|---|---|---|---|
 | Operator node | Operator (Lucas, PA) | Windows CLI `scmessenger-cli.exe` (release asset `scm-windows-amd64.exe`) | PA home fiber, NATed, outbound only | Binary name is `scmessenger-cli`, not `scm` (`cli/Cargo.toml`, per S4 runbook:17). No inbound needed — dials outbound to cloud node. |
 | Josh node | Josh (HI) | Physical Android phone, DEBUG APK from the tag | HI cellular (his usual) + HI home WiFi, both tested | AWS-hosted "Josh emulator" path is ABANDONED — corrupt system image, two crash-loop classes, operator decision 2026-07-20 (`HANDOFF/SESSION_HANDOFF_2026-07-20_LUCAS_JOSH_ALPHA.md:209-258`; memory `project_josh_emulator_abandoned`). Never retry that AVD. |
-| Cloud node | infra (AWS t3.micro) | `/ip4/100.56.248.69/tcp/9001`; health `http://100.56.248.69:9876/health` (port 9876, NOT 8080/9000) | public internet | Image `testbotz/scmessenger`, container `scm-alpha-relay`, `--network host --restart unless-stopped` (`SESSION_HANDOFF_2026-07-20...:11-18`). SG `sg-0f195044b0dc7a800` opens 22/9001tcp/9001udp/9000/9876. Do NOT pull the prebuilt-image rule (memory `project_alpha_relay_prebuilt_image`). |
+| Cloud node | infra (AWS t3.micro) | `/ip4/<CLOUD_NODE_IP>/tcp/9001`; health `http://<CLOUD_NODE_IP>:9876/health` (port 9876, NOT 8080/9000; dynamic IP: query EC2 `scm-always-on-node` or `HANDOFF/gpt/AWS_RELAY_CURRENT_ADDRESS.md`) | public internet | Image `testbotz/scmessenger`, container `scm-alpha-relay`, `--network host --restart unless-stopped` (`SESSION_HANDOFF_2026-07-20...:11-18`). SG `sg-0f195044b0dc7a800` opens 22/9001tcp/9001udp/9000/9876. Do NOT pull the prebuilt-image rule (memory `project_alpha_relay_prebuilt_image`). |
 
 Cloud node peer id: dials are promiscuous — any PeerID accepted. Newer alpha doc records `12D3KooW<redacted>`; the 2026-07-20 proof recorded `12D3KooW<redacted>`. Record both, trust the live node's identify output (`V040_S4_DELIVERY_PROOF_RUNBOOK.md:12-14`).
 
@@ -54,10 +54,10 @@ Topology: both endpoints dial OUTBOUND to the cloud node; the cloud node bridges
 ```
 git rev-parse v0.4.0-alpha.1
 ```
-2.2 Cloud node health + port (operator egress; retry x2 @60s on fail, then ABORT — never fake evidence, per S4:46-50):
+2.2 Cloud node health + port (operator egress; dynamic IP: query `aws ec2 describe-instances --filters "Name=tag:Name,Values=scm-always-on-node" "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].PublicIpAddress" --output text` or check `HANDOFF/gpt/AWS_RELAY_CURRENT_ADDRESS.md`; retry x2 @60s on fail, then ABORT — never fake evidence, per S4:46-50):
 ```
-curl -fsS http://100.56.248.69:9876/health
-powershell -NoProfile -Command "Test-NetConnection 100.56.248.69 -Port 9001 -InformationLevel Quiet"
+curl -fsS http://<CLOUD_NODE_IP>:9876/health
+powershell -NoProfile -Command "Test-NetConnection <CLOUD_NODE_IP> -Port 9001 -InformationLevel Quiet"
 ```
 Expect `{"status":"healthy"}` and `True`.
 2.3 Release asset integrity: download `scm-windows-amd64.exe`, `scm-windows-amd64.exe.sha256`, the APK, and `SHA256SUMS.txt` from the release page; verify:
@@ -91,7 +91,7 @@ Mismatch on either side = artifact skew = FAIL, not a pass (P1-04 class; S4:167-
 4.1 Start the operator CLI node (also the proof node):
 ```
 set CARGO_INCREMENTAL=0
-set SC_BOOTSTRAP_NODES=/ip4/100.56.248.69/tcp/9001
+set SC_BOOTSTRAP_NODES=/ip4/<CLOUD_NODE_IP>/tcp/9001
 set RUST_LOG=info,scmessenger_core=debug
 scmessenger-cli.exe --http-bind 127.0.0.1:9876 start --port 9100 > tmp\work_files\040-s5\cli.log 2>&1
 ```
@@ -105,10 +105,10 @@ Fields: `public_key_hex` (64 hex) and `libp2p_peer_id` (`cli/src/api.rs:1025,103
 ```
 findstr /C:"Core Provenance" /C:"Connected to" tmp\work_files\040-s5\cli.log
 ```
-Expect `Core Provenance: 0.4.0 (<TAG_SHA>)` and `Connected to 12D3Koo... via /ip4/100.56.248.69/tcp/9001 (promiscuous mode — any PeerID accepted)`.
+Expect `Core Provenance: 0.4.0 (<TAG_SHA>)` and `Connected to 12D3Koo... via /ip4/<CLOUD_NODE_IP>/tcp/9001 (promiscuous mode — any PeerID accepted)`.
 4.4 Seed payload (OPERATOR -> Josh, exact JSON — this single import does double duty: registers the operator contact AND writes the cloud node to the ledger seed tier AND dials it):
 ```json
-{"public_key":"<CLI_PK_HEX>","peer_id":"<CLI_PEER_ID>","nickname":"lucas-cli","listeners":["/ip4/100.56.248.69/tcp/9001"]}
+{"public_key":"<CLI_PK_HEX>","peer_id":"<CLI_PEER_ID>","nickname":"lucas-cli","listeners":["/ip4/<CLOUD_NODE_IP>/tcp/9001"]}
 ```
 This is the ONLY live seed path at HEAD (mechanism inventory, S4:77-94): the Settings cloud-node entry is a DEAD write path; deep links cannot carry a cloud-node multiaddr; signed-invite import is dead on Android; there is no discovery HTTP endpoint. The import writes via `annotateIdentityInLedger` and dials via `connectToPeer` (`MainViewModel.kt:218` — `listeners` parsed :236-243, `connectToPeer` :261-262; second parser `ContactsViewModel.kt:733`).
 4.5 OPERATOR -> Josh (physical): in the app, Add Contact / Import; paste the JSON verbatim; confirm `lucas-cli` appears in contacts.
@@ -121,7 +121,7 @@ Expect 64.
 ```
 adb logcat -d | findstr /C:"Dialed seed relay from ledger" /C:"Connected to" /C:"Dial timed out" /C:"No known relay in ledger"
 ```
-Expect `Dialed seed relay from ledger: /ip4/100.56.248.69/tcp/9001` (`MeshRepository.kt:4953`) FOLLOWED BY a core `Connected to ... via /ip4/100.56.248.69/tcp/9001` line. At HEAD `Dialed seed relay...` means CONNECTED, not queued (SwarmBridge.dial resolves Ok only on ConnectionEstablished, Err on error/10s timeout — S4:28-30). `No known relay in ledger yet` (`MeshRepository.kt:4948`) = import did not land -> Section 11 tree B.
+Expect `Dialed seed relay from ledger: /ip4/<CLOUD_NODE_IP>/tcp/9001` (`MeshRepository.kt:4953`) FOLLOWED BY a core `Connected to ... via /ip4/<CLOUD_NODE_IP>/tcp/9001` line. At HEAD `Dialed seed relay...` means CONNECTED, not queued (SwarmBridge.dial resolves Ok only on ConnectionEstablished, Err on error/10s timeout — S4:28-30). `No known relay in ledger yet` (`MeshRepository.kt:4948`) = import did not land -> Section 11 tree B.
 4.8 Josh reports verbatim (OPERATOR -> Josh, physical; Settings/identity screen): his device's 64-hex public key `<JOSH_PK_HEX>` and `12D3Koo...` peer id `<JOSH_PEER_ID>`.
 4.9 Operator registers Josh as a CLI contact (`/api/send` matches contact by peer_id OR nickname; both `peer_id` and `public_key` fields hold the Ed25519 PUBKEY HEX, NOT the 12D3Koo id — `cli/src/api.rs:560-595`, comment at :572-574):
 ```
@@ -137,9 +137,9 @@ Expect success and `josh` listed (GET route exists since commit adding `handle_g
 5.1 Signatures: CLI logs a second `Connected to <JOSH_PEER_ID> via ...` once discovered through the cloud node; Josh's logcat shows `Connected to <CLI_PEER_ID> via ...` (`swarm.rs:4568`).
 5.2 Socket evidence (operator host):
 ```
-powershell -NoProfile -Command "Get-NetTCPConnection -RemoteAddress 100.56.248.69 -RemotePort 9001 -State Established | Format-Table -AutoSize" > tmp\work_files\040-s5\netstat_operator.txt
+powershell -NoProfile -Command "Get-NetTCPConnection -RemoteAddress <CLOUD_NODE_IP> -RemotePort 9001 -State Established | Format-Table -AutoSize" > tmp\work_files\040-s5\netstat_operator.txt
 ```
-Expect >=1 Established row (the CLI leg; Josh's leg is on his phone, evidenced by his logcat Connected line). Cloud-node-side `ss -tn state established :9001` showing BOTH public IPs (PA fiber IP + HI IP) is OPERATOR-ASSISTED corroboration (SSH to 100.56.248.69) — request it, never block on it, never fabricate (S4:126-131; the 2026-07-20 Lucas proof was exactly this `ss` evidence, `SESSION_HANDOFF_2026-07-20...:19-23`).
+Expect >=1 Established row (the CLI leg; Josh's leg is on his phone, evidenced by his logcat Connected line). Cloud-node-side `ss -tn state established :9001` showing BOTH public IPs (PA fiber IP + HI IP) is OPERATOR-ASSISTED corroboration (SSH to <CLOUD_NODE_IP>) — request it, never block on it, never fabricate (S4:126-131; the 2026-07-20 Lucas proof was exactly this `ss` evidence, `SESSION_HANDOFF_2026-07-20...:19-23`).
 5.3 Mutual peer knowledge:
 ```
 curl -s http://127.0.0.1:9876/api/peers -o tmp\work_files\040-s5\peers_cli.json
@@ -177,7 +177,7 @@ Expect a `direction":"received"` entry containing `S5-D2-josh-to-cli-cell-<date>
 ## 7. Restart-persistence arm (ledger seed survives, no re-import)
 
 7.1 OPERATOR -> Josh (physical): force-stop the app (or reboot phone), relaunch. No re-import of the JSON.
-7.2 Josh-side expectation: startup path re-dials from the sled-backed ledger WITHOUT a fresh import — `ensureBootstrapRelayConnected` reads `getPreferredRelays(1u)` and dials (`MeshRepository.kt:4941-4957`); logcat must again show `Dialed seed relay from ledger: /ip4/100.56.248.69/tcp/9001` (:4953) followed by core `Connected to ... via /ip4/100.56.248.69/tcp/9001`. `No known relay in ledger yet -- skipping proactive NAT dial` (:4948) = persistence FAIL (seed tier did not survive -> Section 11 tree B).
+7.2 Josh-side expectation: startup path re-dials from the sled-backed ledger WITHOUT a fresh import — `ensureBootstrapRelayConnected` reads `getPreferredRelays(1u)` and dials (`MeshRepository.kt:4941-4957`); logcat must again show `Dialed seed relay from ledger: /ip4/<CLOUD_NODE_IP>/tcp/9001` (:4953) followed by core `Connected to ... via /ip4/<CLOUD_NODE_IP>/tcp/9001`. `No known relay in ledger yet -- skipping proactive NAT dial` (:4948) = persistence FAIL (seed tier did not survive -> Section 11 tree B).
 7.3 Proof of end-to-end persistence: operator sends `S5-PERSIST-cli-to-josh-<date>` (command per 6.1); expect Josh UI/logcat receipt AND CLI `Delivered: <id>`.
 7.4 CLI side needs no arm: its cloud-node seed is env/config, not ledger; a CLI restart re-dials via `SC_BOOTSTRAP_NODES` (4.1).
 
@@ -221,7 +221,7 @@ nslookup <LUCAS_DDNS_HOST>
 ```
 Record all four results (TCP 443, TCP 80, UDP 443, DDNS resolution) in the manifest as PASS/FAIL/N-A with the responder's identity. Note: CLI default single-port listen is `/ip4/0.0.0.0/tcp/9001` and WS is `0.0.0.0:9002/ws` (`V1_0_0_EXECUTION_PLAN.md:101`) — the 443/80 ladder only answers if the CLI runs in multi-port listen mode; record the actual `Listening on ...` lines rather than assuming.
 9.2 AWS-ONLY WAIVER TEXT (use verbatim in the verdict if the optional arm is not run):
-> 040-S5 WAN-live waiver: this proof run establishes cross-internet end-to-end delivery between Hawaii and Pennsylvania through the cloud node at 100.56.248.69:9001, with ConnectionEstablished evidence from both endpoints on independent real networks (HI cellular + HI WiFi; PA fiber) and receipt-confirmed delivery both directions. A non-AWS public endpoint (Lucas home-router port-forward to a self-hosted CLI relay, TCP 443/TCP 80/UDP 443/DDNS) was NOT exercised; that arm belongs to P1-18 verification debt (V1_0_0_EXECUTION_PLAN.md:31-32,325) and remains open. The AWS cloud node is a test rendezvous, not a production relay dependency. Operator sign-off: ____ Date: ____
+> 040-S5 WAN-live waiver: this proof run establishes cross-internet end-to-end delivery between Hawaii and Pennsylvania through the cloud node at <CLOUD_NODE_IP>:9001, with ConnectionEstablished evidence from both endpoints on independent real networks (HI cellular + HI WiFi; PA fiber) and receipt-confirmed delivery both directions. A non-AWS public endpoint (Lucas home-router port-forward to a self-hosted CLI relay, TCP 443/TCP 80/UDP 443/DDNS) was NOT exercised; that arm belongs to P1-18 verification debt (V1_0_0_EXECUTION_PLAN.md:31-32,325) and remains open. The AWS cloud node is a test rendezvous, not a production relay dependency. Operator sign-off: ____ Date: ____
 
 ---
 
@@ -230,10 +230,10 @@ Record all four results (TCP 443, TCP 80, UDP 443, DDNS resolution) in the manif
 | # | Criterion | Evidence artifact | Expected string/value | Verdict (PASS/FAIL/N-A) |
 |---|---|---|---|---|
 | 1 | Provenance match | provenance.txt | TAG_SHA == CLI `Core Provenance: 0.4.0 (<TAG_SHA>)` == Josh Settings `(Core: <TAG_SHA>)` | |
-| 2a | ConnectionEstablished, operator side | cli.log | `Connected to 12D3Koo... via /ip4/100.56.248.69/tcp/9001 (promiscuous mode — any PeerID accepted)` | |
-| 2b | ConnectionEstablished, Josh side (cellular) | josh_logcat_cell.txt | same signature, `via /ip4/100.56.248.69/tcp/9001` | |
+| 2a | ConnectionEstablished, operator side | cli.log | `Connected to 12D3Koo... via /ip4/<CLOUD_NODE_IP>/tcp/9001 (promiscuous mode — any PeerID accepted)` | |
+| 2b | ConnectionEstablished, Josh side (cellular) | josh_logcat_cell.txt | same signature, `via /ip4/<CLOUD_NODE_IP>/tcp/9001` | |
 | 2c | ConnectionEstablished, Josh side (WiFi) | josh_logcat_wifi.txt | same | |
-| 3 | Cloud-node socket (corroboration) | netstat_operator.txt (+ optional ss output) | >=1 Established row to 100.56.248.69:9001 | |
+| 3 | Cloud-node socket (corroboration) | netstat_operator.txt (+ optional ss output) | >=1 Established row to <CLOUD_NODE_IP>:9001 | |
 | 4 | D1 CLI->Android delivered + receipted | cli.log + josh screenshot/logcat | `Message from ...` (or UI) AND `[OK][OK] Delivered: <id>` for `S5-D1-...` | |
 | 5 | D2 Android->CLI delivered + receipted | history_cli.json + josh_logcat_send.txt | `direction":"received"` marker AND `[RECEIPT-RX] ... status=delivered` | |
 | 6 | Restart-persistence arm | josh_logcat_restart.txt + cli.log | `Dialed seed relay from ledger` + `Connected to` without re-import; then `S5-PERSIST-...` delivered+receipted | |
@@ -248,7 +248,7 @@ Overall: PASS only if rows 1-7 PASS and row 8 is PASS-or-waived. Verdict written
 ## 11. Failure escalation tree (max 2 retries per phase with triage between; 3rd failure escalates — no loops, S4:221-227)
 
 Tree A — cloud node down (health/9001 fail at 2.2 or mid-run):
-- A1 retry health x2 @60s. Still down: check container remotely if SSH available (`docker ps` on 100.56.248.69; restart policy is `unless-stopped`, `SESSION_HANDOFF_2026-07-20...:11-15`).
+- A1 retry health x2 @60s. Still down: check container remotely if SSH available (`docker ps` on <CLOUD_NODE_IP>; restart policy is `unless-stopped`, `SESSION_HANDOFF_2026-07-20...:11-15`).
 - A2 still down: ABORT to operator as INFRA failure. 040-S5 cannot proceed and cannot be faked — there is no LAN fallback for a Hawaii<->PA cell (Appendix A of S4 is local-lab only). Record health output, reschedule. Never fabricate cloud-node evidence (S4:50).
 
 Tree B — seeding failed on Josh's device:
