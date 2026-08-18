@@ -61,34 +61,38 @@ pub enum BindResult {
     Skipped { port: u16, reason: String },
 }
 
-/// Generate list of addresses to attempt binding to
+/// Generate list of addresses to attempt binding to.
+///
+/// Deterministic transport assignment:
+/// For every candidate port, at most ONE transport is generated and bound:
+/// plain TCP (`/ip4/0.0.0.0/tcp/{port}` for IPv4, `/ip6/::/tcp/{port}` for IPv6).
+/// WebSocket (`/ws`) dual-binding on the same port is eliminated so that inbound
+/// connections never collide with mismatched transport protocol negotiation.
+/// Ports are deduplicated across preferred_port, common_ports, additional_ports,
+/// and the ephemeral random port (0).
 pub fn generate_listen_addresses(config: &MultiPortConfig) -> Vec<(Multiaddr, u16)> {
     let mut addresses = Vec::new();
+    let mut seen_ports = std::collections::HashSet::new();
 
-    // Helper to add IPv4 and IPv6 addresses for a port (both TCP and WS)
+    // Helper to add IPv4 and IPv6 plain TCP addresses for a port (exactly one transport per port)
     let mut add_port = |port: u16| {
         if EXCLUDED_PORTS.contains(&port) {
+            return;
+        }
+        if !seen_ports.insert(port) {
             return;
         }
         if config.enable_ipv4 {
             let tcp_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", port)
                 .parse()
                 .expect("valid IPv4 TCP multiaddr format");
-            let ws_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}/ws", port)
-                .parse()
-                .expect("valid IPv4 WS multiaddr format");
             addresses.push((tcp_addr, port));
-            addresses.push((ws_addr, port));
         }
         if config.enable_ipv6 {
             let tcp_addr: Multiaddr = format!("/ip6/::/tcp/{}", port)
                 .parse()
                 .expect("valid IPv6 TCP multiaddr format");
-            let ws_addr: Multiaddr = format!("/ip6/::/tcp/{}/ws", port)
-                .parse()
-                .expect("valid IPv6 WS multiaddr format");
             addresses.push((tcp_addr, port));
-            addresses.push((ws_addr, port));
         }
     };
 
@@ -206,7 +210,7 @@ impl BindAnalysis {
 
         for (addr, port) in &self.successful {
             let priority = if COMMON_PORTS.contains(port) {
-                "⭐ priority"
+                "priority"
             } else if *port == 0 || *port > 10000 {
                 "random"
             } else {
@@ -311,8 +315,8 @@ mod tests {
 
         assert_eq!(
             addresses.len(),
-            4,
-            "Should have 4 custom addresses (TCP + WS)"
+            2,
+            "Should have 2 custom addresses (plain TCP)"
         );
         assert!(addresses.iter().any(|(_, port)| *port == 9999));
         assert!(addresses.iter().any(|(_, port)| *port == 8888));
@@ -387,5 +391,151 @@ mod tests {
                 "Control API port 9876 must be excluded from listener addresses"
             );
         }
+    }
+
+    #[test]
+    fn test_no_two_emitted_addresses_share_ip_port_pair() {
+        let configs = vec![
+            MultiPortConfig::default(),
+            MultiPortConfig {
+                enable_common_ports: true,
+                enable_random_port: true,
+                additional_ports: vec![443, 8080, 9999, 12345],
+                enable_ipv4: true,
+                enable_ipv6: true,
+                preferred_port: Some(443),
+            },
+            MultiPortConfig {
+                enable_common_ports: true,
+                enable_random_port: false,
+                additional_ports: vec![9090, 80],
+                enable_ipv4: true,
+                enable_ipv6: false,
+                preferred_port: Some(80),
+            },
+        ];
+
+        for config in configs {
+            let addresses = generate_listen_addresses(&config);
+            let mut seen_ip_ports = std::collections::HashSet::new();
+
+            for (addr, port) in &addresses {
+                let ip_family = if addr.to_string().starts_with("/ip4/") {
+                    "ip4"
+                } else if addr.to_string().starts_with("/ip6/") {
+                    "ip6"
+                } else {
+                    panic!("unexpected address format: {}", addr);
+                };
+
+                let key = (ip_family, *port);
+                assert!(
+                    seen_ip_ports.insert(key),
+                    "Duplicate (ip, port) detected: {:?} with addr {}",
+                    key,
+                    addr
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_ipv4_and_ipv6_enabled_each_ip_port_appears_once() {
+        let config = MultiPortConfig {
+            enable_common_ports: true,
+            enable_random_port: true,
+            additional_ports: vec![7000, 8000],
+            enable_ipv4: true,
+            enable_ipv6: true,
+            preferred_port: Some(9000),
+        };
+
+        let addresses = generate_listen_addresses(&config);
+
+        let mut counts = std::collections::HashMap::new();
+        for (addr, port) in &addresses {
+            let is_ipv4 = addr.to_string().starts_with("/ip4/");
+            let is_ipv6 = addr.to_string().starts_with("/ip6/");
+            assert!(is_ipv4 || is_ipv6, "Address must be IPv4 or IPv6: {}", addr);
+
+            let key = (is_ipv4, *port);
+            *counts.entry(key).or_insert(0) += 1;
+        }
+
+        for (key, count) in &counts {
+            assert_eq!(
+                *count, 1,
+                "Expected (is_ipv4={}, port={}) to appear exactly once, appeared {} times",
+                key.0, key.1, count
+            );
+        }
+
+        let unique_ports: std::collections::HashSet<u16> =
+            addresses.iter().map(|(_, port)| *port).collect();
+        for port in unique_ports {
+            let ipv4_count = addresses
+                .iter()
+                .filter(|(a, p)| *p == port && a.to_string().starts_with("/ip4/"))
+                .count();
+            let ipv6_count = addresses
+                .iter()
+                .filter(|(a, p)| *p == port && a.to_string().starts_with("/ip6/"))
+                .count();
+
+            assert_eq!(
+                ipv4_count, 1,
+                "Port {} should have exactly 1 IPv4 address",
+                port
+            );
+            assert_eq!(
+                ipv6_count, 1,
+                "Port {} should have exactly 1 IPv6 address",
+                port
+            );
+        }
+    }
+
+    #[test]
+    fn test_failed_or_skipped_bind_not_advertised() {
+        let successful_addr: Multiaddr = "/ip4/0.0.0.0/tcp/443".parse().unwrap();
+        let failed_addr_port = 80;
+        let skipped_addr_port = 8080;
+
+        let results = vec![
+            BindResult::Success {
+                addr: successful_addr.clone(),
+                port: 443,
+            },
+            BindResult::Failed {
+                port: failed_addr_port,
+                error: "Address already in use".to_string(),
+            },
+            BindResult::Skipped {
+                port: skipped_addr_port,
+                reason: "Not attempted".to_string(),
+            },
+        ];
+
+        let analysis = analyze_bind_results(&results);
+
+        assert_eq!(analysis.successful.len(), 1);
+        assert_eq!(analysis.successful[0], (successful_addr, 443));
+
+        assert!(
+            !analysis.successful.iter().any(|(_, p)| *p == failed_addr_port),
+            "Failed port {} must not be present in successful addresses",
+            failed_addr_port
+        );
+        assert!(
+            !analysis.successful.iter().any(|(_, p)| *p == skipped_addr_port),
+            "Skipped port {} must not be present in successful addresses",
+            skipped_addr_port
+        );
+
+        let report = analysis.report();
+        assert!(report.contains("Listening on 1 address"));
+        assert!(report.contains("443"));
+        assert!(!report.contains("/tcp/80 ("));
+        assert!(!report.contains("/tcp/8080 ("));
     }
 }
