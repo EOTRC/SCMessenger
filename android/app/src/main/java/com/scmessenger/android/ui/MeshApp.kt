@@ -30,6 +30,7 @@ import com.scmessenger.android.ui.contacts.ContactDetailScreen
 import com.scmessenger.android.ui.dashboard.PeerListScreen
 import com.scmessenger.android.ui.dashboard.TopologyScreen
 import com.scmessenger.android.ui.identity.IdentityScreen
+import com.scmessenger.android.ui.join.JoinMeshScreen
 import com.scmessenger.android.ui.screens.*
 import com.scmessenger.android.ui.screens.RequestsInboxScreen
 import com.scmessenger.android.ui.viewmodels.MainViewModel
@@ -256,6 +257,9 @@ fun MeshNavHost(
                     },
                     onNavigateToTopology = {
                         navController.navigate("topology")
+                    },
+                    onNavigateToJoinMesh = {
+                        navController.navigate(Screen.JoinMesh.route)
                     }
                 )
             }
@@ -342,6 +346,15 @@ fun MeshNavHost(
             )
         }
 
+        composable(Screen.JoinMesh.route) {
+            val mainVm: MainViewModel = hiltViewModel()
+            JoinMeshScreen(
+                repository = mainVm.repository,
+                onJoinSuccess = { navController.popBackStack() },
+                onCancel = { navController.popBackStack() }
+            )
+        }
+
         if (hasIdentity) {
             composable(
                 route = "chat/{peerId}",
@@ -401,6 +414,7 @@ sealed class Screen(val route: String, val label: String, val icon: androidx.com
     object Diagnostics : Screen("diagnostics", "Diagnostics", androidx.compose.material.icons.Icons.Default.Settings)
     object BlockedPeers : Screen("blocked_peers", "Blocked Peers", androidx.compose.material.icons.Icons.Filled.Block)
     object RequestsInbox : Screen("requests_inbox", "Requests", androidx.compose.material.icons.Icons.Default.Add)
+    object JoinMesh : Screen("join_mesh", "Join Mesh", androidx.compose.material.icons.Icons.Filled.Router)
 
     companion object {
         val fullRoleBottomNavItems = listOf(Conversations, Contacts, Dashboard, Settings)
