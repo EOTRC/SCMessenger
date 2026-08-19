@@ -522,12 +522,18 @@ mod tests {
         assert_eq!(analysis.successful[0], (successful_addr, 443));
 
         assert!(
-            !analysis.successful.iter().any(|(_, p)| *p == failed_addr_port),
+            !analysis
+                .successful
+                .iter()
+                .any(|(_, p)| *p == failed_addr_port),
             "Failed port {} must not be present in successful addresses",
             failed_addr_port
         );
         assert!(
-            !analysis.successful.iter().any(|(_, p)| *p == skipped_addr_port),
+            !analysis
+                .successful
+                .iter()
+                .any(|(_, p)| *p == skipped_addr_port),
             "Skipped port {} must not be present in successful addresses",
             skipped_addr_port
         );
