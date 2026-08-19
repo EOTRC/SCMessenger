@@ -74,6 +74,37 @@ open class MeshRepository(
         private const val IDENTITY_CACHE_NICKNAME = "nickname"
         private const val IDENTITY_CACHE_PEER_ID = "libp2p_peer_id"
         private const val IDENTITY_CACHE_INITIALIZED = "initialized"
+        internal const val PLATFORM_SECURE_KEYS_PREFS = "platform_secure_keys"
+        internal const val BACKUP_PASSPHRASE_KEY = "backup_passphrase_v1"
+
+        internal fun resolvePlatformSecuredPassphrase(
+            encryptedPrefs: SharedPreferences,
+            legacyPrefsProvider: () -> SharedPreferences,
+            deleteLegacyFile: () -> Unit
+        ): String {
+            val encryptedKey = encryptedPrefs.getString(BACKUP_PASSPHRASE_KEY, null)
+            if (!encryptedKey.isNullOrEmpty()) {
+                return encryptedKey
+            }
+
+            val legacyPrefs = legacyPrefsProvider()
+            val legacyKey = legacyPrefs.getString(BACKUP_PASSPHRASE_KEY, null)
+            if (!legacyKey.isNullOrEmpty()) {
+                encryptedPrefs.edit().putString(BACKUP_PASSPHRASE_KEY, legacyKey).commit()
+                legacyPrefs.edit().remove(BACKUP_PASSPHRASE_KEY).commit()
+                if (legacyPrefs.all.isEmpty()) {
+                    deleteLegacyFile()
+                }
+                Timber.i("Migrated backup passphrase from legacy plaintext store to EncryptedSharedPreferences")
+                return legacyKey
+            }
+
+            val bytes = ByteArray(32)
+            java.security.SecureRandom().nextBytes(bytes)
+            val newKey = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+            encryptedPrefs.edit().putString(BACKUP_PASSPHRASE_KEY, newKey).commit()
+            return newKey
+        }
         // v0.4.0: there are no dedicated relays and no hardcoded node addresses --
         // every node is a full relay, and discovery is ledger sharing (invite/QR
         // seeds a new node's ledger; mDNS/BLE learns LAN peers). The static
@@ -3452,15 +3483,18 @@ open class MeshRepository(
     }
 
     private fun getPlatformSecuredPassphrase(): String {
-        val prefs = SecurityUtils.getEncryptedSharedPreferences(context)
-        var key = prefs.getString("backup_passphrase_v1", null)
-        if (key == null) {
-            val bytes = ByteArray(32)
-            java.security.SecureRandom().nextBytes(bytes)
-            key = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-            prefs.edit().putString("backup_passphrase_v1", key).commit()
-        }
-        return key ?: ""
+        val encryptedPrefs = SecurityUtils.getEncryptedSharedPreferences(context)
+        return resolvePlatformSecuredPassphrase(
+            encryptedPrefs = encryptedPrefs,
+            legacyPrefsProvider = { context.getSharedPreferences(PLATFORM_SECURE_KEYS_PREFS, Context.MODE_PRIVATE) },
+            deleteLegacyFile = {
+                try {
+                    context.deleteSharedPreferences(PLATFORM_SECURE_KEYS_PREFS)
+                } catch (e: Exception) {
+                    Timber.w("Failed to delete empty legacy preferences file: ${e.message}")
+                }
+            }
+        )
     }
 
     private fun restoreIdentityFromBackup(core: uniffi.api.IronCore): Boolean {
