@@ -14,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 
 /**
@@ -167,11 +168,15 @@ class ShareReceiver : BroadcastReceiver() {
         scope.launch {
             try {
                 repository.sendMessage(peerId, content)
-                Toast.makeText(context, context.getString(R.string.share_toast_message_queued), Toast.LENGTH_SHORT).show()
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, context.getString(R.string.share_toast_message_queued), Toast.LENGTH_SHORT).show()
+                }
                 Timber.i("Shared message queued for $peerId")
             } catch (e: Exception) {
                 Timber.e(e, "Failed to send shared message")
-                Toast.makeText(context, context.getString(R.string.share_error_failed_to_send), Toast.LENGTH_SHORT).show()
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, context.getString(R.string.share_error_failed_to_send), Toast.LENGTH_SHORT).show()
+                }
             } finally {
                 scope.cancel()
             }
