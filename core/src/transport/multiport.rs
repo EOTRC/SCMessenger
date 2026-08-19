@@ -16,9 +16,11 @@ pub const COMMON_PORTS: &[u16] = &[
     9090, // Common alternative
 ];
 
-/// Ports excluded from adaptive swarm listening (control/health API ports)
+/// Ports excluded from adaptive swarm listening (control/health API ports, dedicated listeners)
 pub const EXCLUDED_PORTS: &[u16] = &[
     9876, // Control API & Relay Health server port
+    9002, // WASM bridge WebSocket listener (swarm.rs) -- must not be
+          // double-bound as TCP by the multiport generator
 ];
 
 /// Configuration for multi-port listening
@@ -389,6 +391,50 @@ mod tests {
             assert_ne!(
                 port, 9876,
                 "Control API port 9876 must be excluded from listener addresses"
+            );
+        }
+    }
+
+    #[test]
+    fn test_excluded_port_9002_wasm_bridge_never_emitted() {
+        let ip_permutations = [
+            (true, true),   // Dual-stack (IPv4 + IPv6)
+            (true, false),  // IPv4 only
+            (false, true),  // IPv6 only
+            (false, false), // Neither
+        ];
+
+        for (enable_ipv4, enable_ipv6) in ip_permutations {
+            let config = MultiPortConfig {
+                enable_common_ports: true,
+                enable_random_port: true,
+                additional_ports: vec![9002, 9000, 8080],
+                enable_ipv4,
+                enable_ipv6,
+                preferred_port: Some(9002),
+            };
+
+            let addresses = generate_listen_addresses(&config);
+
+            for (addr, port) in &addresses {
+                assert_ne!(
+                    *port, 9002,
+                    "WASM bridge WebSocket port 9002 must never be emitted by multiport generator (ipv4={}, ipv6={})",
+                    enable_ipv4, enable_ipv6
+                );
+                assert!(
+                    !addr.to_string().contains("/tcp/9002"),
+                    "Address {} must not contain port 9002 (ipv4={}, ipv6={})",
+                    addr,
+                    enable_ipv4,
+                    enable_ipv6
+                );
+            }
+
+            assert!(
+                !addresses.iter().any(|(_, port)| *port == 9002),
+                "generate_listen_addresses must not return port 9002 when explicitly requested (ipv4={}, ipv6={})",
+                enable_ipv4, enable_ipv6
             );
         }
     }
