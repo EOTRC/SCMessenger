@@ -45,6 +45,18 @@ def reasoning_knob(lane):
     return {"effort": "low"}
 
 
+def thinking_knob(lane):
+    """Z.AI (zai) models dump reasoning into reasoning_content and return
+    content='' unless thinking is explicitly disabled. An empty content string
+    is a silent vacuous success, which is worse than an error.
+
+    This parameter is zai-only. Google, NVIDIA NIM, Cerebras and Groq reject
+    unknown fields, so it must never be sent to any other provider."""
+    if lane.get("provider") != "zai":
+        return None
+    return {"type": "disabled"}
+
+
 def call(lane, prompt, max_tokens, timeout):
     key = load_key(lane.get("key_file", ""), lane.get("key_var", ""))
     if not key:
@@ -58,6 +70,9 @@ def call(lane, prompt, max_tokens, timeout):
     knob = reasoning_knob(lane)
     if knob is not None:
         body["reasoning"] = knob
+    thinking = thinking_knob(lane)
+    if thinking is not None:
+        body["thinking"] = thinking
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {key}",
@@ -75,7 +90,14 @@ def call(lane, prompt, max_tokens, timeout):
     if "choices" not in data:
         raise RuntimeError(f"upstream: {json.dumps(data)[:160]}")
     msg = data["choices"][0]["message"]
-    return (msg.get("content") or ""), time.time() - t0, data.get("model", lane["model"])
+    content = msg.get("content") or ""
+    reasoning = msg.get("reasoning_content") or ""
+    if not content.strip() and reasoning.strip():
+        raise RuntimeError(
+            f"lane {lane['id']} returned empty content but non-empty reasoning_content "
+            f"({len(reasoning)} chars; thinking disabled knob missing or ignored)"
+        )
+    return content, time.time() - t0, data.get("model", lane["model"])
 
 
 def build_prompt(task_text, files, mode):
