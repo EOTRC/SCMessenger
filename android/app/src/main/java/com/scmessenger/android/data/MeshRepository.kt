@@ -10,6 +10,7 @@ import com.scmessenger.android.utils.CircuitBreaker
 import com.scmessenger.android.utils.NetworkFailureMetrics
 import com.scmessenger.android.utils.PeerIdValidator
 import com.scmessenger.android.utils.PeerKeyUtils
+import com.scmessenger.android.utils.SecurityUtils
 import com.scmessenger.android.transport.TransportManager
 import com.scmessenger.android.transport.SmartTransportRouter
 import com.scmessenger.android.service.TransportType
@@ -3442,7 +3443,7 @@ open class MeshRepository(
     }
 
     private fun getPlatformSecuredPassphrase(): String {
-        val prefs = context.getSharedPreferences("platform_secure_keys", Context.MODE_PRIVATE)
+        val prefs = SecurityUtils.getEncryptedSharedPreferences(context)
         var key = prefs.getString("backup_passphrase_v1", null)
         if (key == null) {
             val bytes = ByteArray(32)
