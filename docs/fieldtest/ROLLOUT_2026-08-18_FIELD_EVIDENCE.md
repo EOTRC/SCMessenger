@@ -123,3 +123,22 @@ distributed.
 - The device did show genuine memory pressure (swap 368 kB free of 3.1 GB) and
   the LMK was killing Google's own services. It was real, and it was not the
   cause. Concurrent real symptoms make a wrong diagnosis look supported.
+
+---
+
+## 5. WebSocket listeners: deferred by operator ruling, not dropped by accident
+
+The approved `DUAL_BIND` fix (PR #180) emits **plain TCP only** and generates
+zero `/ws` addresses. That removes an entire transport class, so it is recorded
+here as a decision rather than left to be discovered later as a regression.
+
+**Operator ruling, 2026-08-19: WebSocket is deferred to unblock Android. It
+returns before v1.0.0.**
+
+What this costs while deferred: browser and WASM peers have no transport. This
+repo ships a `scmessenger-wasm` target, so that surface is dark until WS is
+restored on its own dedicated port.
+
+**Re-entry trigger: before v1.0.0, and before any claim that browser or WASM
+clients can connect.** The intended end state is one transport per port -- for
+example TCP on 9001 and WS on 9002 -- not the permanent removal of WS.
