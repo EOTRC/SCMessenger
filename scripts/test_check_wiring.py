@@ -143,8 +143,11 @@ class TestWiringGate(unittest.TestCase):
 
         # 7-9. Manifest missing components: BootReceiver, MeshVpnService, ShareReceiver
         c3_symbols = {f.symbol for f in findings if f.kind == "C3_MANIFEST_MISSING"}
-        self.assertIn("BootReceiver", c3_symbols, "Failed to detect missing BootReceiver in manifest")
-        self.assertIn("MeshVpnService", c3_symbols, "Failed to detect missing MeshVpnService in manifest")
+        # BootReceiver and MeshVpnService were RESTORED to the manifest by PR #176,
+        # so they are correctly no longer reported. ShareReceiver stays unregistered
+        # by deliberate CTO ruling (it was never in the manifest before ebf5411b),
+        # so it remains the live manifest fixture.
+        self.assertIn("ShareReceiver", c3_symbols, "Failed to detect unregistered ShareReceiver")
         self.assertIn("ShareReceiver", c3_symbols, "Failed to detect missing ShareReceiver in manifest")
 
         # Spot check: Ensure NO false positives on live core features
