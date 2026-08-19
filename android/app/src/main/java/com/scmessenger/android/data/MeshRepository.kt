@@ -90,12 +90,16 @@ open class MeshRepository(
             val legacyPrefs = legacyPrefsProvider()
             val legacyKey = legacyPrefs.getString(BACKUP_PASSPHRASE_KEY, null)
             if (!legacyKey.isNullOrEmpty()) {
-                encryptedPrefs.edit().putString(BACKUP_PASSPHRASE_KEY, legacyKey).commit()
-                legacyPrefs.edit().remove(BACKUP_PASSPHRASE_KEY).commit()
-                if (legacyPrefs.all.isEmpty()) {
-                    deleteLegacyFile()
+                val committed = encryptedPrefs.edit().putString(BACKUP_PASSPHRASE_KEY, legacyKey).commit()
+                if (committed) {
+                    legacyPrefs.edit().remove(BACKUP_PASSPHRASE_KEY).commit()
+                    if (legacyPrefs.all.isEmpty()) {
+                        deleteLegacyFile()
+                    }
+                    Timber.i("Migrated backup passphrase from legacy plaintext store to EncryptedSharedPreferences")
+                } else {
+                    Timber.e("Failed to commit backup passphrase to EncryptedSharedPreferences; keeping legacy store intact")
                 }
-                Timber.i("Migrated backup passphrase from legacy plaintext store to EncryptedSharedPreferences")
                 return legacyKey
             }
 

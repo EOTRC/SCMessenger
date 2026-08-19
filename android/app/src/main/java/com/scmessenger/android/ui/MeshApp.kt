@@ -1,6 +1,8 @@
 package com.scmessenger.android.ui
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.dp
 import com.scmessenger.android.R
 import androidx.compose.ui.res.stringResource
 import androidx.compose.material.icons.Icons
@@ -236,6 +238,52 @@ fun MeshNavHost(
             composable(Screen.AddContact.route) {
                 val mainVm: MainViewModel = hiltViewModel()
                 val deepLinkData = remember { mainVm.consumeDeepLink() }
+                var showDialConfirmDialog by remember {
+                    mutableStateOf(
+                        deepLinkData != null &&
+                            deepLinkData.listeners.isNotEmpty() &&
+                            (!deepLinkData.libp2pPeerId.isNullOrBlank() || !deepLinkData.peerId.isNullOrBlank())
+                    )
+                }
+
+                if (showDialConfirmDialog && deepLinkData != null) {
+                    val peerDisplay = deepLinkData.nickname?.takeIf { it.isNotBlank() }
+                        ?: deepLinkData.libp2pPeerId
+                        ?: deepLinkData.peerId
+                        ?: stringResource(R.string.unknown_peer)
+                    val addressesText = deepLinkData.listeners.joinToString("\n")
+                    AlertDialog(
+                        onDismissRequest = { showDialConfirmDialog = false },
+                        title = { Text(stringResource(R.string.deep_link_connect_dialog_title)) },
+                        text = {
+                            Column {
+                                Text(stringResource(R.string.deep_link_connect_dialog_message, peerDisplay))
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = addressesText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    showDialConfirmDialog = false
+                                    mainVm.confirmAndDialPendingDeepLink(deepLinkData)
+                                }
+                            ) {
+                                Text(stringResource(R.string.deep_link_action_connect))
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showDialConfirmDialog = false }) {
+                                Text(stringResource(R.string.cancel))
+                            }
+                        }
+                    )
+                }
+
                 AddContactScreen(
                     onNavigateBack = { navController.popBackStack() },
                     onContactAdded = { navController.popBackStack() },

@@ -101,7 +101,7 @@ class MainViewModelTest {
     }
 
     @Test
-    fun `valid invite deep link triggers connectToPeer and sets pendingDeepLink`() = runTest {
+    fun `valid invite deep link sets pendingDeepLink without dialing until confirmed`() = runTest {
         val uri = createMockUri(
             scheme = "scmessenger",
             host = "invite",
@@ -116,11 +116,20 @@ class MainViewModelTest {
         viewModel.handleDeepLink(uri)
         testDispatcher.scheduler.advanceUntilIdle()
 
+        // Assert NO dial occurs on parse alone
+        coVerify(exactly = 0) {
+            mockMeshRepository.connectToPeer(any(), any())
+        }
+
         val pending = viewModel.consumeDeepLink()
         assertNotNull(pending)
         assertEquals(validPublicKey, pending?.publicKey)
         assertEquals(validPeerId, pending?.peerId)
         assertEquals(listOf("/ip4/8.8.8.8/tcp/9001"), pending?.listeners)
+
+        // Assert dial DOES occur after explicit confirmation
+        viewModel.confirmAndDialPendingDeepLink(pending)
+        testDispatcher.scheduler.advanceUntilIdle()
 
         coVerify(exactly = 1) {
             mockMeshRepository.connectToPeer(validPeerId, listOf("/ip4/8.8.8.8/tcp/9001"))

@@ -361,20 +361,27 @@ class MainViewModel @Inject constructor(
             )
             Timber.i("Deep link parsed: peerId=${data.peerId}, nickname=${data.nickname}, listeners=${data.listeners.size}")
             _pendingDeepLink.value = data
-
-            // Auto-dial approved by operator on 2026-08-18, gated by DeepLinkValidator.sanitizeDeepLinkMultiaddrs and PeerIdValidator.isLibp2pPeerId.
-            if (routePeerId != null && listeners.isNotEmpty()) {
-                viewModelScope.launch(Dispatchers.IO) {
-                    try {
-                        meshRepository.connectToPeer(routePeerId, listeners)
-                        Timber.i("Deep link auto-dial initiated for peer: $routePeerId")
-                    } catch (e: Exception) {
-                        Timber.e(e, "Failed to auto-dial peer from deep link: $routePeerId")
-                    }
-                }
-            }
         } catch (e: Exception) {
             Timber.e(e, "Failed to handle deep link: $uri")
+        }
+    }
+
+    /**
+     * Dial peer addresses from a parsed deep link only after explicit user confirmation.
+     */
+    fun confirmAndDialPendingDeepLink(data: DeepLinkData? = null) {
+        val target = data ?: _pendingDeepLink.value
+        val targetPeerId = target?.libp2pPeerId ?: target?.peerId
+        val listeners = target?.listeners.orEmpty()
+        if (targetPeerId != null && listeners.isNotEmpty()) {
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    meshRepository.connectToPeer(targetPeerId, listeners)
+                    Timber.i("Deep link dial initiated for peer: $targetPeerId")
+                } catch (e: Exception) {
+                    Timber.e(e, "Failed to dial peer from deep link: $targetPeerId")
+                }
+            }
         }
     }
 

@@ -371,6 +371,45 @@ class MeshRepositoryTest {
     }
 
     @Test
+    fun `passphrase migration keeps legacy key when encrypted store commit fails`() {
+        val mockEncryptedPrefs = mockk<SharedPreferences>()
+        val mockEncryptedEditor = mockk<SharedPreferences.Editor>()
+        val mockLegacyPrefs = mockk<SharedPreferences>()
+        val mockLegacyEditor = mockk<SharedPreferences.Editor>()
+        var legacyFileDeleted = false
+
+        every { mockEncryptedPrefs.getString(MeshRepository.BACKUP_PASSPHRASE_KEY, null) } returns null
+        every { mockEncryptedPrefs.edit() } returns mockEncryptedEditor
+        every { mockEncryptedEditor.putString(any(), any()) } returns mockEncryptedEditor
+        every { mockEncryptedEditor.commit() } returns false
+
+        every { mockLegacyPrefs.getString(MeshRepository.BACKUP_PASSPHRASE_KEY, null) } returns "mock-secret-payload"
+        every { mockLegacyPrefs.edit() } returns mockLegacyEditor
+        every { mockLegacyEditor.remove(any()) } returns mockLegacyEditor
+        every { mockLegacyEditor.commit() } returns true
+        every { mockLegacyPrefs.all } returns emptyMap<String, Any>()
+
+        val result = MeshRepository.resolvePlatformSecuredPassphrase(
+            encryptedPrefs = mockEncryptedPrefs,
+            legacyPrefsProvider = { mockLegacyPrefs },
+            deleteLegacyFile = { legacyFileDeleted = true }
+        )
+
+        assertTrue(result.isNotEmpty())
+        assertEquals("mock-secret-payload", result)
+        assertFalse(legacyFileDeleted)
+
+        verify(exactly = 1) {
+            mockEncryptedEditor.putString(MeshRepository.BACKUP_PASSPHRASE_KEY, "mock-secret-payload")
+            mockEncryptedEditor.commit()
+        }
+        verify(exactly = 0) {
+            mockLegacyEditor.remove(any())
+            mockLegacyEditor.commit()
+        }
+    }
+
+    @Test
     fun `already-migrated passphrase returns immediately without reading legacy store`() {
         val mockEncryptedPrefs = mockk<SharedPreferences>()
         var legacyProviderCalled = false
