@@ -27,41 +27,66 @@ context instead of the conclusion.
 
 ## 0a-bis. SESSION LOG -- 2026-08-18 (CTO)
 
-### 1. What landed
-Five PRs opened this session, all from isolated worktrees via delegated workers:
-- **#181** `fix(orchestration): zai lane returns empty content without thinking disabled`
-- **#182** `feat(orchestration): session launch gate and end-of-session delegation audit`
-- **#183** `fix(android): restore wiring -- ALL NINE wired-out features`
-- **#184** `docs(cto): correct the NO_MOBILE_BOOTSTRAP deferral`
-- **#180** advanced from RED to near-green (commits `0d533dbc`, `4e67f750`)
+### 1. What landed and merged
+- **Six PRs opened/tracked this session:**
+  - **#181** `fix(orchestration): zai lane returns empty content without thinking disabled`
+  - **#182** `feat(orchestration): session launch gate and end-of-session delegation audit`
+  - **#183** `fix(android): restore wiring -- ALL NINE wired-out features`
+  - **#184** `docs(cto): correct the NO_MOBILE_BOOTSTRAP deferral`
+  - **#185** `docs(cto): session log 2026-08-18 -- all nine Android features rewired, #180 re-reviewed` (this handoff branch)
+  - **#180** advanced from RED to near-green (commits `0d533dbc`, `4e67f750`)
+- **#186 MERGED to main as 3bd3c947 (commit `af16cea0`):**
+  - main's `Cargo.lock` now carries `h2 0.4.16`. This unblocked the entire merge train.
+  - **RUSTSEC-2026-0258 fix:** Patched "h2 unbounded empty DATA frames" (h2 0.4.15 -> 0.4.16, LOW severity).
+  - **The bump trap:** `cargo update -p h2 --precise 0.4.16` on the local toolchain (cargo 1.96.1, MSRV-aware resolver) CASCADED into unrelated DOWNGRADES -- `socket2 0.6.5 -> 0.5.10` and `windows-sys 0.61.2 -> 0.52.0/0.59.0/0.48.0`. That was rejected. The h2 `dependencies = [...]` block in `Cargo.lock` is BYTE-IDENTICAL between 0.4.15 and 0.4.16, so a two-line hand edit of `version` + `checksum` was provably sufficient. Final diff: +2/-2, one file. `cargo metadata --format-version 1` confirmed cargo accepts it without rewriting.
+  - **Operator decision on #186 checks:** The merge was made under an EXPLICIT OPERATOR DECISION naming each pending check, because `pr_scope.sh` requires exactly that. The four pending checks were:
+    1. `Android Debug APK` -- answered by `cargo tree -i h2`, which proves every path to h2 terminates at `scmessenger-cli` and it does NOT reach `scmessenger-core`, `-mobile`, `-wasm` or the Android/iOS apps.
+    2. `Android JVM Unit Tests` -- answered by `cargo tree -i h2` (same proof).
+    3. `iOS Build` -- answered by `cargo tree -i h2` (same proof).
+    4. `Repository Hygiene Checks` -- answered by a local `git diff --check`, clean, 1 file, 2 lines.
+    (Lint itself was GREEN, as were Test on ubuntu/windows/macos).
 
-### 2. #180 DUAL_BIND state
+### 2. #180 DUAL_BIND state and CI Lint diagnostic
 - **Root cause of the two red Test lanes:** `core/tests/test_multiport.rs` `test_custom_ports_only` asserted `addresses.len() == 6` for 3 ports, i.e. TWO addresses per port. That assertion ENCODED the dual-bind contract #180 removes. It was a stale contract, not a regression. Fixed in `0d533dbc`, which TIGHTENED the test (asserts `/tcp/` present and `/ws` absent).
 - **CTO-verified gates:**
   - `cargo fmt --all --check` [OK] (exit 0)
   - `cargo test -p scmessenger-core --test test_multiport` [OK] (12 passed, 0 failed)
   - `cargo clippy -p scmessenger-core --all-features -- -D warnings` [OK] (exit 0)
 - **Independent CRITICAL_VALIDATOR finding (`gemini-3.1-pro-high`):** returned [BLOCK] and FALSIFIED the CTO's own claim that #180 "emits TCP only". `core/src/transport/swarm.rs:2760-2770` unconditionally binds `/ip4/0.0.0.0/tcp/9002/ws` for the WASM bridge, and `EXCLUDED_PORTS` held only 9876 -- so configuring port 9002 would recreate dual-bind. The CTO verified the finding directly and did NOT override it. Resolved by `4e67f750` (9002 added to `EXCLUDED_PORTS` plus a unit test). A re-review was dispatched.
-- **STILL RED:** The CI "Lint" job (~1m11s), cause NOT yet identified. `fmt` and core `clippy` both pass locally, so it is NOT those two. A workspace-wide clippy was still running when this was written. DO NOT MERGE #180 until Lint is green and the re-review verdict is recorded as a durable artifact.
+- **CI "Lint" cause:**
+  - *[SUPERSEDED -- cause was NOT yet identified when written]:* The CI "Lint" job (~1m11s), cause NOT yet identified. `fmt` and core `clippy` both pass locally, so it is NOT those two. A workspace-wide clippy was still running when this was written. DO NOT MERGE #180 until Lint is green and the re-review verdict is recorded as a durable artifact.
+  - **IDENTIFIED AND FIXED (2026-08-18):** Cause: the Lint job's fourth step, `cargo deny check`, reported `advisories FAILED` for `RUSTSEC-2026-0258` ("h2 unbounded empty DATA frames", h2 0.4.15, LOW severity, patched 0.4.16). It was red on EVERY open PR simultaneously, including PRs touching only markdown, while main showed green because main's last run predated the advisory.
+  - **Diagnostic test (reusable):** The decisive cheap test was checking Lint on a PR with no Rust in it. If a markdown-only PR fails `cargo deny`, the advisory database updated upstream.
 
 ### 3. Android wiring: operator ruled ALL NINE before the tag
 - `python scripts/check_wiring.py` is the gate. NEVER assess wiring by eye.
 - **Baseline on `origin/main`:** 32 findings (10 C1_ZERO_CALLERS, 1 C2_UNREGISTERED_ROUTE, 1 C3_MANIFEST_MISSING, 20 C4_TRANSITIVE_DEAD).
-- **After #183:** exit 0, ZERO findings [OK], verified independently by the CTO.
-- **Manifest audit discrepancy:** `ANDROID_WIRING_AUDIT_2026-08-18.md` manifest section was PARTLY STALE: it listed `MeshVpnService` and `BootReceiver` as unregistered, but #176 had already restored them. Only `ShareReceiver` was actually missing. This is exactly why the gate is a script and not a document.
-- **Build status:** #183 has NOT been compiled yet. The Android gradle build gate is still owed.
+- **After #183:** exit 0, ZERO findings [OK], verified independently by the CTO. Operator ruling, 2026-08-18: everything wired and WORKING for v0.4.0, `JoinMeshScreen` included.
+- **Manifest audit discrepancy & CEO correction on record:**
+  - `ANDROID_WIRING_AUDIT_2026-08-18.md` manifest section was PARTLY STALE: it listed `MeshVpnService` and `BootReceiver` as unregistered, but #176 had already restored them. Only `ShareReceiver` was actually missing. This is exactly why the gate is a script and not a document.
+  - The CEO reported "three manifest registrations still missing" and a 106-line `AndroidManifest.xml`. That reading came from the SHARED CHECKOUT, which is 37 commits behind `origin/main`. `origin/main`'s manifest is 148 lines and already registers `BootReceiver` and `MeshVpnService` (PR #176). Only `ShareReceiver` was missing. `check_wiring.py` reported exactly one `C3_MANIFEST_MISSING` and was correct. On #183 the manifest is 165 lines with all seven components. Lesson to record: derive from `origin/main`, never from the shared working tree.
+- **Build verification and validation:**
+  - *[SUPERSEDED -- Build status: #183 has NOT been compiled yet. The Android gradle build gate is still owed.]*
+  - **Compiled clean:** `./gradlew :app:compileDebugKotlin` returned `BUILD SUCCESSFUL` in 51m 53s, exit 0 [OK].
+  - **Two independent `CRITICAL_VALIDATOR` passes (`gemini-3.1-pro-high`):** verdicts committed to `docs/security/PR183_VALIDATION_2026-08-18.md`.
+    - **Pass 1:** [BLOCK] with three HIGH findings (passphrase data loss on an ignored `commit()` return; unconsented dial of attacker-supplied addresses, reachable from any web page via the `BROWSABLE` intent filter; hardcoded strings).
+    - **Pass 2:** [APPROVE_WITH_FINDINGS], prior block cleared, and it caught a FOURTH bug both Pass 1 and the CTO missed: `Toast.makeText` called from `Dispatchers.IO` in `ShareReceiver` -- compiles clean, crashes at runtime with `Looper.prepare()`. Pre-existing, but #183 made it reachable by registering the receiver.
+- **CI wiring gate:** `check_wiring.py` is now wired into CI as an "Android Wiring Gate" job in `.github/workflows/mobile.yml` (on PR #183, so the gate and the fix land together -- adding it anywhere else turns main red, since main still has 32 findings). It runs the gate's own unit tests FIRST, then the gate, with no shell pipeline masking the exit code and no `continue-on-error`. This satisfies the CEO's tag-blocking requirement and makes AGENTS.md rule 16 executable.
+- **Rule 16 citation:** Rule 16 DOES exist; PR #179 adds it ("RESTORING CODE IS NOT RESTORING A FEATURE. WIRE IT, OR IT IS DEAD."). The CEO believed the citation in `check_wiring.py` was wrong because #179 is unmerged. No fix needed.
 
-### 4. Security finding in #183 [OPEN] -- needs a decision
+### 4. Security finding in #183 [OPEN] -- needs an operator ruling before the tag
 #183 routes `MeshRepository.getPlatformSecuredPassphrase()` from plaintext `context.getSharedPreferences("platform_secure_keys", MODE_PRIVATE)` to `SecurityUtils.getEncryptedSharedPreferences(context)`. That is a genuine fix -- a backup passphrase was being stored in the clear. But there are TWO hazards:
 1. **MIGRATION:** `SecurityUtils` uses a DIFFERENT file, `"scmessenger_secure_prefs"` (`SecurityUtils.kt:18`). On an existing install the lookup returns null and the code GENERATES A NEW passphrase, orphaning any existing backup. No migration step exists, and the old plaintext secret is left on disk.
 2. **RECOVERY PATH DESTROYS SECRETS:** `SecurityUtils.kt:26` calls `context.deleteSharedPreferences(...)` and retries whenever `EncryptedSharedPreferences` fails to initialise. Android `KeyStore` invalidation on a lock-screen or biometric change is a common, expected event, so this can silently destroy the stored passphrase. Pre-existing in `SecurityUtils`, but #183 makes it load-bearing for user data for the first time.
-- **Status:** Record this as [OPEN]. CTO recommendation: add a migration that reads the old file, writes it into the encrypted store, then deletes the plaintext -- and do not merge that hunk of #183 until it exists.
+- **Status [OPEN] -- NEEDS AN OPERATOR RULING BEFORE THE TAG:** Record this as [OPEN]. CTO recommendation: add a migration that reads the old file, writes it into the encrypted store, then deletes the plaintext -- and do not merge that hunk of #183 until it exists.
 
-### 5. Tooling findings
+### 5. Tooling findings, CI runner pathology, and branch protection
 - **zai glm-4.7-flash:** Returns HTTP 200 with `content:""` unless the request carries `"thinking":{"type":"disabled"}`; the answer goes to `reasoning_content` instead. The CTO reproduced both halves live against the API. #181 fixes `scripts/delegate.py`. `scripts/lane_probe.py` has the SAME bug and is NOT yet fixed. The zai free tier also rate-limits fast -- a third call within a few minutes returned HTTP 429, so it cannot carry unlimited bulk work.
 - **`session_orchestration_audit.py` (#182):** STATUS column is unreliable: it reported 5 of 7 dispatches as ERROR/TIMEOUT when they had completed successfully with valid reports. Its token and step accounting looked correct. Fix before trusting the STATUS column.
 - **Preflight hook false positives:** Produced THREE false positives this session: it matches the literal string `"agy"` and the characters `"|"` plus `"$?"` anywhere in a command, including inside unrelated Python source and in correctly-written non-piped commands. Same class of defect as #167.
 - **Disk reclamation:** C: fell to 3.9 GB free (99%). The operator approved reclaiming `.scm-zai-target` (7.37 GB, pure cargo artifacts, no git), two merged worktrees' `target/` dirs, and the `SCMessenger-ZaiComplete` checkout (clean, 0 uncommitted, 0 unpushed, fully pushed to `Treystu/soc-em.git`). Recovered to 16.6 GB. `.scm-shared-target` (26 GB) was deliberately PRESERVED as the warm `scmessenger-core` cache.
+- **CI runner pathology (2026-08-18):** Two jobs hung rather than failed: the Lint job ran 2h26m while EVERY sibling job in the same run completed successfully, and Android Debug APK was auto-cancelled at 1h15m. The fix that worked: cancel the run, then `gh run rerun <id> --failed` once the queue had drained; the rerun finished in ~13 minutes. Also: pushing repeatedly to one PR spawns a full run-set per push (7 workflows), which starves every other PR. Cancelling SUPERSEDED run-sets on your own branch is safe and took the queue from 8-done/20-queued to 15-done/12-queued.
+- **Branch protection status [OPEN]:** `main` is NOT branch-protected. `gh api repos/Sovereign-Communication/SCMessenger/branches/main/protection` returns HTTP 404 "Branch not protected". The handoff records `apply_branch_protection.sh --apply` as operator-approved, but it has never been run. This is step 3 of the documented path to the tag and is still open.
 
 ### 6. Orchestration (operator directive, 2026-08-18)
 Delegate through Antigravity. `"agy"` IS the Antigravity CLI. Tiering:
@@ -73,7 +98,7 @@ Delegate through Antigravity. `"agy"` IS the Antigravity CLI. Tiering:
 - **Session stats:** 7 dispatches, 590 worker steps, roughly 1.63M worker tokens.
 
 ### 7. Still true, do not soften
-Two nodes on one LAN STILL cannot message each other. #180 is the fix and it is NOT merged. No v0.4.0 tag exists. The in-app message to the operator is still queued, never delivered.
+Two nodes on one LAN STILL cannot message each other until #180 merges. #180 is the fix and it is NOT merged. No v0.4.0 tag exists. The in-app message to the operator is still queued, never delivered.
 
 ## 0b. OPERATOR APPROVAL GATE — standing, 2026-08-16
 
