@@ -4,8 +4,10 @@ Sovereign end-to-end encrypted mesh messenger. No servers, no accounts.
 
 Messages move over whatever path exists — Bluetooth LE, Wi-Fi, the local
 network, or an internet relay — and the transports race, so a message takes
-whichever one is actually working. If there is no internet, phones in range
-still talk. The Rust core is shared by every client.
+whichever one is actually working.* If there is no internet, phones in range
+still talk.* The Rust core is shared by every client.
+
+`*` In progress — not yet proven end to end. See Project status below.
 
 ---
 
