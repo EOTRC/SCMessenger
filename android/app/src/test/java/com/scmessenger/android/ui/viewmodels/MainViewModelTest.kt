@@ -3,7 +3,6 @@ package com.scmessenger.android.ui.viewmodels
 import android.content.Context
 import android.net.Uri
 import com.scmessenger.android.data.IdentityCreationCoordinator
-import com.scmessenger.android.data.IdentityProgressStage
 import com.scmessenger.android.data.IdentityState
 import com.scmessenger.android.data.MeshRepository
 import com.scmessenger.android.data.PreferencesRepository
