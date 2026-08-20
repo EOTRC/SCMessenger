@@ -6,6 +6,7 @@
 
 mod api;
 mod ble_daemon;
+pub mod ble_ids;
 mod ble_mesh;
 mod bootstrap;
 mod config;
