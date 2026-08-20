@@ -25,6 +25,71 @@ replaced it. Do not delete it.** The history of a wrong call is how the next
 session avoids re-making it; every §8 lesson exists because someone deleted the
 context instead of the conclusion.
 
+## 0a. HANDOFF -- 2026-08-19. Read this first, then sections 0b/0c.
+
+**D1 and D5 are DONE.** PR #139 merged to `main` at `6e70a3db`; `tracking` fully
+absorbed (`git rev-list --left-right --count origin/main...origin/tracking` -> `1 0`).
+All main lanes green. `main` is now `b4ccd30a`. Docker Publish fired: image
+**`sha-6e70a3d`** exists, which unblocks the D4 node rebuild.
+
+### Open PRs -- merge order
+
+| PR | What | Gate |
+|---|---|---|
+| **#180** | DUAL_BIND fix (operator-approved: advertise only what bound) | **needs a fresh CRITICAL_VALIDATOR** -- touches `core/src/transport/`, rule 8 |
+| **#179** | field evidence, AGENTS.md **rule 16**, wiring audit, `check_wiring.py` (5/5 tests, verified by CTO), zai lane | ready |
+| **#177** | P0 dispositions | **NEEDS CORRECTION -- see below** |
+| #178, #170, #156, #154 | Apple API limit, free lanes, docker non-blocking, APK signing verify | #154 must merge before the tag |
+
+### TAG-BLOCKING work not yet started
+
+**Nine Android features are wired out** -- implementation present, call sites
+absent (`ebf5411b` restored files but not their callers). Full list in
+`docs/fieldtest/ANDROID_WIRING_AUDIT_2026-08-18.md`. Worst three:
+
+1. **Diagnostics/logs viewer** -- `Screen.Diagnostics` is DEFINED (`MeshApp.kt:397`)
+   and NAVIGATED TO (`:287`) with **no `composable()` registration**. Lands nowhere.
+2. **QR APK sharing** -- `ApkShareDialog.kt:36`, zero callers. Damages **D2**.
+3. **QR join-mesh** -- `JoinMeshScreen.kt:49`, never in the NavHost.
+
+A restoration PR is still to be written. Verify each with
+`python scripts/check_wiring.py` (exit 1 = findings), **not by eye**.
+
+### CTO error to correct in #177
+
+`NO_MOBILE_BOOTSTRAP` was dispositioned to S4 **because** `JoinMeshScreen`
+supplied a working QR join path. **It is orphaned.** That reasoning is void, so
+re-open the ruling. Do not let the wrong justification stand.
+
+### Operator rulings, 2026-08-19
+
+- **WS deferred** to unblock Android; returns **before v1.0.0**. #180 emits TCP
+  only. Cost: browser/WASM peers have no transport. Recorded in the field doc.
+- **zai `glm-4.7-flash` is the primary free lane.** MANDATORY quirk: send
+  `"thinking":{"type":"disabled"}` or it returns `content:""` -- a silent
+  vacuous success. Qwen paid remains **off limits**.
+
+### Field state -- rollout on real hardware
+
+Windows node + Pixel 6a both run `b4ccd30a`. **#176 verified live**:
+`pm query-activities -a VIEW -d scmessenger://invite` resolves to MainActivity.
+**Messaging does NOT work between them**: 14,496 x `Failed to negotiate transport
+protocol(s)`, 13 peers marked dead, 0 peers discovered. That is DUAL_BIND, and
+#180 is the fix awaiting review. The in-app message to the operator is still
+**queued, never delivered** -- do not claim otherwise.
+
+### Traps that cost time this session
+
+- `adb logcat` main buffer hides crashes. Use **`adb logcat -b crash`** first.
+  Diagnosing without it produced a confident wrong answer (blamed memory).
+- Do **not** set `CARGO_TARGET_DIR` for the Android gradle build. jniLibs come
+  from `core/target/android-libs`; overriding it ships an APK with **no**
+  `libscmessenger_core.so` and gradle still says BUILD SUCCESSFUL.
+- `git show <rev>:.dotted/path` needs `MSYS_NO_PATHCONV=1` -- fails as
+  plausible emptiness.
+- agy has a **~90s per-tool timeout** separate from `--print-timeout`. Never ask
+  it to run a cold full build.
+
 ## 0b. OPERATOR APPROVAL GATE — standing, 2026-08-16
 
 ### Who may merge — role-bound, not negotiable

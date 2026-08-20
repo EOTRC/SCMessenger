@@ -166,6 +166,36 @@ the same relay behavior.
     cautious, it is uninformed, and it does not know it. Limits belong on
     what you DO, never on what you can SEE.
 
+16. RESTORING CODE IS NOT RESTORING A FEATURE. WIRE IT, OR IT IS DEAD.
+
+    A file being present proves nothing. If nothing calls it, it compiles,
+    passes lint, passes CI, and does nothing at runtime. Every audit this
+    project has run for that shape has found more of it.
+
+    When restoring, reverting, or cherry-picking, the CALL SITES are part of
+    the change. Check all three:
+      - the implementation exists
+      - something references it (not counting its own declaration)
+      - the reference is itself reachable — a call site inside an orphan is
+        still an orphan
+
+    Android specifically: a nav route can be DEFINED and NAVIGATED TO and still
+    have no `composable(route)` registration, so the navigation lands nowhere.
+    A Service or Receiver can exist with no manifest entry. Neither fails a
+    build.
+
+    Evidence. `ebf5411b` stripped Android code; the source files were later
+    restored and the call sites were not. Nine features shipped unreachable:
+    the Diagnostics/logs viewer (route defined, navigated to, never registered),
+    QR APK sharing, the QR join-mesh flow, boot auto-restart, the VPN service,
+    inbound share, and three dead utilities. The operator found it by opening
+    the app. A line-count delta of -19 in `SettingsScreen.kt` was assessed as
+    possibly cosmetic; those nineteen lines WERE the feature.
+
+    So: a diff that only removes lines from a UI or wiring file is a
+    reachability question, never a cosmetic one. `scripts/check_wiring.py` is
+    the executable form — run it, do not re-derive it by eye.
+
 ## Capability classes — know which one you are
 
 ### FULL (Claude Code or Qwen Code on the Windows host, toolchain available)
