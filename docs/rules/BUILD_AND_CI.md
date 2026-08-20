@@ -20,6 +20,9 @@ binding constraint for cargo is **RAM, not core count**.
   `-j2` only if rustc actually dies.
 - Keep `CARGO_INCREMENTAL=0` (set for Windows in `.cargo/config.toml`); also
   `export CARGO_INCREMENTAL=0` in the shell before cargo commands.
+- **Shared warm target directory:** Export
+  `CARGO_TARGET_DIR=C:/Users/SCM/Documents/GitHub/.scm-shared-target` across all
+  worktrees to avoid duplicate target/ directories (see details below).
 - **A rustc crash is resource exhaustion, not corruption.**
   `STATUS_STACK_BUFFER_OVERRUN` (0xc0000409), "can't find crate" for a crate
   that just built, or "import resolution is stuck" all mean memory pressure.
@@ -140,6 +143,23 @@ triples) with the node still running.
 
 Do NOT reach for `cargo clean --target <triple>` to reclaim one triple. It does
 not do that. Use `--triples`, or delete the specific `target/<triple>/` path.
+
+## Shared Warm Cargo Cache (`CARGO_TARGET_DIR`)
+
+All dispatched workers and agent sessions on this host must reuse the shared warm build cache by exporting `CARGO_TARGET_DIR`:
+
+```bash
+export CARGO_TARGET_DIR=C:/Users/SCM/Documents/GitHub/.scm-shared-target
+```
+
+In PowerShell:
+```powershell
+$env:CARGO_TARGET_DIR = "C:\Users\SCM\Documents\GitHub\.scm-shared-target"
+```
+
+- **Why it exists:** Each isolated worktree previously initialized and built its own `target/` directory. With heavy workspace dependencies (libp2p, quinn, ring, uniffi, etc.), a single target directory rapidly expands to 16-45 GB. On 2026-08-15, isolated worktrees filled a 237 GB drive to 99%, triggering compiler crashes and disk-full errors.
+- **Shared Target Dir:** `C:/Users/SCM/Documents/GitHub/.scm-shared-target` acts as a unified shared warm cache across all worktrees. This eliminates redundant dependency compilation, speeds up incremental builds, and saves tens of gigabytes of disk space.
+- **Concurrency Caveat:** Concurrent cargo builds against a shared target directory will block on the cargo file lock. This is a feature here, not a bug -- it naturally serializes cargo invocations and reinforces the rule that two build tools must never execute concurrently.
 
 ## Docs Sync
 

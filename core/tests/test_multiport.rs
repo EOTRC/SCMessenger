@@ -18,17 +18,48 @@ fn test_generate_listen_addresses() {
 
     let addresses = multiport::generate_listen_addresses(&config);
 
-    // Should have common ports + additional + random
-    assert!(
-        addresses.len() >= multiport::COMMON_PORTS.len() + 2,
-        "Should generate addresses for common ports, additional, and random"
+    // Should have exactly common ports (4) + additional (1) + random (1) = 6 TCP addresses
+    let expected_count = multiport::COMMON_PORTS.len() + 2;
+    assert_eq!(
+        addresses.len(),
+        expected_count,
+        "Should generate exactly 1 address per port (common ports + additional + random)"
     );
+
+    // Verify all addresses are IPv4, use TCP, and contain no WebSocket (/ws) transport
+    for (addr, _) in &addresses {
+        let addr_str = addr.to_string();
+        assert!(
+            addr_str.starts_with("/ip4/"),
+            "All addresses should be IPv4: {}",
+            addr_str
+        );
+        assert!(
+            addr_str.contains("/tcp/"),
+            "All addresses should use TCP: {}",
+            addr_str
+        );
+        assert!(
+            !addr_str.contains("/ws"),
+            "No WebSocket addresses should be generated: {}",
+            addr_str
+        );
+    }
 
     // Check for specific ports
     assert!(addresses.iter().any(|(_, port)| *port == 443));
     assert!(addresses.iter().any(|(_, port)| *port == 80));
     assert!(addresses.iter().any(|(_, port)| *port == 9999));
     assert!(addresses.iter().any(|(_, port)| *port == 0)); // random port
+
+    // Verify each port is present exactly once (no dual-bind duplicate ports)
+    let unique_ports: std::collections::HashSet<_> =
+        addresses.iter().map(|(_, port)| *port).collect();
+    assert_eq!(
+        unique_ports.len(),
+        addresses.len(),
+        "Each port must appear exactly once"
+    );
 
     println!("[OK] Generated {} listen addresses", addresses.len());
 }
@@ -46,10 +77,28 @@ fn test_ipv4_only_mode() {
 
     let addresses = multiport::generate_listen_addresses(&config);
 
+    assert_eq!(
+        addresses.len(),
+        multiport::COMMON_PORTS.len() + 1,
+        "Should generate exactly 1 address per port for IPv4"
+    );
+
     for (addr, _) in &addresses {
+        let addr_str = addr.to_string();
         assert!(
-            addr.to_string().contains("/ip4/"),
-            "All addresses should be IPv4"
+            addr_str.starts_with("/ip4/"),
+            "All addresses should be IPv4: {}",
+            addr_str
+        );
+        assert!(
+            addr_str.contains("/tcp/"),
+            "All addresses should use TCP: {}",
+            addr_str
+        );
+        assert!(
+            !addr_str.contains("/ws"),
+            "No WebSocket addresses should be generated: {}",
+            addr_str
         );
     }
 
@@ -69,10 +118,28 @@ fn test_ipv6_only_mode() {
 
     let addresses = multiport::generate_listen_addresses(&config);
 
+    assert_eq!(
+        addresses.len(),
+        multiport::COMMON_PORTS.len() + 1,
+        "Should generate exactly 1 address per port for IPv6"
+    );
+
     for (addr, _) in &addresses {
+        let addr_str = addr.to_string();
         assert!(
-            addr.to_string().contains("/ip6/"),
-            "All addresses should be IPv6"
+            addr_str.starts_with("/ip6/"),
+            "All addresses should be IPv6: {}",
+            addr_str
+        );
+        assert!(
+            addr_str.contains("/tcp/"),
+            "All addresses should use TCP: {}",
+            addr_str
+        );
+        assert!(
+            !addr_str.contains("/ws"),
+            "No WebSocket addresses should be generated: {}",
+            addr_str
         );
     }
 
@@ -92,10 +159,35 @@ fn test_custom_ports_only() {
 
     let addresses = multiport::generate_listen_addresses(&config);
 
-    assert_eq!(addresses.len(), 6, "Should only have custom ports");
-    assert!(addresses.iter().any(|(_, port)| *port == 9999));
-    assert!(addresses.iter().any(|(_, port)| *port == 8888));
-    assert!(addresses.iter().any(|(_, port)| *port == 7777));
+    // Exactly 3 custom ports -> 3 addresses (1 plain TCP address per port, no /ws dual-bind)
+    assert_eq!(
+        addresses.len(),
+        3,
+        "Should only have custom ports (1 TCP address per port)"
+    );
+
+    for (addr, _) in &addresses {
+        let addr_str = addr.to_string();
+        assert!(
+            addr_str.starts_with("/ip4/"),
+            "All addresses should be IPv4: {}",
+            addr_str
+        );
+        assert!(
+            addr_str.contains("/tcp/"),
+            "All addresses should use TCP: {}",
+            addr_str
+        );
+        assert!(
+            !addr_str.contains("/ws"),
+            "No WebSocket addresses should be generated: {}",
+            addr_str
+        );
+    }
+
+    assert_eq!(addresses[0].1, 9999);
+    assert_eq!(addresses[1].1, 8888);
+    assert_eq!(addresses[2].1, 7777);
 
     println!("[OK] Custom ports mode works correctly");
 }
@@ -252,6 +344,29 @@ fn test_default_multiport_config() {
     assert!(config.enable_ipv4);
     assert!(config.enable_ipv6);
     assert!(config.additional_ports.is_empty());
+
+    let addresses = multiport::generate_listen_addresses(&config);
+    // (COMMON_PORTS (4) + random port (1)) * 2 (IPv4 + IPv6) = 10 addresses
+    let expected_count = (multiport::COMMON_PORTS.len() + 1) * 2;
+    assert_eq!(
+        addresses.len(),
+        expected_count,
+        "Default config should produce 1 IPv4 and 1 IPv6 TCP address per port"
+    );
+
+    for (addr, _) in &addresses {
+        let addr_str = addr.to_string();
+        assert!(
+            addr_str.contains("/tcp/"),
+            "All addresses should use TCP: {}",
+            addr_str
+        );
+        assert!(
+            !addr_str.contains("/ws"),
+            "No WebSocket addresses should be generated: {}",
+            addr_str
+        );
+    }
 
     println!("[OK] Default MultiPortConfig has sensible defaults");
 }

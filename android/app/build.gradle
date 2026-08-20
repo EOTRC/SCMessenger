@@ -28,10 +28,34 @@ def releaseSigningReady = {
 }()
 
 def getGitHash = { ->
+    def configuredHash = System.getenv('SCM_GIT_HASH')?.trim()
+    if (configuredHash) {
+        return configuredHash
+    }
+
     def stdout = new ByteArrayOutputStream()
     try {
         exec {
             commandLine 'git', 'rev-parse', '--short', 'HEAD'
+            standardOutput = stdout
+        }
+        def result = stdout.toString().trim()
+        return result.isEmpty() ? "unknown" : result
+    } catch (Exception e) {
+        return "unknown"
+    }
+}
+
+def getGitRef = { ->
+    def configuredRef = System.getenv('SCM_GIT_REF')?.trim()
+    if (configuredRef) {
+        return configuredRef
+    }
+
+    def stdout = new ByteArrayOutputStream()
+    try {
+        exec {
+            commandLine 'git', 'rev-parse', '--abbrev-ref', 'HEAD'
             standardOutput = stdout
         }
         def result = stdout.toString().trim()
@@ -54,6 +78,11 @@ gradle.taskGraph.whenReady { graph ->
 }
 
 def getBuildTime = { ->
+    def configuredTime = System.getenv('SCM_BUILD_TIME')?.trim()
+    if (configuredTime) {
+        return configuredTime
+    }
+
     return new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone("UTC"))
 }
 
@@ -108,6 +137,7 @@ android {
         versionName = rootProject.ext.versionName
         
         buildConfigField "String", "SCM_GIT_HASH", "\"${getGitHash()}\""
+        buildConfigField "String", "SCM_GIT_REF", "\"${getGitRef()}\""
         buildConfigField "String", "SCM_BUILD_TIME", "\"${getBuildTime()}\""
         
         testInstrumentationRunner = 'androidx.test.runner.AndroidJUnitRunner'
@@ -185,7 +215,13 @@ android {
     sourceSets {
         main {
             // Include generated UniFFI Kotlin bindings
+            // The UniFFI bindings are KOTLIN (uniffi/api/api.kt), so register
+            // the directory on the Kotlin source set as well as the Java one.
+            // java.srcDirs alone relies on the Kotlin plugin folding it in,
+            // which is not a contract we should be depending on for the one
+            // source file the whole Hilt graph needs to resolve.
             java.srcDirs += '../../core/target/generated-sources/uniffi/kotlin'
+            kotlin.srcDirs += '../../core/target/generated-sources/uniffi/kotlin'
 
             // JNI libraries from cargo-ndk build
             jniLibs.srcDirs = ['../../core/target/android-libs']
@@ -244,6 +280,8 @@ dependencies {
     // Hilt Dependency Injection
     implementation "com.google.dagger:hilt-android:$hilt_version"
     implementation "com.google.zxing:core:3.5.2"
+    implementation 'com.google.android.gms:play-services-code-scanner:16.1.0'
+    implementation 'com.google.android.gms:play-services-base:18.2.0'
     ksp "com.google.dagger:hilt-android-compiler:$hilt_version"
     implementation 'androidx.hilt:hilt-navigation-compose:1.1.0'
     
@@ -344,6 +382,16 @@ def runCargoNdkBuild(String target, String sdkDir, String ndkDir, String rustPro
         // Explicitly pass SDK and NDK paths to cargo-ndk
         environment "ANDROID_HOME", sdkDir
         environment "ANDROID_NDK_HOME", ndkDir
+
+        // Keep the native core's build stamp aligned with the APK metadata.
+        // CI and the Windows lane provide the exact anchor through these
+        // variables; local builds fall back to the checkout in core/build.rs.
+        ['SCM_GIT_HASH', 'SCM_GIT_REF', 'SCM_BUILD_TIME'].each { key ->
+            def value = System.getenv(key)?.trim()
+            if (value) {
+                environment key, value
+            }
+        }
 
         if (isWindows && msysUcrtBin) {
             environment "PATH", "${msysUcrtBin};${System.getenv('PATH')}"
@@ -455,15 +503,35 @@ task generateUniFFIBindings {
 
         def cargoCmd = isWindows ? 'cargo' : (file("${System.getProperty('user.home')}/.cargo/bin/cargo").exists() ? "${System.getProperty('user.home')}/.cargo/bin/cargo" : 'cargo')
 
-        // Step 1: build the host cdylib in release profile (with gen-bindings feature to avoid double compile)
+        // Step 1: build the host cdylib.
+        //
+        // MUST stay a DEBUG build. uniffi library-mode bindgen recovers the
+        // interface by reading UNIFFI metadata symbols out of the compiled
+        // cdylib. A release build strips/GCs those symbols, so bindgen finds no
+        // metadata, emits nothing, and still exits 0 -- generation "succeeds"
+        // and produces an empty output tree.
+        //
+        // ebf5411b flipped this to `--release ... -C debuginfo=0` and the Mobile
+        // lane went from green (feb89335, 2026-08-13) to red on the very next
+        // run. The symptom surfaced a minute later and two tasks downstream as
+        // `e: [ksp] ... error.NonExistentClass` on AndroidPlatformBridge's
+        // supertype, which sent two rounds of diagnosis after task ordering and
+        // source-set registration. Neither was the cause. Step 5 below now
+        // fails here instead, at the real site.
         exec {
             workingDir project.file('../../')
-            environment "RUSTFLAGS", "-C debuginfo=0"
+            environment "RUSTFLAGS", ""
             environment "CARGO_INCREMENTAL", "0"
+            ['SCM_GIT_HASH', 'SCM_GIT_REF', 'SCM_BUILD_TIME'].each { key ->
+                def value = System.getenv(key)?.trim()
+                if (value) {
+                    environment key, value
+                }
+            }
             if (isWindows) {
-                commandLine 'cmd', '/c', 'cargo build --release -p scmessenger-core --features gen-bindings'
+                commandLine 'cmd', '/c', 'cargo build -p scmessenger-core'
             } else {
-                commandLine cargoCmd, 'build', '--release', '-p', 'scmessenger-core', '--features', 'gen-bindings'
+                commandLine cargoCmd, 'build', '-p', 'scmessenger-core'
             }
         }
 
@@ -475,7 +543,7 @@ task generateUniFFIBindings {
         def cargoTargetDir = project.file(cargoTargetDirStr)
         def stagedDir = file('../../core/target/staged-cdylib')
         stagedDir.mkdirs()
-        def cdylibSrc = new File(cargoTargetDir, "release/${cdylibName}")
+        def cdylibSrc = new File(cargoTargetDir, "debug/${cdylibName}")
         def cdylibStaged = new File(stagedDir, cdylibName)
         if (cdylibSrc.exists()) {
             ant.copy(file: cdylibSrc.absolutePath, tofile: cdylibStaged.absolutePath, overwrite: true)
@@ -489,17 +557,23 @@ task generateUniFFIBindings {
             workingDir project.file('../../core')
             environment "RUSTFLAGS", "-C debuginfo=0"
             environment "CARGO_INCREMENTAL", "0"
+            ['SCM_GIT_HASH', 'SCM_GIT_REF', 'SCM_BUILD_TIME'].each { key ->
+                def value = System.getenv(key)?.trim()
+                if (value) {
+                    environment key, value
+                }
+            }
             if (isWindows) {
-                commandLine 'cmd', '/c', 'cargo build --release --bin gen_kotlin --features gen-bindings'
+                commandLine 'cmd', '/c', 'cargo build --bin gen_kotlin --features gen-bindings'
             } else {
-                commandLine cargoCmd, 'build', '--release', '--bin', 'gen_kotlin', '--features', 'gen-bindings'
+                commandLine cargoCmd, 'build', '--bin', 'gen_kotlin', '--features', 'gen-bindings'
             }
         }
 
         // Step 4: invoke the gen_kotlin binary directly with the staged cdylib
         // path. The binary now also honours SCMESSENGER_CDYLIB_PATH env var as
         // a primary lookup, falling back to CARGO_TARGET_DIR + relative paths.
-        def genKotlinBin = new File(cargoTargetDir, "release/gen_kotlin${isWindows ? '.exe' : ''}")
+        def genKotlinBin = new File(cargoTargetDir, "debug/gen_kotlin${isWindows ? '.exe' : ''}")
         if (!genKotlinBin.exists()) {
             throw new GradleException("gen_kotlin binary not found at ${genKotlinBin.absolutePath}")
         }
@@ -514,6 +588,28 @@ task generateUniFFIBindings {
                 commandLine genKotlinBin.absolutePath
             }
         }
+
+        // Step 5: prove the bindings actually landed.
+        //
+        // Without this the task "succeeds" whether or not it produced anything,
+        // and the only symptom is a KSP error 60 seconds later complaining that
+        // an unrelated supertype is error.NonExistentClass. That failure mode
+        // cost a full diagnosis cycle on 2026-08-15 because the log gave no
+        // evidence either way about whether api.kt existed.
+        def apiKt = file('../../core/target/generated-sources/uniffi/kotlin/uniffi/api/api.kt')
+        if (!apiKt.isFile() || apiKt.length() == 0) {
+            def root = file('../../core/target/generated-sources')
+            def listing = root.exists()
+                ? root.traverse(maxDepth: 4).collect { "    ${it}" }.join('\n')
+                : "    (${root} does not exist)"
+            throw new GradleException(
+                "UniFFI generation produced no usable bindings.\n" +
+                "  expected: ${apiKt}\n" +
+                "  exists:   ${apiKt.isFile()}, size: ${apiKt.isFile() ? apiKt.length() : 0}\n" +
+                "  tree under core/target/generated-sources:\n${listing}"
+            )
+        }
+        println "UniFFI bindings OK: ${apiKt} (${apiKt.length()} bytes)"
     }
 }
 
@@ -523,6 +619,31 @@ afterEvaluate {
     // Hook into preBuild
     tasks.named("preBuild").configure {
         dependsOn buildRustAndroid
+        dependsOn generateUniFFIBindings
+    }
+
+    // KSP must not run before the UniFFI bindings exist.
+    //
+    // AndroidPlatformBridge implements `uniffi.api.PlatformBridge`, which is
+    // GENERATED by generateUniFFIBindings into core/target/. Hilt's KSP
+    // processor has to resolve that supertype to build the injection graph.
+    //
+    // Depending on preBuild is NOT sufficient under AGP 8: kspDebugKotlin is
+    // not ordered behind preBuild's dependencies, so on a cold checkout (CI,
+    // or any tree where core/target/ has been cleaned) KSP runs first, the
+    // supertype resolves to error.NonExistentClass, and the build fails with:
+    //
+    //   e: [ksp] InjectProcessingStep was unable to process
+    //      'AndroidPlatformBridge(...)' because 'error.NonExistentClass'
+    //      could not be resolved.
+    //
+    // This passes locally on a warm tree and fails only in CI, which is why it
+    // survived: the generated api.kt is gitignored, so nothing verifies it.
+    // Matching by task name rather than KspTask.class keeps this working across
+    // KSP plugin versions without a buildscript classpath import.
+    tasks.matching {
+        it.name.startsWith("ksp") && it.name.endsWith("Kotlin")
+    }.configureEach {
         dependsOn generateUniFFIBindings
     }
 }

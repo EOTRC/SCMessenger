@@ -19,8 +19,9 @@ human operator may do that.
 
 There are NO standalone relays in SCMessenger. Only NODES exist, and EVERY
 node relays -- store-and-forward custody is a behavior all nodes perform,
-not a role. The AWS instance at 100.56.248.69 is a CLOUD NODE: a full node
-that also relays, exactly as every other node does. Discovery is LEDGER
+not a role. The always-on AWS instance (tagged `scm-always-on-node`; dynamic
+IP) is a CLOUD NODE: a full node that also relays, exactly as every other
+node does. Discovery is LEDGER
 SHARING between nodes (invite/QR-seeded, gossip-propagated); bootstrap
 address lists are a deprecated transitional mechanism being replaced by
 ledger-sharing-first discovery (contract: V050-B1/B2). In docs, plans,
@@ -94,6 +95,106 @@ the same relay behavior.
     (`rm -rf`, `Remove-Item -Recurse -Force`) outside `tmp/` and `target/`.
     To recover a file, restore it FORWARD from a ref
     (`git checkout <ref> -- <path>`) rather than discarding working state.
+    Restoring a SINGLE FILE from a ref is recovery; `git checkout <ref> -- .`
+    is mass destruction wearing a recovery costume. On 2026-08-15 that exact
+    command destroyed four files of another session's uncommitted work. The
+    preflight hook now blocks it when the named paths are dirty.
+
+13. DESCRIBE ONLY WHAT YOU HAVE READ. Every statement about a file, commit,
+    PR, or run must come from output you obtained in THIS session. Not from
+    memory, not from its filename, not from what you wrote earlier.
+
+    Trust, but verify — and your own past statements are claims, not facts.
+    Three wrong calls in one day on 2026-08-15 all had the same shape:
+    - `GEMINI.md` was called "undeclared" without opening it. It already said
+      "Read AGENTS.md" and was the correct pattern.
+    - PR #150 was called "tooling-only, zero build risk" from memory of what
+      had been authored. It was 100 commits and +17k lines, including
+      merge-blocked `core/src/crypto` and `core/src/transport` files.
+    - A lesson was reported as "added to the handoff doc" when it had not
+      been written at all.
+
+    The artifact is always more correct than your summary of it. Before you
+    describe something, run the command that shows it. Cite the command.
+
+14. BEFORE ANY IRREVERSIBLE OR OUTWARD-FACING ACTION, ASK "unless there is a
+    reason not to?" — and then actually go looking for one. Merges, pushes,
+    deletions, branch/repo config, releases, anything a stranger will see.
+
+    Enumerate the blockers OUT LOUD before acting. The question is not
+    rhetorical; it is an instruction to spend one command checking. For a
+    merge, that command exists:
+
+        scripts/pr_scope.sh <pr-number>
+
+    It reports what the PR actually contains, whether the base is right,
+    whether it touches merge-blocked directories, and whether checks are
+    green. Asking this question about PR #150 surfaced three blockers in
+    under a minute, one of which would have pushed unreviewed crypto and
+    transport changes past the adversarial-review gate.
+
+    A "yes, merge it" from the operator is permission to act, not evidence
+    that no reason exists. Finding the reason is still your job.
+
+15. NO SILENT TRUNCATION. VISIBILITY FAILS OPEN; THE VERDICT FAILS CLOSED.
+
+    Rule 13 says describe only what you have read. This is the other half:
+    a tool must never quietly decide you have read enough. Any tool, report,
+    or summary that enumerates evidence — files, commits, checks, findings,
+    peers — prints ALL of it. No `head -N`, no `[:6]`, no "and 12 more",
+    no API-default page size accepted as the total.
+
+    Express reduced confidence by printing MORE, never less: a `[WARNING]`
+    beside the number, where the number came from, and a tripwire when a
+    value lands exactly on a known API cap (100 is not a count, it is a
+    ceiling). Truncating data and blocking an action are opposite moves —
+    only the second is safe.
+
+    Prefer the authoritative local source over a remote API that paginates.
+    For anything about a branch, git IS authoritative: `git rev-list --count`,
+    `git diff --name-only`, `git merge-tree`. An API is a fallback, and a
+    fallback must announce itself in the output.
+
+    This has now cost the project twice in the same script.
+    `scripts/pr_scope.sh` printed `[OK] clear of core/src/{crypto,transport}`
+    while six gated files sat past the API's 100-file cap, and later reported
+    PR #139 as "100 commits" where git counts 204. It also piped the
+    merge-blocked file list through `head -8` — hiding gated files inside the
+    one check built to reveal them.
+
+    Hard caps are not safety. An agent acting on truncated data is not
+    cautious, it is uninformed, and it does not know it. Limits belong on
+    what you DO, never on what you can SEE.
+
+16. RESTORING CODE IS NOT RESTORING A FEATURE. WIRE IT, OR IT IS DEAD.
+
+    A file being present proves nothing. If nothing calls it, it compiles,
+    passes lint, passes CI, and does nothing at runtime. Every audit this
+    project has run for that shape has found more of it.
+
+    When restoring, reverting, or cherry-picking, the CALL SITES are part of
+    the change. Check all three:
+      - the implementation exists
+      - something references it (not counting its own declaration)
+      - the reference is itself reachable — a call site inside an orphan is
+        still an orphan
+
+    Android specifically: a nav route can be DEFINED and NAVIGATED TO and still
+    have no `composable(route)` registration, so the navigation lands nowhere.
+    A Service or Receiver can exist with no manifest entry. Neither fails a
+    build.
+
+    Evidence. `ebf5411b` stripped Android code; the source files were later
+    restored and the call sites were not. Nine features shipped unreachable:
+    the Diagnostics/logs viewer (route defined, navigated to, never registered),
+    QR APK sharing, the QR join-mesh flow, boot auto-restart, the VPN service,
+    inbound share, and three dead utilities. The operator found it by opening
+    the app. A line-count delta of -19 in `SettingsScreen.kt` was assessed as
+    possibly cosmetic; those nineteen lines WERE the feature.
+
+    So: a diff that only removes lines from a UI or wiring file is a
+    reachability question, never a cosmetic one. `scripts/check_wiring.py` is
+    the executable form — run it, do not re-derive it by eye.
 
 ## Capability classes — know which one you are
 

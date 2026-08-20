@@ -134,6 +134,7 @@ reference/Android-Debug.md
 
 # Additional build artifacts (comprehensive coverage per Requirement 10.1)
 target/
+target_node*/
 build/
 .gradle/
 DerivedData/
@@ -350,6 +351,9 @@ __pycache__/
 
 # Machine-local Android SDK path (root copy)
 local.properties
+screen.png
+window_dump.xml
+adb_logcat*.txt
 
 # Docker test-suite bind-mount caches (created at runtime, never commit)
 docker/android-gradle-cache/
@@ -357,3 +361,12 @@ docker/cargo-registry-cache/
 docker/cargo-git-cache/
 docker/test-results/
 .claude/alibaba_cloud_config.env
+
+# Hermes shared-worktree agent scratch
+.hermes/
+
+# Inbox bridge output -- contains operator device identity, public/LAN IPs, and
+# routable IPv6 from the message envelope. This repository is PUBLIC; these
+# files must never be committed. See scripts/inbox_bridge.py.
+HANDOFF/todo/INBOX_*.md
+HANDOFF/logs/

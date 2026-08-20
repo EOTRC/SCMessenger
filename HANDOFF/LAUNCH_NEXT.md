@@ -21,7 +21,7 @@ cat HANDOFF/todo/QWEN_IDENTITY_CANONICALIZATION_CRITICAL.md
 # - Migration for existing contacts
 ```
 
-### 2. Cloud Node (100.56.248.69)
+### 2. Cloud Node (dynamic IP: see HANDOFF/gpt/AWS_RELAY_CURRENT_ADDRESS.md)
 ```bash
 # SSH via IAM (user: "no passwords")
 cat infra/aws/farm-sim-manage.sh

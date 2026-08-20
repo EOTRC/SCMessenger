@@ -1,5 +1,11 @@
 # _QUEUE -- Dispatch Order for the Full v1.0.0 Backlog
 
+
+> **SUPERSEDED FOR EXECUTION until the v0.4.0 tag.** `SHIP_PLAN.md` is the only
+> execution queue; if a task is not on that page it is not being worked on.
+> This document remains the reference for scope and history, and resumes
+> authority once v0.4.0 is tagged. (Added 2026-08-15.)
+
 Status: Active
 Last updated: 2026-08-09 (Windows lane handoff; PR #139 five-node blockers)
 
@@ -23,8 +29,17 @@ Top of queue, in order:
    `tmp/fix_cli_send_path_response.md`.
 4. Android `no_route_candidates` + 94 consecutive bootstrap failures -- not yet
    ticketed; confirm whether it is downstream of 1 and 2 first.
-5. **P2** `P2_RESTORE_UPNP_ON_0_7_0_2026-08-09.md` -- blocked upstream; the fix is
-   in 0.7.0, not 0.6.0, and 0.7.0 is unpublished.
+5. **P2** `P2_RESTORE_UPNP_ON_0_7_0_2026-08-09.md` -- blocked upstream; the fix
+   is in 0.7.0, not 0.6.0, and 0.7.0 is unpublished.
+6. **P1** `IDENTITY_BACKUP_UI_INTEGRATION_2026-08-12.md` -- next round after
+   the v0.4.0 tag: identity saving/moving must go through the app's own
+   UI-wired export/import (`SettingsViewModel.exportIdentityBackup` /
+   `importIdentityBackup` -> `IronCore.export_identity_backup` /
+   `import_identity_backup`), never raw `files/` surgery. Driven by the
+   2026-08-12 flash regression (hybrid identity state from a tar restore;
+   debug artifacts in `tmp/debug_flash_20260812/`). Covers SAF save/open
+   dialogs, Keystore-wrapped passphrase (Rule-8 gated), and the reinstall
+   runbook.
 
 Two independent flawless five-node PASS runs remain required before merge.
 

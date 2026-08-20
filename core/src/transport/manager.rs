@@ -467,7 +467,7 @@ impl TransportManager {
                 score += bandwidth_score * 5;
 
                 // Prefer lower latency
-                let latency_score = std::cmp::max(0, 100 - caps.estimated_latency_ms as u64);
+                let latency_score = 100u64.saturating_sub(caps.estimated_latency_ms as u64);
                 score += latency_score;
             }
 
@@ -1737,5 +1737,61 @@ mod tests {
         match result {
             SendResult::Queued(transport) => assert_eq!(transport, TransportType::BLE),
         }
+    }
+
+    #[test]
+    fn test_latency_score_underflow_prevention() {
+        let manager = TransportManager::new();
+        let peer_id = create_peer_id(42);
+
+        // High latency transport (500ms > 100ms)
+        let high_latency_caps = TransportCapabilities {
+            max_payload_size: 65536,
+            supports_streaming: false,
+            is_bidirectional: true,
+            estimated_bandwidth_bps: 1_000_000,
+            estimated_latency_ms: 500,
+        };
+        manager.register_transport(TransportType::BLE, high_latency_caps);
+
+        // Lower latency transport (200ms)
+        let lower_latency_caps = TransportCapabilities {
+            max_payload_size: 65536,
+            supports_streaming: false,
+            is_bidirectional: true,
+            estimated_bandwidth_bps: 1_000_000,
+            estimated_latency_ms: 200,
+        };
+        manager.register_transport(TransportType::WiFiDirect, lower_latency_caps);
+
+        // Extreme latency transport (u32::MAX)
+        let extreme_latency_caps = TransportCapabilities {
+            max_payload_size: 65536,
+            supports_streaming: false,
+            is_bidirectional: true,
+            estimated_bandwidth_bps: 1_000_000,
+            estimated_latency_ms: u32::MAX,
+        };
+        manager.register_transport(TransportType::Internet, extreme_latency_caps);
+
+        manager.handle_event(TransportEvent::PeerDiscovered {
+            peer_id,
+            transport: TransportType::BLE,
+            addr: vec![1],
+        });
+        manager.handle_event(TransportEvent::PeerDiscovered {
+            peer_id,
+            transport: TransportType::WiFiDirect,
+            addr: vec![2],
+        });
+        manager.handle_event(TransportEvent::PeerDiscovered {
+            peer_id,
+            transport: TransportType::Internet,
+            addr: vec![3],
+        });
+
+        // Best transport selection must not panic from underflow
+        let selected = manager.best_transport_for_peer(peer_id);
+        assert!(selected.is_ok());
     }
 }
