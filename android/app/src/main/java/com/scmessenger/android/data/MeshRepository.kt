@@ -105,7 +105,7 @@ open class MeshRepository(
 
             val bytes = ByteArray(32)
             java.security.SecureRandom().nextBytes(bytes)
-            val newKey = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+            val newKey = java.util.Base64.getEncoder().encodeToString(bytes)
             encryptedPrefs.edit().putString(BACKUP_PASSPHRASE_KEY, newKey).commit()
             return newKey
         }
