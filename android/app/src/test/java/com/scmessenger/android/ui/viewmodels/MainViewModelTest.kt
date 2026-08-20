@@ -36,7 +36,7 @@ class MainViewModelTest {
     // Valid 64-hex char public key
     private val validPublicKey = "a".repeat(64)
     // Valid libp2p peer ID (starts with 12D3Koo, base58 chars, length in 46..56)
-    private val validPeerId = "12D3KooWABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    private val validPeerId = "12D3KooWABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxy"
 
     @Before
     fun setup() {
