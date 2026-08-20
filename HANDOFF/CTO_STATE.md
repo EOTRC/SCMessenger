@@ -817,3 +817,129 @@ before merging anything.
 session's uncommitted work. `cargo clean --target <triple>` wiped 44.7 GB. The
 preflight hook now blocks both and prints the working form — if it fires, read
 it; it is there because someone already paid for that lesson.
+
+
+---
+
+# SESSION ADDENDUM -- 2026-08-20 (CTO, unification session; appended to this PR)
+
+# CTO_STATE session addendum -- 2026-08-20 (CTO seat, unification session)
+
+Applies on top of PR #188's CTO_STATE.md (Section 0, 2026-08-19 state).
+To be merged with #188's content or as its successor section.
+
+## MERGE TRAIN -- EXECUTED THIS SESSION
+
+All gated via scripts/pr_scope.sh before each merge; all checks green.
+
+- **#183 MERGED** (all nine Android features rewired). Pre-merge work this
+  session: resolved the add/add conflict on scripts/test_check_wiring.py
+  vs #179 (took this branch's checker-mechanics tests); root-caused and
+  fixed two JVM test failures the earlier compile fix had masked
+  (android.util.Base64 null under returnDefaultValues -> java.util.Base64;
+  deep-link fixture peer ID invalid). Three fixture attempts were needed --
+  see the lesson below.
+- **#184 MERGED** (P0 disposition correction).
+- **#154 MERGED** (apksigner verify; the MUST-MERGE-BEFORE-TAG item).
+- **#185 in flight** (2026-08-18 session log; conflict vs main's 0a banner
+  resolved keeping BOTH sections, newest-first).
+- **#189 MERGED** (honest wiring burndown pipeline: ghost filtering,
+  rules-clean generation, gate-5 non-regression, gate.sh). Baseline on
+  record: 835 unwired full-corpus (the old 162 was a dead-corpus artifact).
+  WASM deferral per operator: active target 710.
+- **#190 MERGED** (unification U-A: canonical strip_peer_id, decode_receipt
+  through the survivor, cli topic constants migrated, docker env verified).
+- **#191 REVISED, in flight** (BLE wire identity single-homed in
+  cli/src/ble_ids.rs). ORIGINAL DELETION OF cli.rs WAS WRONG: the first
+  version deleted cli/src/cli.rs as dead -- CI Test lanes caught
+  E0432: cli/tests/integration.rs imports scmessenger_cli::cli::{Cli,
+  Commands, ContactAction}. The consumer search missed cli/tests/. Module
+  restored byte-identical; the two-Commands-enums item is withdrawn to a
+  scoped follow-up. Lesson recorded.
+- **#192 MERGED** (W2-T1 port: 18 dead IronCore wrappers + unwired
+  peer_exchange_manager field retired, -159/+2; per-function re-verification
+  at HEAD before deletion).
+
+## SCOREBOARD AFTER TODAY'S MERGES
+
+- Unwired baseline: 835 (committed, gate-5 enforces non-regression)
+- W2-T1 retirement: -18 (on main via #192)
+- cli.rs module was NOT dead (see #191 lesson): the 14 cli.rs entries in
+  the triage worklist remain WIRE-classified, not retired
+- Effective unwired after #192: 817 full-corpus / 692 active (WASM-deferred)
+- Six triage batches complete (swarm/mobile_bridge/padding/encrypt/
+  reputation/cli): ~80% of graph-flagged functions are WIRE false
+  positives. Consolidated worklist: tmp/UNIFICATION_WORKLIST_DRAFT.md
+
+## STILL OPEN, NEXT SEAT (in order)
+
+1. **#185 + #191**: merge when green (poll; both were mid-run at session
+   close). #188 (CTO state) will conflict with #185's landing -- resolve
+   keeping all three sections (0/0a/0a-bis), newest first.
+2. **Branch protection strict -> true** once the train is fully landed
+   (operator directive 2026-08-19). Also fix
+   scripts/apply_branch_protection.sh: it still hardcodes strict:true and
+   the removed "Android JVM Unit Tests" context (CTO state 2026-08-19
+   documented both; the script edit is a small PR).
+3. **Two-node LAN field test** against post-train main (D6/D7 scoring:
+   receiver-side decrypt + durable history + receipt -- not transport
+   ACKs, not UI counters, not BLE local acceptance). Operator + hardware.
+   Then the v0.4.0 tag (operator decision; #154's proof is merged).
+4. **agy lane re-auth**: Google OAuth token expired during the session;
+   U-C2 (swarm.rs 11 topic literals -> core constants, brief at
+   tmp/unify-c2/BRIEF.md) deferred behind it. Transport tree = adversarial
+   review required before merge (rule 8); reviewer must be a different,
+   stronger model than the implementer.
+5. **Two-Commands-enums unification** (withdrawn from #191): the binary's
+   main.rs enum vs the library's cli.rs enum diverge; consumers now
+   CONFIRMED: cli/tests/integration.rs. Correct mechanism per the plan:
+   one definition; needs a scoped design decision (migrate the test, or
+   make main.rs use the lib's enum).
+6. **Rank 4 (two LedgerManager handles over one file)**: design note first
+   (UniFFI accessor), then implementation.
+7. **U1 escalation single-authority / U2 WiFi-Aware send() no-op**: the
+   highest-value wiring fixes post-train (zai backlog).
+8. **ZaiComplete + iOS-fork convergence**: zai W2-T1 is now on main
+   (#192); remaining zai pull-list = triage verdict overlay, gate.sh (done
+   via #189), exit criteria fold-in. iOS fork (PR #178) stays post-tag;
+   its two failing iOS checks must go green first, and it needs splitting
+   into scoped PRs (see UNIFICATION_WORKLIST_DRAFT.md).
+
+## LESSONS THIS SESSION (both already paid for)
+
+1. **Verify fixtures by machine, read the output, then act.** Two CI
+   cycles burned on a 57-char peer-ID fixture while a verification command
+   had printed len=57. (Rule 13 applies to the CTO's own specs.)
+2. **The consumer search surface must include every directory that
+   compiles against the crate.** cli/tests/ integration tests are
+   consumers; a curated path list missed them and a 389-line deletion went
+   out on a PR. CI caught it. `git grep` over the WHOLE tree, not a
+   curated list.
+3. **The network flaps; gates must fail closed.** pr_scope.sh correctly
+   refused to bless merges while GitHub API reads failed intermittently.
+   Retry the gate; never substitute judgment for it. (Also: a broken retry
+   loop that counts "script didn't run" as zero blockers fails OPEN --
+   the loop must verify the script executed.)
+
+## ENVIRONMENTAL INCIDENT -- clippy 1.98 (2026-08-20, RESOLVED)
+
+Rust stable 1.98.0 released mid-session. Its clippy fires
+large_const_arrays on UniFFI-generated metadata (UNIFFI_META_CONST_* in
+target/*/out/*.uniffi.rs); Lint jobs run -D warnings. Every open PR went
+red simultaneously -- the third environmental-redness incident of this
+class (RustSec DB, runner hangs, now toolchain drift).
+
+- Diagnosed with the standing rule: a scripts-only PR (#193) failed the
+  identical error, and #191 had passed Lint that morning on identical
+  source. Environmental, not regression.
+- Fix: #194 MERGED -- #![allow(clippy::large_const_arrays)] at the crate
+  roots of the two metadata emitters (core: UDL scaffolding;
+  desktop_bridge: proc-macro scaffolding; mobile's build.rs is a uniffi
+  no-op). Both carries note removal at the uniffi upgrade (newer uniffi
+  emits static). Deliberately did NOT pin the toolchain: workflows use
+  dtolnay/rust-toolchain@stable (~20 sites) which override
+  rust-toolchain.toml, and a pin freezes security updates.
+- Lint PASS + Rust Linting PASS confirmed on #194 before merge; all 31
+  checks green.
+
+
