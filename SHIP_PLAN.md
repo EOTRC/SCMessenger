@@ -25,8 +25,10 @@ If a task is not on this page, it is not being worked on.
 | D3 | README explains the product and how to install | File is non-empty, links resolve |
 | D4 | Two-device message + receipt | Receiver-side decrypt + durable history + receipt, per `project_fleet_run_scoring_evidence` -- NOT transport ACKs |
 | D5 | No long-lived integration branch | PR #139 merged or closed; `main` is trunk |
+| D6 | Transport racing demonstrated | Message delivered when first-choice transport is unavailable, proving fallback selects a working path. Receiver-side decrypt + durable history + receipt -- NOT transport ACKs, NOT UI counters, NOT BLE local acceptance |
+| D7 | Offline proximity messaging demonstrated | Two devices exchanging a message with no internet available. Receiver-side decrypt + durable history + receipt -- NOT transport ACKs, NOT UI counters, NOT BLE local acceptance |
 
-Anything that does not move D1-D5 is deferred. No exceptions until tag.
+Anything that does not move D1-D7 is deferred. No exceptions until tag.
 
 ---
 
@@ -72,7 +74,7 @@ sprints -- a red `main` makes every downstream result unverifiable.
 | S0-1 | Commit or stash the current working-tree changes on `tracking/pre-v040-tag-work`. Shared checkout -- do not touch files you did not create. | Operator | `git status` shows only intentional work |
 | S0-2 | Triage the 16 open PRs into MERGE / CLOSE / DEFER. The 13 dependabot PRs are one batch decision, not 13. | Qwen | A 16-line table with a verdict per PR |
 | S0-3 | Merge or close PR #139. This is a decision, not a task -- if it cannot merge this week, close it and cherry-pick what matters. | **Native verdict** | D5 satisfied |
-| S0-4 | Backlog amnesty: `git mv HANDOFF/todo/* HANDOFF/archive/` except items that map to D1-D5. Keep `_QUEUE.md`. | agy | `HANDOFF/todo` holds <= 10 files |
+| S0-4 | Backlog amnesty: `git mv HANDOFF/todo/* HANDOFF/archive/` except items that map to D1-D7. Keep `_QUEUE.md`. | agy | `HANDOFF/todo` holds <= 10 files |
 | S0-5 | Untrack root junk: `screen.png`, `window_dump.xml`, `local.properties`, stray `adb_logcat*.txt`. `local.properties` holds local SDK paths and should never have been tracked. | Qwen | `git ls-files` root listing is clean |
 
 > S0-5 note: `.gitignore` already covers `*.pem` and `*apiKey*.csv`, so the
@@ -121,10 +123,12 @@ and confirm the download path works end to end.
 | S3-1 | Rebuild all nodes to the tagged SHA. Per `HANDOFF/PR139_FIVE_NODE_GATE_STATUS_2026-08-13.md`, Windows CLI and AWS were on stale SHAs and macOS/iOS were offline -- that gate has never actually run clean. | agy + Operator | Every node reports the tag's git hash |
 | S3-2 | Run the two-device test on the **released APK**, not a dev build. Cross-network: one on cellular, one on WiFi. | Operator + agy | Receiver decrypt + durable history + receipt |
 | S3-3 | If it fails, the failure becomes the only ticket. Do not open a workstream -- fix and re-run. | Qwen impl | Re-run passes |
+| S3-4 | Transport racing gate: message delivered when first-choice transport is unavailable, proving fallback selects a working path. | Operator + agy | Receiver-side decrypt + durable history + receipt (NOT transport ACKs, UI counters, or BLE local acceptance) |
+| S3-5 | Offline proximity gate: two devices exchange a message with no internet available. | Operator + agy | Receiver-side decrypt + durable history + receipt (NOT transport ACKs, UI counters, or BLE local acceptance) |
 
 **S3 exit: native verdict checkpoint 3** -- score the run on receiver-side
 evidence only. Transport ACKs, UI counters, and BLE local acceptance do not
-count. This satisfies D4.
+count. This satisfies D4, D6, and D7.
 
 ### S4 -- After the tag (do not start before it)
 
@@ -175,3 +179,5 @@ Fill this in as the plan executes. Empty cells are the honest status.
 | CP2 | D2 + D3 -- release published | | |
 | CP3 | D4 -- two-device proof | | |
 | CP4 | D5 -- #139 resolved | | |
+| CP5 | D6 -- transport racing proof | | |
+| CP6 | D7 -- offline proximity proof | | |
