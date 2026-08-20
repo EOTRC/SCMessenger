@@ -1,17 +1,125 @@
 # CTO state — live handoff
 
 Status: Active
-Last updated: 2026-08-16 (merge train advanced; see the banner below)
+Last updated: 2026-08-19 (DUAL_BIND merged, branch protection live; see Section 0 below)
 Entry point: `/CTO`. This file is the whole context load.
 
-> **2026-08-16 — READ `HANDOFF/CTO_DISPATCH_PLAN_2026-08-16.md` FIRST.**
+## 0. HANDOFF -- 2026-08-19 (CTO). READ THIS FIRST.
+
+### What changed: main went from b4ccd30a to c1708f58. SIX PRs merged.
+
+- **#186** fix(deps) h2 0.4.16 for RUSTSEC-2026-0258
+- **#180** fix(transport) eliminate dual-binding of TCP and WS on same port
+- **#179** docs(fieldtest) rollout evidence + AGENTS.md rule 16 + check_wiring.py
+- **#181** fix(orchestration) zai lane returns empty content without thinking disabled
+- **#182** feat(orchestration) session launch gate + delegation audit
+- **#187** docs(readme) asterisked claims + SHIP_PLAN D6/D7 gate criteria
+
+### THE HEADLINE: DUAL_BIND is fixed and on main.
+
+Two nodes on one LAN could not message each other -- 14,496 x "Failed to negotiate transport protocol(s)". Cause: multiport advertised BOTH `/ip4/A/tcp/P` and `/ip4/A/tcp/P/ws` for the SAME port; only one can bind, so a peer dialling the unbound one failed negotiation. #180 advertises only what actually bound.
+
+**NOT YET PROVEN ON HARDWARE.** Nobody has re-run the two-node field test since the merge. Do that first. Scoring is unchanged: receiver-side decrypt + durable history + receipt. Not transport ACKs, not UI counters, not BLE local acceptance.
+
+### The blocker that was not any PR's fault -- remember this pattern
+
+CI "Lint" was RED on EVERY open PR, including ones touching only markdown, while `main` showed green. Cause: Lint's `cargo deny check` step consults the LIVE RustSec DB, and RUSTSEC-2026-0258 (h2 0.4.15) had just published; `main` looked green only because its last run predated the advisory.
+
+- **DIAGNOSTIC:** Check Lint on a PR containing no Rust. If that is red too, stop debugging the Rust change -- it is environmental.
+- **FIX TRAP:** `cargo update -p h2 --precise 0.4.16` on the local toolchain (cargo 1.96.1, MSRV-aware resolver) cascaded into unrelated DOWNGRADES of `socket2` and `windows-sys`. Rejected. The h2 `dependencies = [...]` block is BYTE-IDENTICAL between 0.4.15 and 0.4.16, so a two-line hand edit of `version` + `checksum` was provably sufficient. Final diff +2/-2.
+
+### BRANCH PROTECTION IS NOW LIVE ON main -- and read this before changing it
+
+Applied 2026-08-19, operator-approved. Current state, verified via the API:
+- `enforce_admins`: true
+- `required_approving_review_count`: 0
+- `allow_force_pushes`: false, `allow_deletions`: false
+- `strict`: FALSE (deliberate, temporary -- see below)
+- `contexts`: `"Repository Hygiene Checks"`, `"Lint"`, `"Rust Linting"`, `"Test (ubuntu-latest)"`
+
+**TWO THINGS THE NEXT SEAT MUST KNOW:**
+1. **"Android JVM Unit Tests" was in the required list and HAD TO BE REMOVED.** It is PATH-FILTERED -- it does not run on scripts/docs-only PRs, so requiring it left four already-green PRs permanently BLOCKED ("the base branch policy prohibits the merge"). Verifying a context NAME EXISTS is not enough; verify it RUNS ON EVERY PR. Do not re-add it, and apply the same test to any context you add.
+2. **strict:false is temporary.** It was set false so the remaining merge train was not serialised behind a full CI cycle per merge on degraded runners. FLIP IT TO TRUE once the open PRs below have landed.
+
+**Escape hatch:** `enforce_admins` blocks BYPASS, not settings changes -- a repo admin can still edit or remove protection. `scripts/apply_branch_protection.sh --remove` exists. Note that script still hardcodes `strict:true` and the Android JVM context; it needs updating to match reality.
+
+### GitHub runners were pathological all session -- five hangs
+
+Jobs HUNG rather than failed: Lint 1h52m and 2h26m, Docs 2h12m, Android Debug APK auto-cancelled at 1h15m -- while OTHER jobs in the SAME run completed successfully.
+
+- **PROVEN FIX:** `gh run cancel <id>`, wait for completed/cancelled, then `gh run rerun <id> --failed`, once the queue has drained. A rerun that had hung for ~2h finished in ~13 minutes.
+- **Also:** Every push to a PR spawns a full 7-workflow run-set. Repeated pushes to one PR starve every other PR. Cancelling SUPERSEDED run-sets on your own branch is safe and took the queue from 8-done/20-queued to 15-done/12-queued.
+
+### OPEN PRs and their exact state
+
+- **#183** fix(android) restore wiring for ALL NINE features -- 31 pass, 1 FAIL.
+  - Failing check: "Android JVM Unit Tests" -> `:app:compileDebugUnitTestKotlin FAILED`, `MainViewModelTest.kt:6:37` Unresolved reference on `import com.scmessenger.android.data.IdentityCreationCoordinator`.
+  - A fix was dispatched (CTO-183-TESTCOMPILE); confirm it landed.
+  - DO NOT let anyone "fix" this by deleting tests or adding `@Ignore` -- those tests assert real fixed behaviour (no auto-dial on deep-link parse; legacy passphrase survives a failed encrypted commit).
+- **#184** docs(cto) P0 disposition correction -- 25 pass, 1 fail (stale Lint). Needs `gh pr update-branch 184`.
+- **#185** docs(cto) session log -- 1 pass, 24 fail. All CANCELLED, not broken. The CTO cancelled them to unblock #180. Needs a rerun.
+- **#154** ci: apksigner verify -- 24 pass, 2 fail (stale Lint + Rust Linting). Needs `update-branch`. MUST MERGE BEFORE THE TAG -- it is what proves the APK is genuinely release-signed rather than debug-signed.
+- **#178** API limit OSX/iOS (fork), **#170** free API lanes, 13 dependabot -- post-tag.
+
+### #183 carries security work -- do not merge it casually
+
+Two independent CRITICAL_VALIDATOR passes. Verdicts committed at `docs/security/PR183_VALIDATION_2026-08-18.md`.
+
+- **Pass 1 BLOCK with three HIGH:**
+  - Backup passphrase destroyed when an ignored `commit()` return let the legacy plaintext copy be deleted after a FAILED encrypted write
+  - Unconsented dial of attacker-supplied addresses; the manifest's BROWSABLE category means any WEB PAGE could trigger an outbound connection
+  - Hardcoded user-facing strings
+  - *All three fixed.*
+- **Pass 2 APPROVE_WITH_FINDINGS**, prior block cleared, and it caught a FOURTH that both Pass 1 and the CTO missed: `Toast.makeText` called from `Dispatchers.IO` in `ShareReceiver` -- compiles clean, crashes at runtime with "Can't create handler inside thread that has not called Looper.prepare()". Pre-existing, made reachable by registering the receiver. Fixed.
+- A further fix (CTO-SECURITYUTILS-RECOVERY) makes `SecurityUtils` QUARANTINE an undecryptable prefs store instead of deleting it, per operator ruling -- confirm it landed on the branch.
+
+### Wiring: the gate, not the prose
+
+`python scripts/check_wiring.py` is the instrument. Baseline on the old main was 32 findings; on #183 it exits 0 with ZERO findings. It is now wired into CI as the "Android Wiring Gate" job in `.github/workflows/mobile.yml` -- runs its own unit tests first, then the gate, no pipeline masking the exit code, no continue-on-error, passes in 8 seconds.
+
+The prose audit was WRONG where the script was right: `ANDROID_WIRING_AUDIT` listed three missing manifest registrations; only `ShareReceiver` was actually missing, because #176 had already restored `MeshVpnService` and `BootReceiver`. The CEO repeated that same wrong count twice -- both times from the SHARED CHECKOUT, which was 37 commits behind origin/main. DERIVE FROM `origin/main`.
+
+### Free lanes -- measured, not assumed
+
+- `agy` IS the Antigravity CLI.
+- **Tiering that worked:** `gemini-3.7-flash-high` for implementation (17 dispatches), `gemini-3.1-pro-high` for CRITICAL_VALIDATOR (4 dispatches, returning 2 BLOCK and 2 APPROVE). Using a DIFFERENT, STRONGER model for review than for implementation is what caught every real defect.
+- **zai:** Send `{"thinking":{"type":"disabled"}}` or content comes back EMPTY with the answer in `reasoning_content` -- a silent vacuous success. Measured on BOTH `glm-4.5-flash` and `glm-4.7-flash`. #181 fixes `scripts/delegate.py`; `scripts/lane_probe.py` HAS THE SAME BUG AND IS NOT FIXED.
+- **USE glm-4.5-flash, NOT 4.7:** 4.7 returned "error 1305 service temporarily overloaded" on every attempt, 4.5 answered every call. This supersedes the 2026-08-19 ruling naming 4.7 primary.
+- **Capability measured:** 4.5-flash produced a correct scoped Rust diff in 29 completion tokens and independently found the Toast-on-IO bug in 77 tokens. Rate limits are tight (429 on a third call).
+
+### Session orchestration audit (scripts/session_orchestration_audit.py, from #182)
+
+21 dispatches, 1937 worker steps, 5.32M worker tokens on free lanes, 92 steps per dispatch.
+
+**CAVEAT:** Its STATUS column is NOT trustworthy -- it reported 7 "Stalled / Timed Out" that had completed with valid reports, and it marked an empty VERIFICATION section as "[OK] Valid". Token and step accounting looked right. Fix before relying on it.
+
+### Local compute is OFF by operator instruction
+
+No local cargo/gradle this session onward; CI is the gate.
+
+- **Context:** A local `cargo test --workspace` filled C: to 100% (69 MB free) and rustc failed with "IO failure on output stream: no space on device" -- which looked exactly like a test failure and was not.
+- Reclaimed to ~35 GB by deleting `.scm-shared-target/debug` and a 10.7 GB cargo target left in a worktree by the NDK build. Keep C: near 40 GB free.
+- **Never delete `core/target/android-libs`** -- jniLibs come from there.
+- **Never set `CARGO_TARGET_DIR` for an Android gradle build:** gradle still reports BUILD SUCCESSFUL while shipping an APK with no `.so`.
+
+### Still open, needing the operator
+
+- Re-run the two-node LAN field test against main `c1708f58`. Everything above is unproven until a message actually arrives.
+- Flip branch protection `strict` -> `true` once the open PRs land.
+- Merge #154 before tagging.
+- `SHIP_PLAN` now carries D6 (transport racing) and D7 (offline proximity) as pre-tag exit criteria; README asterisks are discharged by those gates.
+- The v0.4.0 tag itself. Latest public release is still v0.1.9 from 2026-03-19.
+
+---
+
+> **2026-08-16 — READ `HANDOFF/CTO_DISPATCH_PLAN_2026-08-16.md` FIRST.** [SUPERSEDED BY SECTION 0]
 > #167, #168, #169 and #165 are **merged to tracking**. The lane picture in §3
 > below **inverted** since it was written: `Mobile`/KSP UniFFI is now GREEN and
 > `Test` went RED on two transport tests. The dispatch plan carries the
 > re-derived table, the verified merge mechanics, and the routing plan.
 > Sections §1, §4, §5, §6, §7 and §8 of this file remain accurate.
 
-## 0. STANDING RULE — keep this file current
+## 0-rule. STANDING RULE — keep this file current
 
 **Update this file at the END of every session, and immediately on any
 important change.** Operator directive, 2026-08-16, standing.
@@ -25,7 +133,13 @@ replaced it. Do not delete it.** The history of a wrong call is how the next
 session avoids re-making it; every §8 lesson exists because someone deleted the
 context instead of the conclusion.
 
-## 0a. HANDOFF -- 2026-08-19. Read this first, then sections 0b/0c.
+## 0a. HANDOFF -- 2026-08-19. Read this first, then sections 0b/0c. [SUPERSEDED BY SECTION 0]
+
+> **[SUPERSEDED BY SECTION 0]** See Section 0 above for current handoff state as of 2026-08-19 (c1708f58, 6 PRs merged, branch protection live).
+
+## 0a-bis. SESSION LOG -- 2026-08-18 [SUPERSEDED BY SECTION 0]
+
+> **[SUPERSEDED BY SECTION 0]** See Section 0 above for the full session log and current state as of 2026-08-19.
 
 **D1 and D5 are DONE.** PR #139 merged to `main` at `6e70a3db`; `tracking` fully
 absorbed (`git rev-list --left-right --count origin/main...origin/tracking` -> `1 0`).
