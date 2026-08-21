@@ -155,6 +155,16 @@ jobs:
           cd android
           ./gradlew assembleDebug
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify debug APK contains core native libraries
+        run: |
+          python scripts/test_verify_apk_native_libs.py
+          python scripts/verify_apk_native_libs.py android/app/build/outputs/apk/debug/app-debug.apk
+
       - name: Write Android build provenance
         run: |
           cat > android-debug-apk.provenance <<EOF
@@ -209,6 +219,19 @@ jobs:
         run: |
           test -n "$(find android/app/build/outputs/bundle/release -type f -name '*.aab' -size +0c -print -quit)"
           test -n "$(find android/app/build/outputs/apk/release -type f -name '*.apk' -size +0c -print -quit)"
+
+      - name: Verify release APK contains core native libraries
+        if: ${{ env.HAS_KEYSTORE == 'true' }}
+        run: |
+          python scripts/test_verify_apk_native_libs.py
+          APKS=$(find android/app/build/outputs/apk/release -type f -name '*.apk')
+          if [ -z "$APKS" ]; then
+            echo "[FAIL] no release APK found under android/app/build/outputs/apk/release"
+            exit 1
+          fi
+          for apk in $APKS; do
+            python scripts/verify_apk_native_libs.py "$apk" || exit 1
+          done
 
       - name: Verify release APK signature
         if: ${{ env.HAS_KEYSTORE == 'true' }}
