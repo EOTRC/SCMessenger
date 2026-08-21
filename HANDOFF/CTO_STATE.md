@@ -1,8 +1,89 @@
 # CTO state — live handoff
 
 Status: Active
-Last updated: 2026-08-19 (DUAL_BIND merged, branch protection live; see Section 0 below)
+Last updated: 2026-08-21 (strict:true live with 4 contexts; merge train complete; see section 0-latest)
 Entry point: `/CTO`. This file is the whole context load.
+
+## 0-latest. SESSION RECORD -- 2026-08-21 (CTO, Qwen FULL seat on Windows). READ AFTER SECTION 0.
+
+Pickup per the #188 record; onboarded via the onboard skill
+(.agents/skills/onboard): re-read this file, then re-derived live state via
+gh/git. The shared checkout sat stale at main@c1708f58 all seat -- see
+incident I-1; always derive from origin/main, never the shared checkout.
+
+Merged this seat (8; every one pr_scope.sh-gated at merge time, all checks
+green at merge):
+- #193 520e26ea -- apply_branch_protection.sh matches live protection reality
+- #188 5103b586 -- this file: 2026-08-19 handoff + 2026-08-20 addendum
+- #196 d7c76ce7 -- lane_probe zai thinking-disabled (parity with #181)
+- #197 9198bf1f -- session_orchestration_audit STATUS fails closed (+11 tests)
+- #198 0f931ea4 -- kernel never plans dead/operator-banned lanes; fails closed
+- #195 8010e3ea -- CTO seat + onboard skill wired for every frontend;
+  HANDOFF/CTO_DISPATCH_PLAN_2026-08-20.md (gate audit findings A-H)
+- #199 972f5080 -- model gate hard-blocks on mismatch (exit 2, stderr reason)
+- #200 5f052764 -- encoding repair of this file (112 mojibake sequences -> 0)
+
+Branch protection: strict:true live since 2026-08-21 (operator-approved).
+Required contexts = Repository Hygiene Checks, Lint, Rust Linting,
+Test (ubuntu-latest); enforce_admins true. Android JVM Unit Tests stays OUT
+(path-filtered -- section 0a-bis lesson). Verified live via API after apply.
+
+Incidents this seat (gates worked; record the traps):
+- I-1 STALE SHARED CHECKOUT BIT. The shared checkout sat on main@c1708f58
+  (16 commits behind); running scripts/apply_branch_protection.sh from that
+  working tree applied the PRE-#193 payload and re-added the forbidden
+  Android JVM Unit Tests context to live protection. Caught by post-apply
+  verification, corrected by direct API PUT, live state verified clean.
+  RULE: never run repo scripts from the shared checkout working tree --
+  extract origin/main content (git show into tmp/) or use a fresh worktree.
+- I-2 Worker commits swept the ~190-file .gitattributes line-ending backlog
+  into scope (2 of 4 agy commits; fresh worktrees materialize it as dirty).
+  Caught at integration (git show --stat before every cherry-pick), split.
+  Mechanized gate still owed: scripts/verify_worker_commit.py.
+- I-3 Encoding-repair worker completed against the stale checkout base; its
+  line mapping was extracted and reapplied to post-#188 content, byte-
+  verified (93 substitutions, 0 residual, line count preserved).
+- I-4 #185's BRANCH carried the mojibake (e89e8685^2 is byte-identical to
+  the corrupt post-merge file). Worker-generated artifacts bypassed every
+  gate because no gate checks encoding. Candidate: encoding sanity in
+  Repository Hygiene.
+- I-5 Model gate failed OPEN for 24 recorded sessions (exit 0 + JSON
+  continue:false is advisory; exit 2 + stderr is the block). Known since
+  2026-08-04 (SONNET_LOCKOUT doc) and never mechanized until #199 -- repeat
+  process defect per section 0c rule 7. RCA:
+  tmp/orchestration/evidence/MODEL_GATE_FAIL_OPEN_RCA_2026-08-20.md
+  (tmp/ is untracked -- fold into HANDOFF/audit/ if it should persist).
+- I-6 agy_stream_watch.py reports [RESULT] ERROR on successful runs
+  (observed on L8/L9; both delivered DONE + artifacts). Judge by the output
+  contract, not the wrapper exit code. Fix lane queued.
+
+Delegation model verified (free-tier stretch): 3 agy lanes
+(gemini-3.7-flash-high x2, gemini-3.6-flash-high x1; 38s-4min each) + 4
+Qwen isolated-worktree subagents (2-5 min each). 7 worker artifacts
+integrated; zero merged on trust; every merge CTO-verified per section 0b.
+agy Google auth: WORKING (the 2026-08-20 addendum's expiry is cleared;
+still verify `agy models` before dispatch). Windows note: bare `bash` is
+not on cmd PATH -- use "C:\Program Files\Git\bin\bash.exe".
+
+Dirty state left in place (not this seat's to touch; rule 11):
+- Shared checkout: 3 modified android .kt files (ServiceHealthMonitor,
+  DashboardScreen, BackoffStrategy) of unknown origin; local main there at
+  c1708f58 (behind); branch switching blocked until that work lands.
+- scm-handoff worktree holds docs/cto-handoff-2026-08-19 + 28 unstaged .md
+  renormalization files; the L7/L8/Qwen-agent worktrees hold the same
+  ~190-file backlog dirty. Renormalization lands as its own PR post-tag.
+
+Next seat, in order:
+1. D6/D7 two-node LAN field test (operator + hardware). Scoring:
+   receiver-side decrypt + durable history + receipt. Not transport ACKs,
+   not UI counters, not BLE local acceptance.
+2. v0.4.0 tag after D6/D7 pass (tag commit carries the #154 signing proof --
+   already on main).
+3. Queue per CTO_DISPATCH_PLAN_2026-08-20.md section 3: U-C2 swarm topic
+   literals (agy implementer + gemini-3.1-pro-high adversarial review;
+   rule 8), two-Commands unification, Rank-4 LedgerManager design note,
+   U1/U2 wiring fixes, renormalization PR, verify_worker_commit.py,
+   agy_stream_watch classification fix.
 
 ## 0. HANDOFF -- 2026-08-19 (CTO). READ THIS FIRST.
 
