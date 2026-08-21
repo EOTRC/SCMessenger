@@ -114,3 +114,49 @@ known STATUS-column caveat (finding C) until L7 lands.
    proves it -- a worker-touched CTO_STATE.md landed with ~110 mojibake
    sequences and zero checks caught it (finding E). Encoding sanity belongs
    in Repository Hygiene (candidate gate addition beside G).
+
+## 6. Seat updates -- appended in-session as they happened
+
+- #193 MERGED as 520e26ea (pr_scope clean, 26/26 checks). Merged ahead of
+  #188 because it was fully green and file-disjoint; the handoff ordering
+  assumed #188 would be green first.
+- #188 gated on its non-required Test (windows-latest) lane; pr_scope.sh
+  failed closed correctly. Merge as soon as it clears.
+- L5 wiring: PR #195 (CTO.md + onboard skills + this plan + .qwen/.gitignore).
+- L6 lane_probe fix: PR #196.
+- L7 audit STATUS fix: PR #197. Worker commit split before PR -- see H.
+- L8 kernel lane policy: PR #198. Worker commit split before PR -- see H.
+  Dry-run now plans provider=cerebras model=gemma-4-31b; qwenpaid and
+  dashscope rejected as operator-banned; dead lanes excluded; fail-closed
+  on empty roster.
+- L9 model-gate RCA: COMPLETE and independently verified (24-session count
+  reproduced by the CTO's own grep). Fix mechanism: exit 2 + stderr.
+  model_gate.sh fix dispatched (W4).
+- agy auth: WORKING this seat (full roster), clearing the addendum's
+  2026-08-20 OAuth-expiry blocker. U-C2 is dispatchable.
+
+## 7. Finding H -- worker dispatch swept worktree line-ending noise (x2)
+
+Both agy IMPLEMENTER commits (L7, L8) swept the repo's ~190-file
+.gitattributes CRLF-to-LF renormalization backlog into their commits --
+any fresh worktree checkout materializes that backlog as dirty files, and
+both workers staged everything despite packet text saying "stage explicit
+paths only." Caught at integration; split via reset + explicit-path recommit
+before PR. The prose instruction failed; per section 0c rule 7, the fix is
+mechanism:
+
+1. Gate candidate: `scripts/verify_worker_commit.py <commit> <allowed
+   path>...` -- exit non-zero if the commit touches anything outside the
+   packet's file list. Run before any worker commit is cherry-picked onto a
+   PR branch. Until it exists, the manual gate stands: `git show --stat` on
+   every worker commit before integration (run twice this seat, caught both).
+2. Same failure family: `scripts/agy_stream_watch.py` reported "[RESULT]
+   ERROR" for the L9 and L8 runs even though both workers delivered DONE +
+   artifacts + passing verifications. The watcher classification needs the
+   same fail-closed-but-accurate treatment finding C demands of the audit
+   script -- a delivered output contract is a success, whatever the wrapper
+   exit code. New lane for the orchestrator queue.
+3. The renormalization backlog itself is still uncommitted (dirty in the
+   L7/L8 worktrees and in scm-handoff). It collides with every .md-touching
+   change, so land it as its own dedicated PR after this merge train, not
+   inside one.
