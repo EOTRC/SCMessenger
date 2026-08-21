@@ -1,6 +1,8 @@
 package com.scmessenger.android.ui
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.dp
 import com.scmessenger.android.R
 import androidx.compose.ui.res.stringResource
 import androidx.compose.material.icons.Icons
@@ -30,6 +32,7 @@ import com.scmessenger.android.ui.contacts.ContactDetailScreen
 import com.scmessenger.android.ui.dashboard.PeerListScreen
 import com.scmessenger.android.ui.dashboard.TopologyScreen
 import com.scmessenger.android.ui.identity.IdentityScreen
+import com.scmessenger.android.ui.join.JoinMeshScreen
 import com.scmessenger.android.ui.screens.*
 import com.scmessenger.android.ui.screens.RequestsInboxScreen
 import com.scmessenger.android.ui.viewmodels.MainViewModel
@@ -235,6 +238,52 @@ fun MeshNavHost(
             composable(Screen.AddContact.route) {
                 val mainVm: MainViewModel = hiltViewModel()
                 val deepLinkData = remember { mainVm.consumeDeepLink() }
+                var showDialConfirmDialog by remember {
+                    mutableStateOf(
+                        deepLinkData != null &&
+                            deepLinkData.listeners.isNotEmpty() &&
+                            (!deepLinkData.libp2pPeerId.isNullOrBlank() || !deepLinkData.peerId.isNullOrBlank())
+                    )
+                }
+
+                if (showDialConfirmDialog && deepLinkData != null) {
+                    val peerDisplay = deepLinkData.nickname?.takeIf { it.isNotBlank() }
+                        ?: deepLinkData.libp2pPeerId
+                        ?: deepLinkData.peerId
+                        ?: stringResource(R.string.unknown_peer)
+                    val addressesText = deepLinkData.listeners.joinToString("\n")
+                    AlertDialog(
+                        onDismissRequest = { showDialConfirmDialog = false },
+                        title = { Text(stringResource(R.string.deep_link_connect_dialog_title)) },
+                        text = {
+                            Column {
+                                Text(stringResource(R.string.deep_link_connect_dialog_message, peerDisplay))
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = addressesText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    showDialConfirmDialog = false
+                                    mainVm.confirmAndDialPendingDeepLink(deepLinkData)
+                                }
+                            ) {
+                                Text(stringResource(R.string.deep_link_action_connect))
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showDialConfirmDialog = false }) {
+                                Text(stringResource(R.string.cancel))
+                            }
+                        }
+                    )
+                }
+
                 AddContactScreen(
                     onNavigateBack = { navController.popBackStack() },
                     onContactAdded = { navController.popBackStack() },
@@ -256,6 +305,9 @@ fun MeshNavHost(
                     },
                     onNavigateToTopology = {
                         navController.navigate("topology")
+                    },
+                    onNavigateToJoinMesh = {
+                        navController.navigate(Screen.JoinMesh.route)
                     }
                 )
             }
@@ -324,7 +376,11 @@ fun MeshNavHost(
             )
         }
 
-
+        composable(Screen.Diagnostics.route) {
+            DiagnosticsScreen(
+                onNavigateBack = { navController.popBackStack() }
+            )
+        }
 
         composable(Screen.BlockedPeers.route) {
             BlockedPeersScreen(
@@ -335,6 +391,15 @@ fun MeshNavHost(
         composable(Screen.RequestsInbox.route) {
             RequestsInboxScreen(
                 onNavigateBack = { navController.popBackStack() }
+            )
+        }
+
+        composable(Screen.JoinMesh.route) {
+            val mainVm: MainViewModel = hiltViewModel()
+            JoinMeshScreen(
+                repository = mainVm.repository,
+                onJoinSuccess = { navController.popBackStack() },
+                onCancel = { navController.popBackStack() }
             )
         }
 
@@ -397,6 +462,7 @@ sealed class Screen(val route: String, val label: String, val icon: androidx.com
     object Diagnostics : Screen("diagnostics", "Diagnostics", androidx.compose.material.icons.Icons.Default.Settings)
     object BlockedPeers : Screen("blocked_peers", "Blocked Peers", androidx.compose.material.icons.Icons.Filled.Block)
     object RequestsInbox : Screen("requests_inbox", "Requests", androidx.compose.material.icons.Icons.Default.Add)
+    object JoinMesh : Screen("join_mesh", "Join Mesh", androidx.compose.material.icons.Icons.Filled.Router)
 
     companion object {
         val fullRoleBottomNavItems = listOf(Conversations, Contacts, Dashboard, Settings)

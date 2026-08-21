@@ -45,7 +45,9 @@ fun ApkShareDialog(
     LaunchedEffect(Unit) {
         ApkShareManager.startLocalApkHost(context, durationMinutes = 15) { url ->
             downloadUrl = url
-            isServerRunning = true
+            isServerRunning = ApkShareManager.isHosting()
+            val port = ApkShareManager.getHostingPort()
+            timber.log.Timber.d("ApkShareDialog: hosting server started on port $port ($url)")
         }
     }
 
@@ -58,7 +60,7 @@ fun ApkShareDialog(
             }
             if (secondsRemaining <= 0) {
                 ApkShareManager.stopLocalApkHost()
-                isServerRunning = false
+                isServerRunning = ApkShareManager.isHosting()
             }
         }
     }
