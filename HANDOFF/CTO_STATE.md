@@ -1016,5 +1016,3 @@ class (RustSec DB, runner hangs, now toolchain drift).
   rust-toolchain.toml, and a pin freezes security updates.
 - Lint PASS + Rust Linting PASS confirmed on #194 before merge; all 31
   checks green.
-
-
