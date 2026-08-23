@@ -36,6 +36,7 @@ fn test_pq_session_full_send_receive() {
         Some(&mut alice_manager),
         &bob_id,
         Some(&alice_bundle),
+        Some(&alice.x25519_encryption_secret),
         false,
         None,
     )
@@ -77,6 +78,7 @@ fn test_pq_session_full_send_receive() {
         Some(&mut bob_manager),
         &alice_id,
         Some(&bob_bundle),
+        Some(&bob.x25519_encryption_secret),
         false,
         None,
     )
@@ -124,6 +126,7 @@ fn test_pq_session_lost_first_envelope() {
         Some(&mut alice_manager),
         &bob_id,
         Some(&alice_bundle),
+        Some(&alice.x25519_encryption_secret),
         false,
         None,
     )
@@ -138,6 +141,7 @@ fn test_pq_session_lost_first_envelope() {
         Some(&mut alice_manager),
         &bob_id,
         Some(&alice_bundle),
+        Some(&alice.x25519_encryption_secret),
         false,
         None,
     )
@@ -190,6 +194,7 @@ fn test_pq_session_transcript_mismatch() {
         Some(&mut alice_manager),
         &bob_id,
         Some(&alice_bundle),
+        Some(&alice.x25519_encryption_secret),
         false,
         None,
     )
@@ -236,6 +241,7 @@ fn test_v2_initiator_to_v1_peer() {
         Some(&mut alice_manager),
         &bob_id,
         Some(&alice_bundle),
+        Some(&alice.x25519_encryption_secret),
         false,
         None,
     )
@@ -279,6 +285,7 @@ fn test_pq_session_persistence() {
         Some(&mut alice_manager),
         &bob_id,
         Some(&alice_bundle),
+        Some(&alice.x25519_encryption_secret),
         false,
         None,
     )
@@ -309,6 +316,7 @@ fn test_pq_session_persistence() {
         Some(&mut new_alice),
         &bob_id,
         Some(&alice_bundle),
+        Some(&alice.x25519_encryption_secret),
         false,
         None,
     )
@@ -348,6 +356,7 @@ fn test_pq_ratchet_cadence_refreshes_shared_secret() {
         Some(&mut alice_manager),
         &bob_id,
         Some(&alice_bundle),
+        Some(&alice.x25519_encryption_secret),
         false,
         None,
     )
@@ -374,6 +383,7 @@ fn test_pq_ratchet_cadence_refreshes_shared_secret() {
         Some(&mut bob_manager),
         &alice_id,
         Some(&bob_bundle),
+        Some(&bob.x25519_encryption_secret),
         false,
         None,
     )
@@ -418,6 +428,7 @@ fn test_pq_ratchet_cadence_refreshes_shared_secret() {
             Some(&mut alice_manager),
             &bob_id,
             Some(&alice_bundle),
+            Some(&alice.x25519_encryption_secret),
             false,
             None,
         )
@@ -478,6 +489,7 @@ fn test_pq_ratchet_cadence_refreshes_shared_secret() {
         Some(&mut bob_manager),
         &alice_id,
         Some(&bob_bundle),
+        Some(&bob.x25519_encryption_secret),
         false,
         None,
     )
@@ -504,6 +516,7 @@ fn test_pq_ratchet_cadence_refreshes_shared_secret() {
         Some(&mut alice_manager),
         &bob_id,
         Some(&alice_bundle),
+        Some(&alice.x25519_encryption_secret),
         false,
         None,
     )

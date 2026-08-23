@@ -24,6 +24,7 @@ fn test_pqc_01_hybrid_handshake() {
         Some(&mut alice_manager),
         &bob.identity_id(),
         Some(&alice_bundle),
+        Some(&alice.x25519_encryption_secret),
         false,
         None,
     )
@@ -65,6 +66,7 @@ fn test_pqc_02_ratchet_cadence() {
         Some(&mut alice_manager),
         &bob_id,
         Some(&alice_bundle),
+        Some(&alice.x25519_encryption_secret),
         false,
         None,
     )
@@ -89,6 +91,7 @@ fn test_pqc_02_ratchet_cadence() {
         Some(&mut bob_manager),
         &alice_id,
         Some(&bob_bundle),
+        Some(&bob.x25519_encryption_secret),
         false,
         None,
     )
@@ -119,6 +122,7 @@ fn test_pqc_02_ratchet_cadence() {
             Some(&mut alice_manager),
             &bob_id,
             Some(&alice_bundle),
+            Some(&alice.x25519_encryption_secret),
             false,
             None,
         )

@@ -105,6 +105,7 @@ impl RatchetSessionManager {
         &mut self,
         peer_id: &str,
         our_signing_key: &ed25519_dalek::SigningKey,
+        our_x25519_secret: &x25519_dalek::StaticSecret,
         our_bundle: &crate::identity::PublicKeyBundle,
         their_bundle: &crate::identity::PublicKeyBundle,
     ) -> Result<&mut RatchetSession> {
@@ -119,7 +120,7 @@ impl RatchetSessionManager {
                 )?;
 
                 let session = if suite == 0x02 {
-                    RatchetSession::init_as_sender_hybrid(our_signing_key, their_bundle, hash)?
+                    RatchetSession::init_as_sender_hybrid(our_x25519_secret, their_bundle, hash)?
                 } else {
                     let their_x25519 = crate::crypto::encrypt::ed25519_public_to_x25519(
                         &their_bundle.ed25519_public,

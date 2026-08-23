@@ -498,6 +498,9 @@ fn should_use_ratcheted_encryption(
 /// * `session_manager` - Optional ratchet session manager
 /// * `peer_id` - Peer identifier for ratchet session lookup
 /// * `our_bundle` - Our public key bundle (None for V1 senders)
+/// * `our_x25519_secret` - Our dedicated X25519 encryption secret (required for hybrid
+///   sessions; used for the static-static DH sender-authentication step instead of an
+///   Ed25519-derived key, avoiding cross-protocol reuse of the signing key)
 /// * `require_pq` - Whether PQ encryption is strictly required
 /// * `audit_log` - Audit log manager for logging legacy sends
 ///
@@ -512,6 +515,7 @@ pub fn encrypt_with_ratchet_fallback(
     session_manager: Option<&mut crate::crypto::RatchetSessionManager>,
     peer_id: &str,
     our_bundle: Option<&crate::identity::PublicKeyBundle>,
+    our_x25519_secret: Option<&x25519_dalek::StaticSecret>,
     require_pq: bool,
     audit_log: Option<&mut crate::observability::AuditLog>,
 ) -> Result<crate::message::WireEnvelope> {
@@ -525,9 +529,16 @@ pub fn encrypt_with_ratchet_fallback(
             if let Some(manager) = session_manager {
                 // If we have bundles for both sides, try hybrid session
                 if let (Some(our_b), Some(their_b)) = (our_bundle, recipient_bundle) {
+                    let our_x25519 = our_x25519_secret.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Hybrid session for peer {} requires our dedicated X25519 secret",
+                            peer_id
+                        )
+                    })?;
                     let session = manager.get_or_create_session_hybrid(
                         peer_id,
                         sender_signing_key,
+                        our_x25519,
                         our_b,
                         their_b,
                     )?;
@@ -1173,6 +1184,7 @@ mod tests {
             None, // no session manager
             "test_peer",
             None,  // no our bundle
+            None,  // no our x25519 secret
             false, // require_pq = false
             Some(&mut audit_log),
         );

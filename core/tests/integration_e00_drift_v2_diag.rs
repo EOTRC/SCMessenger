@@ -187,6 +187,7 @@ fn test_drift_v2_ratchet_roundtrip_diagnostic() {
         Some(&mut alice_manager),
         &bob_id,
         Some(&alice_bundle),
+        Some(&alice.x25519_encryption_secret),
         false,
         None,
     )
@@ -436,6 +437,7 @@ fn test_from_bytes_offset_trace() {
         Some(&mut alice_manager),
         &bob_id,
         Some(&alice_bundle),
+        Some(&alice.x25519_encryption_secret),
         false,
         None,
     )

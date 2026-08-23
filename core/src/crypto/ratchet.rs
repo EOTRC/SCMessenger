@@ -440,7 +440,7 @@ impl RatchetSession {
 
     /// Initialize a new ratchet session as the initiator (Alice) using hybrid encryption.
     pub fn init_as_sender_hybrid(
-        our_signing_key: &ed25519_dalek::SigningKey,
+        our_x25519_secret: &x25519_dalek::StaticSecret,
         their_bundle: &crate::identity::PublicKeyBundle,
         transcript_hash: [u8; 32],
     ) -> Result<Self> {
@@ -457,10 +457,14 @@ impl RatchetSession {
             &their_bundle.mlkem_encaps_key,
         )?;
 
-        // Static-static DH for sender authentication
-        let sender_x25519 = crate::crypto::encrypt::ed25519_to_x25519_secret(our_signing_key);
+        // Static-static DH for sender authentication. Uses our DEDICATED X25519 encryption
+        // secret (not an Ed25519-derived one) to avoid cross-protocol key reuse. The
+        // receiver must correspondingly use the sender's dedicated `x25519_public` from the
+        // sender's published bundle (see `init_as_receiver_hybrid`) -- Curve25519 DH is
+        // commutative, so both sides land on the same shared secret as long as they agree
+        // on which keypair is in play.
         let recipient_x25519 = X25519PublicKey::from(their_bundle.x25519_public);
-        let dh_static = sender_x25519.diffie_hellman(&recipient_x25519);
+        let dh_static = our_x25519_secret.diffie_hellman(&recipient_x25519);
 
         // Derive root key with sender authentication
         let root_key_0 = blake3::derive_key(
@@ -537,9 +541,12 @@ impl RatchetSession {
             hct,
         )?;
 
-        // Static-static DH for sender authentication
-        let sender_x25519_public =
-            crate::crypto::encrypt::ed25519_public_to_x25519(&sender_bundle.ed25519_public)?;
+        // Static-static DH for sender authentication. Must mirror the sender's choice in
+        // `init_as_sender_hybrid`: the sender now uses its DEDICATED X25519 secret, so we
+        // use the sender's dedicated `x25519_public` from their published bundle here --
+        // NOT an Ed25519-derived key. Curve25519 DH is commutative, so this still lands on
+        // the same shared secret the sender computed.
+        let sender_x25519_public = X25519PublicKey::from(sender_bundle.x25519_public);
         let dh_static = our_x25519_secret.diffie_hellman(&sender_x25519_public);
 
         // Derive root key with sender authentication
@@ -1141,6 +1148,14 @@ mod tests {
         X25519PublicKey::from(&secret)
     }
 
+    /// Test-only helper: derive a dedicated-style X25519 secret consistently from a signing
+    /// key, so a test's `PublicKeyBundle.x25519_public` (built via
+    /// `signing_key_to_x25519_public`) and the secret passed to `init_as_sender_hybrid` /
+    /// `init_as_receiver_hybrid` describe the same keypair.
+    fn signing_key_to_x25519_secret(signing_key: &SigningKey) -> X25519StaticSecret {
+        super::super::encrypt::ed25519_to_x25519_secret(signing_key)
+    }
+
     #[test]
     fn test_ratchet_key_zeroizes() {
         let key = RatchetKey::from_bytes([0xAB; 32]);
@@ -1225,9 +1240,12 @@ mod tests {
         };
         let transcript_hash = [0u8; 32];
 
-        let mut alice_session =
-            RatchetSession::init_as_sender_hybrid(&alice_key, &bob_bundle, transcript_hash)
-                .unwrap();
+        let mut alice_session = RatchetSession::init_as_sender_hybrid(
+            &signing_key_to_x25519_secret(&alice_key),
+            &bob_bundle,
+            transcript_hash,
+        )
+        .unwrap();
         assert!(alice_session.is_initialized());
         assert_eq!(alice_session.dh_step_count(), 1);
 
@@ -1267,9 +1285,12 @@ mod tests {
         };
         let transcript_hash = [0u8; 32];
 
-        let mut alice_session =
-            RatchetSession::init_as_sender_hybrid(&alice_key, &bob_bundle, transcript_hash)
-                .unwrap();
+        let mut alice_session = RatchetSession::init_as_sender_hybrid(
+            &signing_key_to_x25519_secret(&alice_key),
+            &bob_bundle,
+            transcript_hash,
+        )
+        .unwrap();
         let hct = alice_session
             .bootstrap_hct
             .clone()
@@ -1320,9 +1341,12 @@ mod tests {
         };
         let transcript_hash = [0u8; 32];
 
-        let mut alice_session =
-            RatchetSession::init_as_sender_hybrid(&alice_key, &bob_bundle, transcript_hash)
-                .unwrap();
+        let mut alice_session = RatchetSession::init_as_sender_hybrid(
+            &signing_key_to_x25519_secret(&alice_key),
+            &bob_bundle,
+            transcript_hash,
+        )
+        .unwrap();
 
         // Perform PQ ratchet step
         let (ct, new_encaps_key) = alice_session.perform_pq_ratchet_step().unwrap();
@@ -1351,9 +1375,12 @@ mod tests {
         };
         let transcript_hash = [0u8; 32];
 
-        let alice_session =
-            RatchetSession::init_as_sender_hybrid(&alice_key, &bob_bundle, transcript_hash)
-                .unwrap();
+        let alice_session = RatchetSession::init_as_sender_hybrid(
+            &signing_key_to_x25519_secret(&alice_key),
+            &bob_bundle,
+            transcript_hash,
+        )
+        .unwrap();
 
         // Should reject DH step without PQ fields after initialization
         let result = alice_session.validate_pq_fields_present(false);

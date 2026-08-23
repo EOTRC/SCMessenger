@@ -47,10 +47,14 @@ fn test_v2_hybrid_envelope_forgery_is_rejected() {
     let mut mallory_secret = [0u8; 32];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut mallory_secret);
     let mallory_dummy_signing_key = ed25519_dalek::SigningKey::from_bytes(&mallory_secret);
+    // Mallory also has no access to Alice's dedicated X25519 encryption secret -- she can
+    // only use her own throwaway one.
+    let mallory_dummy_x25519_secret =
+        scmessenger_core::crypto::encrypt::ed25519_to_x25519_secret(&mallory_dummy_signing_key);
 
     // Mallory initializes a sender hybrid session with her dummy key
     let mut mallory_session = RatchetSession::init_as_sender_hybrid(
-        &mallory_dummy_signing_key,
+        &mallory_dummy_x25519_secret,
         &mallory_known_bob_bundle,
         transcript_hash,
     )
@@ -193,7 +197,7 @@ fn test_v2_hybrid_envelope_forgery_is_rejected() {
     assert_eq!(node_suite, 0x02);
 
     let mut mallory_session_for_node = RatchetSession::init_as_sender_hybrid(
-        &mallory_dummy_signing_key,
+        &mallory_dummy_x25519_secret,
         &bob_node_bundle,
         node_transcript_hash,
     )
@@ -289,7 +293,7 @@ fn test_v2_hybrid_honest_sender_succeeds() {
     assert_eq!(suite, 0x02);
 
     let mut alice_session = RatchetSession::init_as_sender_hybrid(
-        &alice_keys.signing_key,
+        &alice_keys.x25519_encryption_secret,
         &bob_public_bundle,
         transcript_hash,
     )
@@ -424,7 +428,7 @@ fn test_v2_hybrid_honest_sender_succeeds() {
     assert_eq!(node_suite, 0x02);
 
     let mut alice_session_for_node = RatchetSession::init_as_sender_hybrid(
-        &alice_keys.signing_key,
+        &alice_keys.x25519_encryption_secret,
         &bob_node_bundle,
         node_transcript_hash,
     )

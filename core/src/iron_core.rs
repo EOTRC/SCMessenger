@@ -857,6 +857,7 @@ impl IronCore {
                 Some(&mut *sessions),
                 &peer_id,
                 our_bundle.as_ref(),
+                Some(&keys.x25519_encryption_secret),
                 false,
                 Some(&mut *audit),
             )
@@ -3301,16 +3302,15 @@ impl IronCore {
                         }
                     }
                 } else {
-                    let decoded = crate::message::codec::decode_wire_envelope(&envelope_data)
-                        .map_err(|e| {
-                            tracing::warn!("Failed to decode wire envelope: {:?}", e);
-                            IronCoreError::CryptoError
-                        })?;
-                    if matches!(decoded, crate::message::WireEnvelope::V2(_)) {
-                        tracing::warn!("Unsigned V2 wire envelope rejected at ingress");
-                        return Err(IronCoreError::CryptoError);
-                    }
-                    decoded
+                    // No legitimate send path emits unsigned wire envelopes -- every
+                    // production sender routes through `DriftEnvelope::from_legacy_envelope`
+                    // / `from_v2_envelope`, both of which sign with Ed25519. An envelope
+                    // that reaches this branch decoded neither as a Drift envelope nor as a
+                    // WireSignedEnvelope, so it carries no signature at all. Reject it
+                    // regardless of version: an unsigned V1 envelope is exactly as forgeable
+                    // as an unsigned V2 one (see test_v1_bincode_downgrade_forgery).
+                    tracing::warn!("Unsigned wire envelope rejected at ingress");
+                    return Err(IronCoreError::CryptoError);
                 };
             let identity = self.identity.read();
             let keys = identity.keys().ok_or(IronCoreError::NotInitialized)?;
