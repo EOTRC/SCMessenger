@@ -1018,6 +1018,9 @@ async fn cmd_init(name: Option<String>) -> Result<()> {
 
     let storage_path = data_dir.join("storage");
     let core = IronCore::with_storage(path_to_string(&storage_path)?);
+    let info = core.get_identity_info();
+    let already_initialized = info.initialized;
+
     core.grant_consent();
     core.initialize_identity()
         .context("Failed to initialize identity")?;
@@ -1029,7 +1032,11 @@ async fn cmd_init(name: Option<String>) -> Result<()> {
         println!("  {} Nickname set", "[OK]".green());
     }
 
-    println!("  {} Identity created", "[OK]".green());
+    if already_initialized {
+        println!("  {} Existing identity loaded", "[OK]".green());
+    } else {
+        println!("  {} Identity created", "[OK]".green());
+    }
     println!();
 
     print_full_identity(&core, &config)?;
@@ -1047,9 +1054,61 @@ async fn cmd_init(name: Option<String>) -> Result<()> {
 
 async fn cmd_identity(action: Option<IdentityAction>) -> Result<()> {
     let config = config::Config::load()?;
+
+    // If running with default data directory and API is available (node is running),
+    // prefer querying the live node's API to avoid sled lock contention.
+    let is_custom_data_dir = std::env::var("SCMESSENGER_DATA_DIR").is_ok();
+    if !is_custom_data_dir && api::is_api_available().await {
+        if matches!(action, None | Some(IdentityAction::Show)) {
+            match api::get_identity_via_api().await {
+                Ok(info) => {
+                    print_api_identity(&info, &config)?;
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to query identity from running node API: {}", e);
+                }
+            }
+        }
+    }
+
     let data_dir = config::Config::data_dir()?;
     let storage_path = data_dir.join("storage");
     let core = IronCore::with_storage(path_to_string(&storage_path)?);
+
+    let info = core.get_identity_info();
+    if !info.initialized {
+        let relay_key_path = storage_path.join("relay_network_key.pb");
+        if relay_key_path.exists() {
+            if let Ok(bytes) = std::fs::read(&relay_key_path) {
+                if let Ok(keypair) = libp2p::identity::Keypair::from_protobuf_encoding(&bytes) {
+                    let local_peer_id = keypair.public().to_peer_id();
+                    println!("{}", "Identity Information (Headless Relay)".bold());
+                    println!(
+                        "  Peer ID (Network):      {}",
+                        local_peer_id.to_string().bright_cyan()
+                    );
+                    println!(
+                        "  Public Key:             {}",
+                        "(headless/identity-agnostic)".bright_yellow()
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
+        println!(
+            "{} No identity found for data directory: {}",
+            "[FAIL]".red(),
+            data_dir.display()
+        );
+        println!(
+            "Run '{}' to initialize a new identity.",
+            "scm init".bright_green()
+        );
+        return Ok(());
+    }
+
     core.grant_consent();
     core.initialize_identity()
         .context("Failed to load identity")?;
@@ -1192,8 +1251,8 @@ fn print_full_identity(core: &IronCore, config: &config::Config) -> Result<()> {
     println!(
         "  ID:                     {}",
         info.identity_id
-            .clone()
-            .unwrap_or_else(|| "(pending)".to_string())
+            .as_deref()
+            .unwrap_or("(pending)")
             .bright_cyan()
     );
     println!(
@@ -1210,7 +1269,8 @@ fn print_full_identity(core: &IronCore, config: &config::Config) -> Result<()> {
     println!(
         "  Public Key:             {}",
         info.public_key_hex
-            .expect("Public key hex should be available")
+            .as_deref()
+            .unwrap_or("(none)")
             .bright_yellow()
     );
     println!();
@@ -1233,6 +1293,44 @@ fn print_full_identity(core: &IronCore, config: &config::Config) -> Result<()> {
     println!("  Local Address:          /ip4/127.0.0.1/tcp/{}", p2p_port);
 
     // Attempt to show LAN IP if possible (simple heuristic or just mention it)
+    println!(
+        "  LAN Address:            /ip4/<YOUR_LAN_IP>/tcp/{}",
+        p2p_port
+    );
+
+    println!();
+
+    Ok(())
+}
+
+fn print_api_identity(info: &serde_json::Value, config: &config::Config) -> Result<()> {
+    let identity_id = info["identity_id"].as_str().unwrap_or("(pending)");
+    let peer_id = info["libp2p_peer_id"].as_str().unwrap_or("(unknown)");
+    let nickname = info["nickname"].as_str().unwrap_or("(not set)");
+    let public_key = info["public_key_hex"]
+        .as_str()
+        .unwrap_or("(headless/identity-agnostic)");
+
+    println!("{}", "Identity Information (from running node)".bold());
+    println!("  ID:                     {}", identity_id.bright_cyan());
+    println!("  Peer ID (Network):      {}", peer_id.bright_cyan());
+    println!("  Nickname:               {}", nickname.bright_cyan());
+    println!("  Public Key:             {}", public_key.bright_yellow());
+    println!();
+
+    println!("{}", "Direct Connection Info".bold());
+    let ws_port = if config.listen_port == 0 {
+        9000
+    } else {
+        config.listen_port
+    };
+    let p2p_port = ws_port + 1;
+
+    println!(
+        "  P2P Listener:           {}",
+        format!("/ip4/0.0.0.0/tcp/{}", p2p_port).green()
+    );
+    println!("  Local Address:          /ip4/127.0.0.1/tcp/{}", p2p_port);
     println!(
         "  LAN Address:            /ip4/<YOUR_LAN_IP>/tcp/{}",
         p2p_port
@@ -3498,6 +3596,13 @@ async fn cmd_send_offline(recipient: String, message: String) -> Result<()> {
     let data_dir = config::Config::data_dir()?;
     let storage_path = data_dir.join("storage");
     let core = Arc::new(IronCore::with_storage(path_to_string(&storage_path)?));
+    let info = core.get_identity_info();
+    if !info.initialized {
+        anyhow::bail!(
+            "No identity found for data directory: {}. Run 'scm init' first.",
+            data_dir.display()
+        );
+    }
     core.grant_consent();
     core.initialize_identity()
         .context("Failed to load identity")?;
@@ -3654,6 +3759,13 @@ async fn queue_message_for_later_delivery(
 ) -> Result<()> {
     let storage_path = data_dir.join("storage");
     let core = IronCore::with_storage(path_to_string(&storage_path)?);
+    let info = core.get_identity_info();
+    if !info.initialized {
+        anyhow::bail!(
+            "No identity found for data directory: {}. Run 'scm init' first.",
+            data_dir.display()
+        );
+    }
     core.grant_consent();
     core.initialize_identity()
         .context("Failed to initialize identity for queued send")?;
