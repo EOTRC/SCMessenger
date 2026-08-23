@@ -163,7 +163,10 @@ fn test_v1_bincode_downgrade_forgery() {
         receive_result.is_err(),
         "P0 REGRESSION: IronCore::receive_message accepted a forged, unsigned V1 envelope \
          and attributed it to Alice without Alice's private key ever being used. Got: {:?}",
-        receive_result.ok().map(|m| (m.sender_id, m.text_content()))
+        receive_result.ok().map(|m| {
+            let text = m.text_content();
+            (m.sender_id, text)
+        })
     );
     tracing::debug!(
         "V1 bincode-downgrade forgery correctly rejected: {:?}",
