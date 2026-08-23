@@ -101,6 +101,109 @@ impl StorageBackend for MemoryStorage {
     }
 }
 
+/// Degraded storage backend representing a failed persistent storage open.
+///
+/// Every operation on this backend returns an explicit storage error containing
+/// the reason the underlying store failed to open. This ensures that security
+/// controls (such as blocked-list checks) and data pipelines fail closed rather
+/// than silently operating against empty in-memory state.
+#[derive(Clone, Debug)]
+pub struct DegradedStorage {
+    path: String,
+    error: String,
+}
+
+impl DegradedStorage {
+    pub fn new(path: impl Into<String>, error: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            error: error.into(),
+        }
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub fn error(&self) -> &str {
+        &self.error
+    }
+}
+
+impl StorageBackend for DegradedStorage {
+    fn put(&self, _key: &[u8], _value: &[u8]) -> Result<(), String> {
+        Err(format!(
+            "storage degraded for path '{}': {}",
+            self.path, self.error
+        ))
+    }
+
+    fn get(&self, _key: &[u8]) -> Result<Option<Vec<u8>>, String> {
+        Err(format!(
+            "storage degraded for path '{}': {}",
+            self.path, self.error
+        ))
+    }
+
+    fn remove(&self, _key: &[u8]) -> Result<(), String> {
+        Err(format!(
+            "storage degraded for path '{}': {}",
+            self.path, self.error
+        ))
+    }
+
+    fn scan_prefix(&self, _prefix: &[u8]) -> Result<ScanResult, String> {
+        Err(format!(
+            "storage degraded for path '{}': {}",
+            self.path, self.error
+        ))
+    }
+
+    fn count_prefix(&self, _prefix: &[u8]) -> Result<usize, String> {
+        Err(format!(
+            "storage degraded for path '{}': {}",
+            self.path, self.error
+        ))
+    }
+
+    fn flush(&self) -> Result<(), String> {
+        Err(format!(
+            "storage degraded for path '{}': {}",
+            self.path, self.error
+        ))
+    }
+
+    fn approximate_size(&self) -> Result<u64, String> {
+        Err(format!(
+            "storage degraded for path '{}': {}",
+            self.path, self.error
+        ))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn is_lock_contention(err: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    if err.kind() == ErrorKind::WouldBlock {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        if let Some(raw_os_error) = err.raw_os_error() {
+            // 32 = ERROR_SHARING_VIOLATION, 33 = ERROR_LOCK_VIOLATION
+            if raw_os_error == 32 || raw_os_error == 33 {
+                return true;
+            }
+        }
+    }
+    let msg = err.to_string().to_lowercase();
+    msg.contains("lock")
+        || msg.contains("sharing violation")
+        || msg.contains("resource temporarily unavailable")
+        || msg.contains("would block")
+        || msg.contains("being used by another process")
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub struct SledStorage {
     db: sled::Db,
@@ -114,7 +217,22 @@ impl SledStorage {
             .mode(sled::Mode::LowSpace)
             .use_compression(false)
             .open()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| match e {
+                sled::Error::Corruption { at, .. } => {
+                    format!("corruption detected at {:?}: {}", at, e)
+                }
+                sled::Error::Io(ref io_err) => {
+                    if is_lock_contention(io_err) {
+                        format!(
+                            "database locked by another process (lock contention): {}",
+                            io_err
+                        )
+                    } else {
+                        format!("io error: {}", io_err)
+                    }
+                }
+                _ => e.to_string(),
+            })?;
         Ok(Self { db })
     }
 }

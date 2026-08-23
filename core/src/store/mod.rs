@@ -15,7 +15,9 @@ pub mod sweeper;
 pub mod tracing_init;
 pub mod transport_memory;
 
-pub use backend::StorageBackend;
+#[cfg(not(target_arch = "wasm32"))]
+pub use backend::SledStorage;
+pub use backend::{DegradedStorage, MemoryStorage, StorageBackend};
 // Note: BlockedIdentity/BlockedManager exported through blocked_bridge for UniFFI
 pub use contacts::{Contact, ContactManager};
 pub use dedup::{DedupAggregateStats, DedupStats, DedupStatsTracker};
