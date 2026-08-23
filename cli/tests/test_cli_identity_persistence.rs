@@ -9,7 +9,9 @@ fn reopen_storage_with_retry(path: &str) -> IronCore {
     for attempt in 0..MAX_REOPEN_ATTEMPTS {
         // Sleep on Windows/macOS to give OS file lock time to release
         if attempt > 0 {
-            std::thread::sleep(Duration::from_millis(REOPEN_BACKOFF_BASE_MS * attempt as u64));
+            std::thread::sleep(Duration::from_millis(
+                REOPEN_BACKOFF_BASE_MS * attempt as u64,
+            ));
         }
         let core = IronCore::with_storage(path.to_string());
         if core.get_identity_info().initialized {
@@ -22,7 +24,12 @@ fn reopen_storage_with_retry(path: &str) -> IronCore {
 #[test]
 fn test_identity_lookup_stable_across_invocations() {
     let dir = tempdir().expect("Failed to create tempdir");
-    let storage_path = dir.path().join("storage").to_str().expect("Valid path").to_string();
+    let storage_path = dir
+        .path()
+        .join("storage")
+        .to_str()
+        .expect("Valid path")
+        .to_string();
 
     // 1. First invocation: initialize identity and set a nickname
     let id1;
@@ -31,7 +38,10 @@ fn test_identity_lookup_stable_across_invocations() {
     {
         let core1 = IronCore::with_storage(storage_path.clone());
         let info_before = core1.get_identity_info();
-        assert!(!info_before.initialized, "Fresh storage should not be initialized");
+        assert!(
+            !info_before.initialized,
+            "Fresh storage should not be initialized"
+        );
         assert!(info_before.identity_id.is_none());
 
         core1.grant_consent();
@@ -54,11 +64,30 @@ fn test_identity_lookup_stable_across_invocations() {
     {
         let core2 = reopen_storage_with_retry(&storage_path);
         let info2 = core2.get_identity_info();
-        assert!(info2.initialized, "Persisted identity must be automatically hydrated on open");
-        assert_eq!(info2.identity_id.as_deref(), Some(id1.as_str()), "Identity ID must match invocation 1");
-        assert_eq!(info2.public_key_hex.as_deref(), Some(pub1.as_str()), "Public key must match invocation 1");
-        assert_eq!(info2.libp2p_peer_id.as_deref(), Some(peer1.as_str()), "Peer ID must match invocation 1");
-        assert_eq!(info2.nickname.as_deref(), Some("TestNode"), "Nickname must match invocation 1");
+        assert!(
+            info2.initialized,
+            "Persisted identity must be automatically hydrated on open"
+        );
+        assert_eq!(
+            info2.identity_id.as_deref(),
+            Some(id1.as_str()),
+            "Identity ID must match invocation 1"
+        );
+        assert_eq!(
+            info2.public_key_hex.as_deref(),
+            Some(pub1.as_str()),
+            "Public key must match invocation 1"
+        );
+        assert_eq!(
+            info2.libp2p_peer_id.as_deref(),
+            Some(peer1.as_str()),
+            "Peer ID must match invocation 1"
+        );
+        assert_eq!(
+            info2.nickname.as_deref(),
+            Some("TestNode"),
+            "Nickname must match invocation 1"
+        );
     }
 
     // 3. Third invocation: verify stability once more after calling initialize_identity (as cmd_identity does)
@@ -71,17 +100,38 @@ fn test_identity_lookup_stable_across_invocations() {
 
         let info3 = core3.get_identity_info();
         assert!(info3.initialized);
-        assert_eq!(info3.identity_id.as_deref(), Some(id1.as_str()), "Identity ID must remain identical on invocation 3");
-        assert_eq!(info3.public_key_hex.as_deref(), Some(pub1.as_str()), "Public key must remain identical on invocation 3");
-        assert_eq!(info3.libp2p_peer_id.as_deref(), Some(peer1.as_str()), "Peer ID must remain identical on invocation 3");
-        assert_eq!(info3.nickname.as_deref(), Some("TestNode"), "Nickname must remain identical on invocation 3");
+        assert_eq!(
+            info3.identity_id.as_deref(),
+            Some(id1.as_str()),
+            "Identity ID must remain identical on invocation 3"
+        );
+        assert_eq!(
+            info3.public_key_hex.as_deref(),
+            Some(pub1.as_str()),
+            "Public key must remain identical on invocation 3"
+        );
+        assert_eq!(
+            info3.libp2p_peer_id.as_deref(),
+            Some(peer1.as_str()),
+            "Peer ID must remain identical on invocation 3"
+        );
+        assert_eq!(
+            info3.nickname.as_deref(),
+            Some("TestNode"),
+            "Nickname must remain identical on invocation 3"
+        );
     }
 }
 
 #[test]
 fn test_uninitialized_storage_does_not_claim_initialized() {
     let dir = tempdir().expect("Failed to create tempdir");
-    let storage_path = dir.path().join("storage").to_str().expect("Valid path").to_string();
+    let storage_path = dir
+        .path()
+        .join("storage")
+        .to_str()
+        .expect("Valid path")
+        .to_string();
 
     let core = IronCore::with_storage(storage_path);
     let info = core.get_identity_info();

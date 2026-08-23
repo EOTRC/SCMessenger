@@ -561,8 +561,8 @@ pub async fn get_identity_via_api() -> Result<serde_json::Value> {
 
     let resp = client.request(req).await?;
     let body_bytes = resp.into_body().collect().await?.to_bytes();
-    let value: serde_json::Value = serde_json::from_slice(&body_bytes)
-        .context("Failed to parse identity response JSON")?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&body_bytes).context("Failed to parse identity response JSON")?;
     Ok(value)
 }
 
