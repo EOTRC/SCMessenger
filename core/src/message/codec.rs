@@ -320,6 +320,7 @@ pub fn decode_wire_signed_envelope(buf: &[u8]) -> Result<WireSignedEnvelope> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::drift::EnvelopeType;
     use crate::message::types::Message;
 
     #[test]
