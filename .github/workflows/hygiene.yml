@@ -66,6 +66,23 @@ jobs:
         run: |
           echo "Checking for trailing whitespace..."
           
+          # A pure line-ending renormalisation is exempt. `git add --renormalize .`
+          # turns CRLF into LF across already-committed files, so a line that was
+          # "<text><space><CR><LF>" becomes "<text><space><LF>" and git reports it
+          # as newly-added trailing whitespace -- while not one byte of content
+          # changed. 291 of those lines in this repo are legitimate Markdown hard
+          # line breaks (two trailing spaces) which MUST NOT be stripped.
+          #
+          # Narrow on purpose: --ignore-cr-at-eol reports any difference other than
+          # the line terminator itself, so a commit that genuinely DOES add trailing
+          # whitespace still fails here. Only a commit changing nothing but CR bytes
+          # is skipped, and it must be non-empty to qualify.
+          if git diff --quiet --ignore-cr-at-eol HEAD^ HEAD -- . && \
+             ! git diff --quiet HEAD^ HEAD -- . ; then
+            echo "[OK] pure line-ending renormalisation; trailing-whitespace check not applicable"
+            exit 0
+          fi
+
           # Generated UniFFI sources preserve upstream generator formatting.
           # Check authored files while excluding deterministic generated output.
           if git diff --check HEAD^ HEAD -- . \
