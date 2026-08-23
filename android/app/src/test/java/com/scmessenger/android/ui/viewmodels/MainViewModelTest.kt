@@ -198,4 +198,22 @@ class MainViewModelTest {
             mockMeshRepository.connectToPeer(any(), any())
         }
     }
+
+    @Test
+    fun `isStorageDegraded flow reflects meshRepository`() = runTest {
+        val degradedFlow = MutableStateFlow(false)
+        every { mockMeshRepository.isStorageDegraded } returns degradedFlow
+
+        viewModel = MainViewModel(
+            meshRepository = mockMeshRepository,
+            preferencesRepository = mockPreferencesRepository,
+            identityCreationCoordinator = mockIdentityCoordinator,
+            context = mockContext
+        )
+
+        assertEquals(false, viewModel.isStorageDegraded.value)
+
+        degradedFlow.value = true
+        assertEquals(true, viewModel.isStorageDegraded.value)
+    }
 }

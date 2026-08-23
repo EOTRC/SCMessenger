@@ -461,4 +461,15 @@ class MeshRepositoryTest {
         }
         verify(exactly = 0) { mockLegacyPrefs.edit() }
     }
+
+    @Test
+    fun `isStorageDegraded initial state is false`() {
+        val mockContext = mockk<android.content.Context>(relaxed = true)
+        val mockPrefs = mockk<SharedPreferences>(relaxed = true)
+        every { mockContext.getSharedPreferences(any(), any()) } returns mockPrefs
+        every { mockContext.filesDir } returns java.io.File(System.getProperty("java.io.tmpdir") ?: "tmp")
+
+        val repo = MeshRepository(mockContext)
+        assertFalse(repo.isStorageDegraded.value)
+    }
 }

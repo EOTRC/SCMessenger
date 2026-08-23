@@ -299,6 +299,20 @@ impl MeshService {
                 tracing::info!("MeshService::start: Creating IronCore::with_storage_and_logs");
                 let core = crate::IronCore::with_storage_and_logs(path.clone(), log_dir.clone());
                 tracing::info!("MeshService::start: IronCore::with_storage_and_logs completed");
+                if core.is_storage_degraded() {
+                    let err = core.storage_error();
+                    tracing::error!(
+                        "MeshService::start: storage degraded at {:?}: {:?}",
+                        path,
+                        err
+                    );
+                    eprintln!(
+                        "[IronCore] [ERROR] MeshService::start: storage degraded at {:?}: {:?}",
+                        path, err
+                    );
+                    *self.state.lock() = ServiceState::Stopped;
+                    return Err(crate::IronCoreError::StorageError);
+                }
                 core
             } else {
                 tracing::info!("MeshService::start: Creating IronCore::new (no storage path)");
@@ -311,6 +325,20 @@ impl MeshService {
             );
             let core = crate::IronCore::with_storage(path.clone());
             tracing::info!("MeshService::start: IronCore::with_storage completed");
+            if core.is_storage_degraded() {
+                let err = core.storage_error();
+                tracing::error!(
+                    "MeshService::start: storage degraded at {:?}: {:?}",
+                    path,
+                    err
+                );
+                eprintln!(
+                    "[IronCore] [ERROR] MeshService::start: storage degraded at {:?}: {:?}",
+                    path, err
+                );
+                *self.state.lock() = ServiceState::Stopped;
+                return Err(crate::IronCoreError::StorageError);
+            }
             core
         } else {
             tracing::info!("MeshService::start: Creating IronCore::new (no storage)");
@@ -321,7 +349,10 @@ impl MeshService {
         let core = crate::IronCore::new();
 
         // Start the core
-        core.start()?;
+        if let Err(e) = core.start() {
+            *self.state.lock() = ServiceState::Stopped;
+            return Err(e);
+        }
         let core = Arc::new(core);
 
         // Register this service as the core delegate for all protocol events

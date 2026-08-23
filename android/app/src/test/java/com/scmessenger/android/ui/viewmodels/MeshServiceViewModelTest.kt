@@ -140,4 +140,26 @@ class MeshServiceViewModelTest {
         // Then
         assertEquals("No stats available", statsText)
     }
+
+    @Test
+    fun `isStorageDegraded reflects repository state`() = runTest {
+        // Given
+        val storageDegradedFlow = MutableStateFlow(false)
+        every { mockMeshRepository.isStorageDegraded } returns storageDegradedFlow
+        viewModel = MeshServiceViewModel(mockContext, mockMeshRepository, mockPreferencesRepository)
+
+        backgroundScope.launch(UnconfinedTestDispatcher(testDispatcher.scheduler)) {
+            viewModel.isStorageDegraded.collect()
+        }
+
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertFalse(viewModel.isStorageDegraded.value)
+
+        // When
+        storageDegradedFlow.value = true
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        // Then
+        assertTrue(viewModel.isStorageDegraded.value)
+    }
 }
