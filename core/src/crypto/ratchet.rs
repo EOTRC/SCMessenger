@@ -440,7 +440,7 @@ impl RatchetSession {
 
     /// Initialize a new ratchet session as the initiator (Alice) using hybrid encryption.
     pub fn init_as_sender_hybrid(
-        _our_signing_key: &ed25519_dalek::SigningKey,
+        our_signing_key: &ed25519_dalek::SigningKey,
         their_bundle: &crate::identity::PublicKeyBundle,
         transcript_hash: [u8; 32],
     ) -> Result<Self> {
@@ -457,10 +457,20 @@ impl RatchetSession {
             &their_bundle.mlkem_encaps_key,
         )?;
 
-        // Derive root key
+        // Static-static DH for sender authentication
+        let sender_x25519 = crate::crypto::encrypt::ed25519_to_x25519_secret(our_signing_key);
+        let recipient_x25519 = X25519PublicKey::from(their_bundle.x25519_public);
+        let dh_static = sender_x25519.diffie_hellman(&recipient_x25519);
+
+        // Derive root key with sender authentication
         let root_key_0 = blake3::derive_key(
-            "iron-core session-root v2 2026-07",
-            &[&ss_hybrid.as_bytes()[..], &transcript_hash[..]].concat(),
+            "iron-core session-root v3 2026-08",
+            &[
+                ss_hybrid.as_bytes(),
+                dh_static.as_bytes(),
+                &transcript_hash[..],
+            ]
+            .concat(),
         );
 
         // X3DH step 2: our_dh_secret × their_identity_public → sending chain
@@ -509,7 +519,7 @@ impl RatchetSession {
         _our_signing_key: &ed25519_dalek::SigningKey,
         our_x25519_secret: &x25519_dalek::StaticSecret,
         our_mlkem_keypair: &crate::crypto::pq::MlKem768KeyPair,
-        _sender_bundle: &crate::identity::PublicKeyBundle,
+        sender_bundle: &crate::identity::PublicKeyBundle,
         hct: &crate::crypto::pq::hybrid::HybridCiphertext,
         transcript_hash: [u8; 32],
     ) -> Result<Self> {
@@ -527,10 +537,20 @@ impl RatchetSession {
             hct,
         )?;
 
-        // Derive root key
+        // Static-static DH for sender authentication
+        let sender_x25519_public =
+            crate::crypto::encrypt::ed25519_public_to_x25519(&sender_bundle.ed25519_public)?;
+        let dh_static = our_x25519_secret.diffie_hellman(&sender_x25519_public);
+
+        // Derive root key with sender authentication
         let root_key_0 = blake3::derive_key(
-            "iron-core session-root v2 2026-07",
-            &[&ss_hybrid.as_bytes()[..], &transcript_hash[..]].concat(),
+            "iron-core session-root v3 2026-08",
+            &[
+                ss_hybrid.as_bytes(),
+                dh_static.as_bytes(),
+                &transcript_hash[..],
+            ]
+            .concat(),
         );
 
         // Store our identity secret for the first DH ratchet step

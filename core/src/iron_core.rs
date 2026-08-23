@@ -3268,11 +3268,50 @@ impl IronCore {
             // identity and ratchet_sessions are disjoint fields of self, so
             // both guards can be held simultaneously while preserving the
             // identity-first lock order.
+            // Ingress verification: Drift and V2 envelopes MUST verify their signature.
             let wire =
-                crate::message::codec::decode_wire_envelope(&envelope_data).map_err(|e| {
-                    tracing::warn!("Failed to decode wire envelope: {:?}", e);
-                    IronCoreError::CryptoError
-                })?;
+                if !envelope_data.is_empty() && envelope_data[0] == crate::drift::DRIFT_VERSION {
+                    let drift_env = crate::drift::DriftEnvelope::from_bytes(&envelope_data)
+                        .map_err(|e| {
+                            tracing::warn!("Failed to decode drift envelope: {:?}", e);
+                            IronCoreError::CryptoError
+                        })?;
+                    drift_env.verify().map_err(|e| {
+                        tracing::warn!("Drift envelope signature verification failed: {:?}", e);
+                        IronCoreError::CryptoError
+                    })?;
+                    drift_env.to_wire_envelope()
+                } else if let Ok(signed_wire) =
+                    crate::message::codec::decode_wire_signed_envelope(&envelope_data)
+                {
+                    match signed_wire {
+                        crate::message::WireSignedEnvelope::V1(s1) => {
+                            crate::crypto::verify_envelope(&s1).map_err(|e| {
+                                tracing::warn!("V1 signed envelope verification failed: {:?}", e);
+                                IronCoreError::CryptoError
+                            })?;
+                            crate::message::WireEnvelope::V1(s1.envelope)
+                        }
+                        crate::message::WireSignedEnvelope::V2(s2) => {
+                            crate::crypto::verify_envelope_v2(&s2).map_err(|e| {
+                                tracing::warn!("V2 signed envelope verification failed: {:?}", e);
+                                IronCoreError::CryptoError
+                            })?;
+                            crate::message::WireEnvelope::V2(s2.envelope)
+                        }
+                    }
+                } else {
+                    let decoded = crate::message::codec::decode_wire_envelope(&envelope_data)
+                        .map_err(|e| {
+                            tracing::warn!("Failed to decode wire envelope: {:?}", e);
+                            IronCoreError::CryptoError
+                        })?;
+                    if matches!(decoded, crate::message::WireEnvelope::V2(_)) {
+                        tracing::warn!("Unsigned V2 wire envelope rejected at ingress");
+                        return Err(IronCoreError::CryptoError);
+                    }
+                    decoded
+                };
             let identity = self.identity.read();
             let keys = identity.keys().ok_or(IronCoreError::NotInitialized)?;
             local_identity_id = identity.identity_id();

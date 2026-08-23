@@ -661,9 +661,8 @@ impl DriftEnvelope {
         }
     }
 
-    /// Sign the envelope contents with the sender's signing key
-    fn sign(&self, signing_key: &ed25519_dalek::SigningKey) -> [u8; 64] {
-        // Create a hash of all envelope fields except the signature itself
+    /// Compute the blake3 hash of all envelope fields except the signature itself.
+    pub fn signing_hash(&self) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
 
         // Header and routing fields
@@ -714,11 +713,31 @@ impl DriftEnvelope {
             hash_blob(&mut hasher, &self.transcript_hash);
         }
 
-        let hash = hasher.finalize();
+        *hasher.finalize().as_bytes()
+    }
 
-        // Sign the hash
-        let signature = signing_key.sign(hash.as_bytes());
+    /// Sign the envelope contents with the sender's signing key.
+    pub fn sign(&self, signing_key: &ed25519_dalek::SigningKey) -> [u8; 64] {
+        let hash = self.signing_hash();
+        let signature = signing_key.sign(&hash);
         signature.to_bytes()
+    }
+
+    /// Verify the Ed25519 signature over canonical envelope bytes against sender_public_key.
+    pub fn verify(&self) -> Result<(), DriftError> {
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+        let verifying_key = VerifyingKey::from_bytes(&self.sender_public_key)
+            .map_err(|e| DriftError::IoError(format!("Invalid sender public key: {}", e)))?;
+
+        let signature = Signature::from_bytes(&self.signature);
+
+        let hash = self.signing_hash();
+        verifying_key
+            .verify(&hash, &signature)
+            .map_err(|e| DriftError::IoError(format!("Signature verification failed: {}", e)))?;
+
+        Ok(())
     }
 }
 
@@ -1008,5 +1027,38 @@ mod tests {
         assert!(bytes[1] & COMPRESSION_FLAG != 0, "Compression flag set");
         let restored = DriftEnvelope::from_bytes(&bytes).unwrap();
         assert!(restored.compressed);
+    }
+
+    #[test]
+    fn test_drift_envelope_sign_and_verify() {
+        use rand::RngCore;
+
+        let mut secret_bytes = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut secret_bytes);
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&secret_bytes);
+        let verifying_key = signing_key.verifying_key();
+
+        let mut env = make_test_envelope();
+        env.sender_public_key = verifying_key.to_bytes();
+        let sig = env.sign(&signing_key);
+        env.signature = sig;
+
+        // Valid signature verifies successfully
+        assert!(env.verify().is_ok());
+
+        // Tampering with payload fails verification
+        let mut tampered_payload = env.clone();
+        tampered_payload.ciphertext.push(0xFF);
+        assert!(tampered_payload.verify().is_err());
+
+        // Tampering with sender public key fails verification
+        let mut tampered_sender = env.clone();
+        tampered_sender.sender_public_key[0] ^= 0xFF;
+        assert!(tampered_sender.verify().is_err());
+
+        // Zero / dummy signature fails verification
+        let mut zero_sig = env.clone();
+        zero_sig.signature = [0u8; 64];
+        assert!(zero_sig.verify().is_err());
     }
 }
