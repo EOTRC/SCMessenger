@@ -89,4 +89,3 @@ Dockerfile* text eol=lf
 
 # Specific binary / UTF-16 files
 docs/NARC_MASTER_TRACKER.md binary
-

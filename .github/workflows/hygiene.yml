@@ -74,20 +74,27 @@ jobs:
           # line breaks (two trailing spaces) which MUST NOT be stripped.
           #
           # Narrow on purpose: --ignore-cr-at-eol reports any difference other than
-          # the line terminator itself, so a commit that genuinely DOES add trailing
-          # whitespace still fails here. Only a commit changing nothing but CR bytes
-          # is skipped, and it must be non-empty to qualify.
-          if git diff --quiet --ignore-cr-at-eol HEAD^ HEAD -- . && \
-             ! git diff --quiet HEAD^ HEAD -- . ; then
-            echo "[OK] pure line-ending renormalisation; trailing-whitespace check not applicable"
+          # the line terminator itself, so a file that genuinely DOES gain trailing
+          # whitespace still appears in CHANGED below and is still checked. Only
+          # files whose entire change is CR bytes drop out.
+          #
+          # The exemption is PER FILE, not all-or-nothing. On a pull request the
+          # runner checks out a MERGE commit, so "HEAD^ HEAD" is the whole PR diff
+          # rather than one commit, and an all-or-nothing test never fires once the
+          # PR also contains any real change. Selecting files works for any range.
+          #
+          # Generated UniFFI sources preserve upstream generator formatting.
+          # Check authored files while excluding deterministic generated output.
+          mapfile -t CHANGED < <(git diff --name-only --ignore-cr-at-eol HEAD^ HEAD -- . \
+            ':(exclude)iOS/SCMessenger/SCMessenger/Generated/**' \
+            ':(exclude)iOS/SCMessengerCore.xcframework/**/Headers/**')
+
+          if [ "${#CHANGED[@]}" -eq 0 ]; then
+            echo "[OK] only line-ending changes in range; check not applicable"
             exit 0
           fi
 
-          # Generated UniFFI sources preserve upstream generator formatting.
-          # Check authored files while excluding deterministic generated output.
-          if git diff --check HEAD^ HEAD -- . \
-            ':(exclude)iOS/SCMessenger/SCMessenger/Generated/**' \
-            ':(exclude)iOS/SCMessengerCore.xcframework/**/Headers/**' \
+          if git diff --check HEAD^ HEAD -- "${CHANGED[@]}" \
             2>&1 | grep -v "warning: CRLF will be replaced"; then
             echo "[ERROR] ERROR: Trailing whitespace found"
             echo "Run: git diff --check to see details"
