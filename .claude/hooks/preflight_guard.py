@@ -974,7 +974,33 @@ def check_staged_whitespace(cwd=None):
     """Run `git diff --cached --check` to detect whitespace errors in staged content.
 
     Returns all offending lines reported by git (empty if clean).
+
+    Exempts a pure line-ending renormalisation. `git add --renormalize .`
+    converts CRLF to LF across already-committed files; any line that was
+    `<text><space><CR><LF>` becomes `<text><space><LF>`, which git then reports
+    as newly-added trailing whitespace even though not one byte of content
+    changed. This repo has 546 such files and 1,387 such lines, 291 of them
+    legitimate Markdown hard line breaks that MUST NOT be stripped.
+
+    The exemption is deliberately narrow: `--ignore-cr-at-eol` reports any
+    difference other than the line terminator itself, so a commit that actually
+    ADDS trailing whitespace still fails. Only a commit that changes nothing but
+    CR bytes is skipped.
     """
+    try:
+        cr_only = subprocess.run(
+            ["git", "diff", "--cached", "--ignore-cr-at-eol", "--numstat"],
+            capture_output=True, text=True, timeout=15, cwd=cwd,
+        )
+        if cr_only.returncode == 0 and not (cr_only.stdout or "").strip():
+            staged = subprocess.run(
+                ["git", "diff", "--cached", "--numstat"],
+                capture_output=True, text=True, timeout=15, cwd=cwd,
+            )
+            if (staged.stdout or "").strip():
+                return []
+    except Exception:
+        pass
     try:
         cmd = ["git", "diff", "--cached", "--check"]
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=15, cwd=cwd)

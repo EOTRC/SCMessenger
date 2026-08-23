@@ -66,11 +66,35 @@ jobs:
         run: |
           echo "Checking for trailing whitespace..."
           
+          # A pure line-ending renormalisation is exempt. `git add --renormalize .`
+          # turns CRLF into LF across already-committed files, so a line that was
+          # "<text><space><CR><LF>" becomes "<text><space><LF>" and git reports it
+          # as newly-added trailing whitespace -- while not one byte of content
+          # changed. 291 of those lines in this repo are legitimate Markdown hard
+          # line breaks (two trailing spaces) which MUST NOT be stripped.
+          #
+          # Narrow on purpose: --ignore-cr-at-eol reports any difference other than
+          # the line terminator itself, so a file that genuinely DOES gain trailing
+          # whitespace still appears in CHANGED below and is still checked. Only
+          # files whose entire change is CR bytes drop out.
+          #
+          # The exemption is PER FILE, not all-or-nothing. On a pull request the
+          # runner checks out a MERGE commit, so "HEAD^ HEAD" is the whole PR diff
+          # rather than one commit, and an all-or-nothing test never fires once the
+          # PR also contains any real change. Selecting files works for any range.
+          #
           # Generated UniFFI sources preserve upstream generator formatting.
           # Check authored files while excluding deterministic generated output.
-          if git diff --check HEAD^ HEAD -- . \
+          mapfile -t CHANGED < <(git diff --name-only --ignore-cr-at-eol HEAD^ HEAD -- . \
             ':(exclude)iOS/SCMessenger/SCMessenger/Generated/**' \
-            ':(exclude)iOS/SCMessengerCore.xcframework/**/Headers/**' \
+            ':(exclude)iOS/SCMessengerCore.xcframework/**/Headers/**')
+
+          if [ "${#CHANGED[@]}" -eq 0 ]; then
+            echo "[OK] only line-ending changes in range; check not applicable"
+            exit 0
+          fi
+
+          if git diff --check HEAD^ HEAD -- "${CHANGED[@]}" \
             2>&1 | grep -v "warning: CRLF will be replaced"; then
             echo "[ERROR] ERROR: Trailing whitespace found"
             echo "Run: git diff --check to see details"

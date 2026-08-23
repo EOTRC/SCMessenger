@@ -50,7 +50,41 @@ def staged_files():
     return [line.strip() for line in out.stdout.splitlines() if line.strip()]
 
 
-def check(path: str) -> list:
+def whitespace_only_staged() -> set:
+    """Staged paths whose change is whitespace-only.
+
+    `check()` scans the WHOLE file, not the added lines, which is the right
+    ratchet for a real edit: touch a file that still carries legacy emoji and
+    you strip them as part of your change. But it makes a pure line-ending or
+    trailing-whitespace pass impossible on any file that already contains one
+    -- the repo has 21 such files, and a `git add --renormalize .` sweep stages
+    546 of them at once. The sweep changes no content, so scanning its content
+    finds only pre-existing violations it did not introduce.
+
+    `git diff --cached -w --numstat` omits any file whose staged change is
+    purely whitespace. Anything it does NOT list is therefore safe to skip the
+    content scan for. A newly added file always appears (all its lines are
+    additions), so new content is never skipped.
+
+    Fails CLOSED: if git cannot be consulted, return an empty set so every file
+    is scanned as before.
+    """
+    try:
+        listed = subprocess.run(
+            ["git", "diff", "--cached", "-w", "--numstat"],
+            capture_output=True, text=True, check=True,
+        )
+    except (subprocess.CalledProcessError, OSError):
+        return set()
+    with_real_changes = set()
+    for line in listed.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 3 and parts[2].strip():
+            with_real_changes.add(parts[2].strip())
+    return set(staged_files()) - with_real_changes
+
+
+def check(path: str, skip_content: bool = False) -> list:
     fails = []
     norm = path.replace("\\", "/")
     if any(norm.startswith(p) for p in EXEMPT_PREFIXES):
@@ -66,6 +100,11 @@ def check(path: str) -> list:
         fails.append(f"[FAIL] {path}: lowercase ios/ -- the directory is iOS/ (CI-enforced)")
 
     if norm.endswith(BINARY_SUFFIXES):
+        return fails
+    # Path checks above always run. The content scan below is skipped only when
+    # the staged change is provably whitespace-only -- it cannot have introduced
+    # an emoji or a key that was not already committed.
+    if skip_content:
         return fails
     try:
         with open(path, encoding="utf-8") as fh:
@@ -87,12 +126,15 @@ def check(path: str) -> list:
 
 def main() -> int:
     args = sys.argv[1:]
-    files = staged_files() if args == ["--staged"] else args
+    staged_mode = args == ["--staged"]
+    files = staged_files() if staged_mode else args
     if not files:
         return 0
+    # Only meaningful against the index; an explicit file list is scanned fully.
+    ws_only = whitespace_only_staged() if staged_mode else set()
     all_fails = []
     for f in files:
-        all_fails.extend(check(f))
+        all_fails.extend(check(f, skip_content=f in ws_only))
     if all_fails:
         print("rules_check: FAILED -- commit blocked (see AGENTS.md / CLAUDE.md)", file=sys.stderr)
         for line in all_fails:
