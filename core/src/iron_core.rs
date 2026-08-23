@@ -3301,16 +3301,35 @@ impl IronCore {
                         }
                     }
                 } else {
+                    // Reaching this branch means envelope_data was neither a
+                    // Drift-signed envelope (checked above) nor decodable as
+                    // WireSignedEnvelope (V1 or V2, checked above). The only
+                    // thing `decode_wire_envelope` can produce here is an
+                    // UNSIGNED WireEnvelope -- V1 or V2 -- reconstructed via
+                    // the raw-bincode fallback. No legitimate sender emits
+                    // this on the wire: `prepare_message_internal` always
+                    // wraps outgoing envelopes (both V1 legacy-ECDH and V2)
+                    // in a signed DriftEnvelope before serializing. Accepting
+                    // an unsigned envelope here -- of either version -- lets
+                    // an attacker forge `sender_public_key` (used only as AAD,
+                    // never proof of key possession) and have the message
+                    // filed under an impersonated identity. Reject regardless
+                    // of decoded version; do not attempt decryption or
+                    // attribution on unauthenticated wire data.
                     let decoded = crate::message::codec::decode_wire_envelope(&envelope_data)
                         .map_err(|e| {
                             tracing::warn!("Failed to decode wire envelope: {:?}", e);
                             IronCoreError::CryptoError
                         })?;
-                    if matches!(decoded, crate::message::WireEnvelope::V2(_)) {
-                        tracing::warn!("Unsigned V2 wire envelope rejected at ingress");
-                        return Err(IronCoreError::CryptoError);
-                    }
-                    decoded
+                    let version = match decoded {
+                        crate::message::WireEnvelope::V1(_) => "V1",
+                        crate::message::WireEnvelope::V2(_) => "V2",
+                    };
+                    tracing::warn!(
+                        "Unsigned {} wire envelope rejected at ingress (no signature to verify)",
+                        version
+                    );
+                    return Err(IronCoreError::CryptoError);
                 };
             let identity = self.identity.read();
             let keys = identity.keys().ok_or(IronCoreError::NotInitialized)?;
