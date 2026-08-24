@@ -45,7 +45,13 @@ fn test_pq_session_full_send_receive() {
     // Should be V2
     match &envelope1 {
         WireEnvelope::V2(v2) => {
-            assert_eq!(v2.suite, 0x02);
+            // Two current nodes negotiate suite 0x03 (sign_bundle advertises
+            // [0x01, 0x03]); assert hybrid, not one specific suite ID.
+            assert!(
+                matches!(v2.suite, 0x02 | 0x03),
+                "expected PQ-hybrid suite, got 0x{:02x}",
+                v2.suite
+            );
             assert!(v2.pq_kem_ciphertext.is_some());
             assert!(v2.transcript_hash.is_some());
         }
@@ -87,7 +93,11 @@ fn test_pq_session_full_send_receive() {
     // Should be V2, but without PQ init fields because peer is confirmed
     match &envelope2 {
         WireEnvelope::V2(v2) => {
-            assert_eq!(v2.suite, 0x02);
+            assert!(
+                matches!(v2.suite, 0x02 | 0x03),
+                "expected PQ-hybrid suite, got 0x{:02x}",
+                v2.suite
+            );
             assert!(v2.pq_kem_ciphertext.is_none());
             assert!(v2.transcript_hash.is_none());
         }
@@ -346,7 +356,7 @@ fn test_pq_ratchet_cadence_refreshes_shared_secret() {
     let bob_id = bob.identity_id();
     let alice_id = alice.identity_id();
 
-    // Step 1: Establish confirmed hybrid session (suite 0x02)
+    // Step 1: Establish confirmed hybrid session (PQ-hybrid suite, 0x03 on current nodes)
     // Alice sends first message to Bob
     let env1 = encrypt_with_ratchet_fallback(
         &alice.signing_key,
