@@ -164,6 +164,9 @@ pub struct IronCore {
     #[allow(dead_code)]
     log_directory: Option<String>,
 
+    /// When persistent storage failed to open, contains the error description.
+    pub(crate) storage_degraded: Arc<RwLock<Option<String>>>,
+
     /// Ledger manager for connection tracking (used by mobile bridge).
     #[cfg(not(target_arch = "wasm32"))]
     pub ledger_manager: crate::store::LedgerManager,
@@ -304,6 +307,19 @@ fn hydrated_ledger_manager(path: String) -> crate::store::LedgerManager {
     manager
 }
 
+/// Classify a storage error string into a typed IronCoreError.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn classify_storage_error(err: &str) -> IronCoreError {
+    let lower = err.to_lowercase();
+    if lower.contains("corruption") {
+        IronCoreError::CorruptionDetected
+    } else if lower.contains("io error") {
+        IronCoreError::IoError
+    } else {
+        IronCoreError::StorageError
+    }
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), uniffi::export)]
 impl IronCore {
     /// Create an in-memory IronCore with no persistent storage.
@@ -359,6 +375,7 @@ impl IronCore {
             auto_block_engine: Arc::new(RwLock::new(auto_block)),
             storage_path: None,
             log_directory: None,
+            storage_degraded: Arc::new(RwLock::new(None)),
             // Review F11: this used to be `LedgerManager::new(temp_dir())`,
             // which wrote the node's entire peer topology into a
             // world-readable directory on every desktop platform. `new()` is
@@ -393,10 +410,26 @@ impl IronCore {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(not(target_arch = "wasm32"), uniffi::constructor)]
     pub fn with_storage(path: String) -> Self {
-        let backend: Arc<dyn StorageBackend> = match SledStorage::new(&path) {
-            Ok(s) => Arc::new(s),
-            Err(_) => Arc::new(MemoryStorage::new()),
-        };
+        let (backend, storage_err): (Arc<dyn StorageBackend>, Option<String>) =
+            match SledStorage::new(&path) {
+                Ok(s) => (Arc::new(s), None),
+                Err(e) => {
+                    tracing::error!(
+                        "[ERROR] Failed to open sled storage at '{}': {}. Storage is DEGRADED.",
+                        path,
+                        e
+                    );
+                    eprintln!(
+                        "[IronCore] [ERROR] Failed to open sled storage at '{}': {}. Storage is DEGRADED.",
+                        path,
+                        e
+                    );
+                    (
+                        Arc::new(crate::store::backend::DegradedStorage::new(&path, &e)),
+                        Some(e),
+                    )
+                }
+            };
         let p = path.clone();
         let contact_manager = CoreContactManager::new(backend.clone());
         let history_manager = Arc::new(CoreHistoryManager::new(backend.clone()));
@@ -424,15 +457,26 @@ impl IronCore {
         let transport_memory =
             crate::store::transport_memory::TransportMemoryStore::new(backend.clone());
 
-        Self {
-            identity: Arc::new(RwLock::new(
-                IdentityManager::with_backend(backend.clone()).unwrap_or_else(|_| {
-                    tracing::error!(
-                        "Failed to hydrate identity from persistent store, falling back to memory"
+        let identity = match IdentityManager::with_backend(backend.clone()) {
+            Ok(mgr) => mgr,
+            Err(e) => {
+                if storage_err.is_none() {
+                    tracing::warn!(
+                        "Failed to hydrate identity from persistent store (not yet initialized or read error): {:?}",
+                        e
                     );
-                    IdentityManager::new()
-                }),
-            )),
+                } else {
+                    tracing::error!(
+                        "Persistent storage degraded; identity will not be hydrated from RAM: {:?}",
+                        e
+                    );
+                }
+                IdentityManager::new()
+            }
+        };
+
+        Self {
+            identity: Arc::new(RwLock::new(identity)),
             outbox: Arc::new(RwLock::new(outbox)),
             inbox: Arc::new(RwLock::new(inbox)),
             contact_manager: Arc::new(RwLock::new(contact_manager)),
@@ -453,6 +497,7 @@ impl IronCore {
             auto_block_engine: Arc::new(RwLock::new(auto_block)),
             storage_path: Some(path),
             log_directory: None,
+            storage_degraded: Arc::new(RwLock::new(storage_err)),
             #[cfg(not(target_arch = "wasm32"))]
             ledger_manager: hydrated_ledger_manager(p),
             running: Arc::new(RwLock::new(false)),
@@ -485,41 +530,31 @@ impl IronCore {
     pub fn with_storage_and_logs(path: String, log_dir: String) -> Self {
         // Install the tracing subscriber FIRST, before any other init, so
         // startup diagnostics are captured too.
-        //
-        // This call was missing entirely. `log_dir` was accepted, stored as
-        // `self.log_directory` (:547) and never read; `init_file_tracing` had
-        // ZERO callers anywhere in the crate. So the whole structured-tracing
-        // facility was dead code: Android computes a logs directory
-        // (MeshRepository.kt:1341) and passes it through
-        // MeshService::withStorageAndLogs -> IronCore::with_storage_and_logs,
-        // and core then discarded it.
-        //
-        // The consequence was that the Rust core was COMPLETELY SILENT on
-        // device. `eprintln!` goes to stderr, which Android discards unless
-        // `log.redirect-stdio` is set (verified unset on the test device:
-        // `grep -cF "[IronCore]" logcat` returned 0 across a full buffer while
-        // 264 inbound BLE messages were being processed), and `tracing::` had
-        // no subscriber. That blindness is why the BLE inbound wedge took so
-        // long to localise -- we could not tell whether on_data_received was
-        // even entered.
-        //
-        // init_file_tracing uses try_init() internally, so a warm boot that
-        // recreates MeshService without killing the process is safe. A failure
-        // here must never take the core down: logging is diagnostics, not a
-        // dependency of messaging.
         #[cfg(not(target_arch = "wasm32"))]
         if let Err(e) = crate::store::tracing_init::init_file_tracing(&log_dir) {
-            // Cannot use tracing:: here -- if this failed there may be no
-            // subscriber. eprintln is invisible on Android but correct
-            // everywhere else, and this path means diagnostics are degraded
-            // rather than the process being unhealthy.
             eprintln!("[IronCore] [WARN] file tracing init failed ({}); core diagnostics will not be written to {}", e, log_dir);
         }
 
-        let backend: Arc<dyn StorageBackend> = match SledStorage::new(&path) {
-            Ok(s) => Arc::new(s),
-            Err(_) => Arc::new(MemoryStorage::new()),
-        };
+        let (backend, storage_err): (Arc<dyn StorageBackend>, Option<String>) =
+            match SledStorage::new(&path) {
+                Ok(s) => (Arc::new(s), None),
+                Err(e) => {
+                    tracing::error!(
+                        "[ERROR] Failed to open sled storage at '{}': {}. Storage is DEGRADED.",
+                        path,
+                        e
+                    );
+                    eprintln!(
+                        "[IronCore] [ERROR] Failed to open sled storage at '{}': {}. Storage is DEGRADED.",
+                        path,
+                        e
+                    );
+                    (
+                        Arc::new(crate::store::backend::DegradedStorage::new(&path, &e)),
+                        Some(e),
+                    )
+                }
+            };
         let p = path.clone();
         let contact_manager = CoreContactManager::new(backend.clone());
         let history_manager = Arc::new(CoreHistoryManager::new(backend.clone()));
@@ -547,15 +582,26 @@ impl IronCore {
         let transport_memory =
             crate::store::transport_memory::TransportMemoryStore::new(backend.clone());
 
-        Self {
-            identity: Arc::new(RwLock::new(
-                IdentityManager::with_backend(backend.clone()).unwrap_or_else(|_| {
-                    tracing::error!(
-                        "Failed to hydrate identity from persistent store, falling back to memory"
+        let identity = match IdentityManager::with_backend(backend.clone()) {
+            Ok(mgr) => mgr,
+            Err(e) => {
+                if storage_err.is_none() {
+                    tracing::warn!(
+                        "Failed to hydrate identity from persistent store (not yet initialized or read error): {:?}",
+                        e
                     );
-                    IdentityManager::new()
-                }),
-            )),
+                } else {
+                    tracing::error!(
+                        "Persistent storage degraded; identity will not be hydrated from RAM: {:?}",
+                        e
+                    );
+                }
+                IdentityManager::new()
+            }
+        };
+
+        Self {
+            identity: Arc::new(RwLock::new(identity)),
             outbox: Arc::new(RwLock::new(outbox)),
             inbox: Arc::new(RwLock::new(inbox)),
             contact_manager: Arc::new(RwLock::new(contact_manager)),
@@ -576,6 +622,7 @@ impl IronCore {
             auto_block_engine: Arc::new(RwLock::new(auto_block)),
             storage_path: Some(path),
             log_directory: Some(log_dir),
+            storage_degraded: Arc::new(RwLock::new(storage_err)),
             #[cfg(not(target_arch = "wasm32"))]
             ledger_manager: hydrated_ledger_manager(p),
             running: Arc::new(RwLock::new(false)),
@@ -600,6 +647,49 @@ impl IronCore {
             policy_engine: Arc::new(RwLock::new(crate::drift::PolicyEngine::new())),
             transport_memory: Arc::new(RwLock::new(transport_memory)),
         }
+    }
+
+    /// Create IronCore with persistent sled-backed storage at `path`.
+    ///
+    /// Returns an error if the database at `path` cannot be opened (e.g. locked,
+    /// corrupt, or IO failure) instead of degrading to RAM.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(not(target_arch = "wasm32"), uniffi::constructor)]
+    pub fn try_with_storage(path: String) -> Result<Self, IronCoreError> {
+        let core = Self::with_storage(path);
+        if let Some(ref err) = *core.storage_degraded.read() {
+            return Err(classify_storage_error(err));
+        }
+        Ok(core)
+    }
+
+    /// Create IronCore with persistent storage and a log directory.
+    ///
+    /// Returns an error if the database at `path` cannot be opened (e.g. locked,
+    /// corrupt, or IO failure) instead of degrading to RAM.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(not(target_arch = "wasm32"), uniffi::constructor)]
+    pub fn try_with_storage_and_logs(path: String, log_dir: String) -> Result<Self, IronCoreError> {
+        let core = Self::with_storage_and_logs(path, log_dir);
+        if let Some(ref err) = *core.storage_degraded.read() {
+            return Err(classify_storage_error(err));
+        }
+        Ok(core)
+    }
+
+    /// Returns true if persistent storage failed to open and degraded to a failed state.
+    pub fn is_storage_degraded(&self) -> bool {
+        self.storage_degraded.read().is_some()
+    }
+
+    /// Returns the storage initialization error if storage is degraded, or None if healthy.
+    pub fn storage_error(&self) -> Option<String> {
+        self.storage_degraded.read().clone()
+    }
+
+    /// Returns true if storage is healthy (either persistent or intentionally in-memory).
+    pub fn is_storage_healthy(&self) -> bool {
+        self.storage_degraded.read().is_none()
     }
 
     /// Start the core. Must be called before any messaging operations.
@@ -647,6 +737,17 @@ impl IronCore {
     /// Initialize the identity (generate Ed25519 keys).
     /// Requires consent to have been granted first.
     pub fn initialize_identity(&self) -> Result<(), IronCoreError> {
+        if let Some(ref err) = *self.storage_degraded.read() {
+            tracing::error!(
+                "Refusing to initialize identity on degraded storage (path {:?}): {}",
+                self.storage_path,
+                err
+            );
+            #[cfg(not(target_arch = "wasm32"))]
+            return Err(classify_storage_error(err));
+            #[cfg(target_arch = "wasm32")]
+            return Err(IronCoreError::StorageError);
+        }
         if *self.consent.read() != ConsentState::Granted {
             return Err(IronCoreError::ConsentRequired);
         }
@@ -4659,13 +4760,33 @@ mod tests {
 
     #[test]
     fn test_manager_fallback_does_not_panic() {
-        // Construct with a guaranteed invalid path to force the fallback to fire
-        // (if the filesystem rejects it). The fallback might succeed (creating in
-        // the current directory) or fail, but importantly, it will return a Result
-        // and not panic.
+        // Construct with a guaranteed invalid path to force storage open failure.
+        // It must set degraded state, not panic, and refuse to mint an identity.
         let core = IronCore::with_storage("\0invalid/path<>|".to_string());
+        assert!(
+            core.is_storage_degraded(),
+            "Storage must be marked as degraded on open failure"
+        );
+        assert!(!core.is_storage_healthy());
+        assert!(core.storage_error().is_some());
         let _ = core.contacts_manager();
         let _ = core.history_manager();
+
+        core.grant_consent();
+        let init_res = core.initialize_identity();
+        assert!(
+            init_res.is_err(),
+            "Must refuse to initialize identity on degraded storage"
+        );
+    }
+
+    #[test]
+    fn test_try_with_storage_fails_on_invalid_path() {
+        let res = IronCore::try_with_storage("\0invalid/path<>|".to_string());
+        assert!(
+            res.is_err(),
+            "try_with_storage must return Err on open failure"
+        );
     }
 
     #[test]
