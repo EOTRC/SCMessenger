@@ -320,6 +320,25 @@ impl MeshService {
         #[cfg(target_arch = "wasm32")]
         let core = crate::IronCore::new();
 
+        // Persistent storage may have failed to open (lock contention, corruption,
+        // permission error, disk full) and fallen back to a DegradedStorage backend
+        // that fails loud on every read/write. Mirror the same fail-loud mechanism
+        // `IronCore::initialize_identity` already uses for this exact condition
+        // (see iron_core.rs) instead of silently continuing into `core.start()`,
+        // which previously produced an app that "started" and then did nothing.
+        if let Some(err) = core.storage_error() {
+            tracing::error!(
+                "MeshService::start: persistent storage is degraded at {:?}, refusing to start: {}",
+                self.storage_path,
+                err
+            );
+            *self.state.lock() = ServiceState::Stopped;
+            #[cfg(not(target_arch = "wasm32"))]
+            return Err(crate::iron_core::classify_storage_error(&err));
+            #[cfg(target_arch = "wasm32")]
+            return Err(crate::IronCoreError::StorageError);
+        }
+
         // Start the core
         core.start()?;
         let core = Arc::new(core);
@@ -3749,6 +3768,50 @@ mod tests {
             first_keypair.public().to_peer_id(),
             second_keypair.public().to_peer_id(),
             "headless key should be stable across restarts"
+        );
+    }
+
+    /// Mirrors the sled lock-contention technique used by
+    /// `core/tests/test_storage_fail_loud.rs` at the IronCore level, but
+    /// exercises it through the `MeshService::start` call site added by
+    /// this change. Before this change, `MeshService::start` never called
+    /// `is_storage_degraded()`/`storage_error()` after constructing
+    /// `IronCore`, so a locked/corrupt store produced a service that
+    /// reported `Ok(())` from `start()` and then silently did nothing.
+    #[test]
+    fn mesh_service_start_fails_loud_when_storage_is_lock_contended() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().to_str().unwrap().to_string();
+
+        // Hold the sled lock directly, simulating another process (or a
+        // stale handle) already owning the database at this path.
+        let _held_sled = sled::Config::default()
+            .path(&path)
+            .mode(sled::Mode::LowSpace)
+            .use_compression(false)
+            .open()
+            .expect("held sled open");
+
+        let service = Arc::new(MeshService::with_storage(
+            MeshServiceConfig {
+                discovery_interval_ms: 5_000,
+                battery_floor_pct: 20,
+            },
+            path,
+        ));
+
+        let result = service.clone().start();
+        assert!(
+            result.is_err(),
+            "MeshService::start must fail loud when persistent storage is degraded, \
+             not silently continue as if it started successfully"
+        );
+
+        // The service must not be left claiming to be running/starting: a
+        // degraded-storage start must be a clean, retryable failure.
+        assert!(
+            !service.is_running(),
+            "a service that failed to start due to degraded storage must not report running"
         );
     }
 
