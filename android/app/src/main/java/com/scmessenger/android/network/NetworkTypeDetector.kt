@@ -20,8 +20,12 @@ import javax.inject.Singleton
 class NetworkTypeDetector @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
-    private val connectivityManager =
+    // Lazy: see NetworkDetector.kt for why this must not resolve during
+    // construction (JVM unit tests construct MeshRepository, and therefore
+    // this class, with a Context mock that has no getSystemService stub).
+    private val connectivityManager: ConnectivityManager by lazy {
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    }
 
     suspend fun detectNetworkType(): NetworkType {
         val network = connectivityManager.activeNetwork ?: return NetworkType.UNKNOWN
