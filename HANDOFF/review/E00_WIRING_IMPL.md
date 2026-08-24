@@ -1,9 +1,18 @@
 # E-00 IMPLEMENTATION PACKET -- wire ratchet/PQ subsystem into IronCore production path
 
+> **REMOVED 2026-08-24 (PR #221):** every `SCM_RATCHET_DISABLE` / `ratchet_disabled()`
+> reference below (the kill switch this packet specified) has been deleted from
+> `core/src/iron_core.rs`. It bypassed the ingress signature verification added by
+> PR #221 and reopened the original P0 message-forgery hole; nothing in the repo
+> ever set the variable. This packet is kept as the historical implementation
+> record for the rest of the E-00 design (session wiring, lock order, Drift PQ
+> extension) -- do not treat the kill-switch sections as current guidance, and do
+> not reintroduce it.
+
 STATUS: APPROVED 2026-07-17 (operator). Pre-flight THINK analysis + Fusion
 adversarial panel UNANIMOUS PASS (3 rounds; verdict file
 tmp/fusion-e00-analysis-verdict-r3.md). This packet is cleared for CODER
-implementation. Kill switch = env SCM_RATCHET_DISABLE.
+implementation. Kill switch = env SCM_RATCHET_DISABLE (REMOVED 2026-08-24, see banner above).
 
 YOU ARE A CODER WORKER. Produce unified-diff file blocks (the orchestrator
 runs you in --mode diff). Do NOT run cargo/gradlew -- the orchestrator owns

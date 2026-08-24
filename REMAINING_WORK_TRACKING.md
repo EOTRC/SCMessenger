@@ -19,7 +19,9 @@ Session reference: `HANDOFF/SESSION_HANDOFF_2026-07-25.md`. Full pass:
   over stale body text. Release slicing: `HANDOFF/plans/MILESTONE_RELEASE_PLAN.md`.
 - **E-00 ratchet wiring:** **CLOSED 2026-07-17** — ticket in
   `HANDOFF/done/CRITICAL_RATCHET_SUBSYSTEM_NOT_WIRED_INTO_IRONCORE.md` (not todo/).
-  Code: `SCM_RATCHET_DISABLE`, `integration_e00_ratchet_wiring.rs`. The 2026-07-17
+  Code: `SCM_RATCHET_DISABLE` (**REMOVED 2026-08-24, PR #221** -- it bypassed ingress
+  signature verification and reopened the P0 forgery hole, do not reintroduce it),
+  `integration_e00_ratchet_wiring.rs`. The 2026-07-17
   section below is **historical**; do not re-open E-00 from that framing.
 - **Phase 1 transport parity:** Signed off P1-19 (2026-07-10). P1-11/12 adaptive ports
   **done** (commits in `_QUEUE.md`). P1-14/P1-18 = post-exit verification debt.
@@ -56,7 +58,9 @@ stale body). Batch-dispatch rules: `docs/ORCHESTRATION.md` Section 9
   2026-07-17 the ratchet/PQ subsystem was unreachable from the production path,
   leaving real messages without forward secrecy or PQ protection. This was
   **implemented and closed the same day** (commit `6059038c`; kill switch
-  `SCM_RATCHET_DISABLE`; regression test
+  `SCM_RATCHET_DISABLE`, **REMOVED 2026-08-24 PR #221** -- it bypassed ingress
+  signature verification and reopened the P0 forgery hole, do not reintroduce it;
+  regression test
   `core/tests/integration_e00_ratchet_wiring.rs`; build-verified with a
   unanimous Fusion adversarial pass). The ticket now lives at
   `HANDOFF/done/CRITICAL_RATCHET_SUBSYSTEM_NOT_WIRED_INTO_IRONCORE.md` -- it is
@@ -77,7 +81,8 @@ stale body). Batch-dispatch rules: `docs/ORCHESTRATION.md` Section 9
 - **Duplicate tickets retired** to `HANDOFF/retired/dupes_2026-07-17/`;
   canonical files remain in todo/.
 - **E-00 APPROVED by operator 2026-07-17** (kill switch = env
-  SCM_RATCHET_DISABLE). THINK-tier pre-flight analysis DONE (5/5 findings,
+  SCM_RATCHET_DISABLE, REMOVED 2026-08-24 PR #221 -- see note above, do not
+  reintroduce). THINK-tier pre-flight analysis DONE (5/5 findings,
   file:line evidence; see ticket). Next: Fusion unanimous judgement ->
   CODER implementation -> Fusion adversarial panel -> commit.
 - **Judgement policy (operator):** Fusion Lite panel is the judgement layer;

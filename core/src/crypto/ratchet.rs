@@ -169,7 +169,7 @@ pub struct RatchetSession {
     pub peer_confirmed: bool,
     /// Hybrid ciphertext for session bootstrap (stored until peer confirmed).
     pub bootstrap_hct: Option<crate::crypto::pq::hybrid::HybridCiphertext>,
-    // PQC-07: Post-quantum ratchet state (suite 0x02 only)
+    // PQC-07: Post-quantum ratchet state (PQ-hybrid sessions only, suite 0x02 or 0x03)
     /// Our current ML-KEM keypair for PQ ratchet steps.
     pub pq_our_keypair: Option<crate::crypto::pq::MlKem768KeyPair>,
     /// Previous ML-KEM keypair to handle one-step-behind arrivals.
@@ -438,8 +438,193 @@ impl RatchetSession {
         })
     }
 
-    /// Initialize a new ratchet session as the initiator (Alice) using hybrid encryption.
+    /// Initialize a new ratchet session as the initiator (Alice) using hybrid
+    /// encryption -- suite 0x03, the CURRENT derivation.
+    ///
+    /// Folds a static-static DH sender-authentication term into the root key
+    /// (domain separator "iron-core session-root v3 2026-08"), so the root key
+    /// can no longer be computed from public material alone. For the ORIGINAL
+    /// suite 0x02 derivation (no sender-authentication term, "iron-core
+    /// session-root v2 2026-07"), preserved for peers that only advertise
+    /// 0x02, see `init_as_sender_hybrid_suite02`.
     pub fn init_as_sender_hybrid(
+        our_x25519_secret: &x25519_dalek::StaticSecret,
+        their_bundle: &crate::identity::PublicKeyBundle,
+        transcript_hash: [u8; 32],
+    ) -> Result<Self> {
+        // Generate our initial DH ratchet keypair
+        let mut our_dh_secret_bytes = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut our_dh_secret_bytes);
+        let our_dh_secret = X25519StaticSecret::from(our_dh_secret_bytes);
+        our_dh_secret_bytes.zeroize();
+        let our_dh_public = X25519PublicKey::from(&our_dh_secret);
+
+        // Hybrid encapsulate
+        let (hct, ss_hybrid) = crate::crypto::pq::hybrid::hybrid_encapsulate(
+            &their_bundle.x25519_public,
+            &their_bundle.mlkem_encaps_key,
+        )?;
+
+        // Static-static DH for sender authentication. Uses our DEDICATED X25519 encryption
+        // secret (not an Ed25519-derived one) to avoid cross-protocol key reuse. The
+        // receiver must correspondingly use the sender's dedicated `x25519_public` from the
+        // sender's published bundle (see `init_as_receiver_hybrid`) -- Curve25519 DH is
+        // commutative, so both sides land on the same shared secret as long as they agree
+        // on which keypair is in play.
+        let recipient_x25519 = X25519PublicKey::from(their_bundle.x25519_public);
+        let dh_static = our_x25519_secret.diffie_hellman(&recipient_x25519);
+
+        // Derive root key with sender authentication
+        let root_key_0 = blake3::derive_key(
+            "iron-core session-root v3 2026-08",
+            &[
+                ss_hybrid.as_bytes(),
+                dh_static.as_bytes(),
+                &transcript_hash[..],
+            ]
+            .concat(),
+        );
+
+        // X3DH step 2: our_dh_secret × their_identity_public → sending chain
+        let dh_output =
+            our_dh_secret.diffie_hellman(&X25519PublicKey::from(their_bundle.x25519_public));
+        let (new_root_key, sending_chain_key) = root_key_ratchet_v2(
+            &RatchetKey::from_bytes(root_key_0),
+            dh_output.as_bytes(),
+            None,
+        );
+
+        let sending_chain = Chain::new(sending_chain_key);
+
+        // Initialize PQ state (shared mechanics across every hybrid suite)
+        let pq_our_keypair = Some(crate::crypto::pq::generate());
+        let pq_their_encaps_key = Some(their_bundle.mlkem_encaps_key.to_vec());
+
+        Ok(Self {
+            our_dh_secret,
+            our_dh_public,
+            their_dh_public: Some(X25519PublicKey::from(their_bundle.x25519_public)),
+            root_key: new_root_key,
+            sending_chain: Some(sending_chain),
+            receiving_chain: None,
+            dh_step_count: 1,
+            skipped_keys: HashMap::new(),
+            initialized: true,
+            our_identity_secret: None,
+            negotiated_suite: Some(0x03),
+            transcript_hash: Some(transcript_hash),
+            peer_confirmed: false,
+            bootstrap_hct: Some(hct.clone()),
+            pq_our_keypair,
+            pq_prev_keypair: None,
+            pq_their_encaps_key,
+            pq_pending_ct: None,
+            pq_pending_sent: None,
+            pq_pending_recv: None,
+            pq_last_mixed_fp: None,
+            transition_counter: 1,
+        })
+    }
+
+    /// Initialize a new ratchet session as the receiver (Bob) using hybrid
+    /// decryption -- suite 0x03, the CURRENT derivation.
+    ///
+    /// Must mirror `init_as_sender_hybrid`'s choice of keypair and domain
+    /// separator exactly. For the ORIGINAL suite 0x02 derivation, preserved
+    /// for peers that only advertise 0x02, see
+    /// `init_as_receiver_hybrid_suite02`.
+    pub fn init_as_receiver_hybrid(
+        _our_signing_key: &ed25519_dalek::SigningKey,
+        our_x25519_secret: &x25519_dalek::StaticSecret,
+        our_mlkem_keypair: &crate::crypto::pq::MlKem768KeyPair,
+        sender_bundle: &crate::identity::PublicKeyBundle,
+        hct: &crate::crypto::pq::hybrid::HybridCiphertext,
+        transcript_hash: [u8; 32],
+    ) -> Result<Self> {
+        // Generate our initial DH ratchet keypair
+        let mut our_dh_secret_bytes = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut our_dh_secret_bytes);
+        let our_dh_secret = X25519StaticSecret::from(our_dh_secret_bytes);
+        our_dh_secret_bytes.zeroize();
+        let our_dh_public = X25519PublicKey::from(&our_dh_secret);
+
+        // Hybrid decapsulate
+        let ss_hybrid = crate::crypto::pq::hybrid::hybrid_decapsulate(
+            our_x25519_secret,
+            our_mlkem_keypair,
+            hct,
+        )?;
+
+        // Static-static DH for sender authentication. Must mirror the sender's choice in
+        // `init_as_sender_hybrid`: the sender now uses its DEDICATED X25519 secret, so we
+        // use the sender's dedicated `x25519_public` from their published bundle here --
+        // NOT an Ed25519-derived key. Curve25519 DH is commutative, so this still lands on
+        // the same shared secret the sender computed.
+        let sender_x25519_public = X25519PublicKey::from(sender_bundle.x25519_public);
+        let dh_static = our_x25519_secret.diffie_hellman(&sender_x25519_public);
+
+        // Derive root key with sender authentication
+        let root_key_0 = blake3::derive_key(
+            "iron-core session-root v3 2026-08",
+            &[
+                ss_hybrid.as_bytes(),
+                dh_static.as_bytes(),
+                &transcript_hash[..],
+            ]
+            .concat(),
+        );
+
+        // Store our identity secret for the first DH ratchet step
+        let our_identity_secret = our_x25519_secret.clone();
+
+        // Initialize PQ state (shared mechanics across every hybrid suite)
+        let pq_our_keypair = Some(our_mlkem_keypair.clone());
+        let pq_their_encaps_key = Some(hct.mlkem_ciphertext.to_vec());
+
+        Ok(Self {
+            our_dh_secret,
+            our_dh_public,
+            their_dh_public: None, // Fixed: should be None initially, like classical receiver
+            root_key: RatchetKey::from_bytes(root_key_0),
+            sending_chain: None,
+            receiving_chain: None,
+            dh_step_count: 0,
+            skipped_keys: HashMap::new(),
+            initialized: false,
+            our_identity_secret: Some(our_identity_secret),
+            negotiated_suite: Some(0x03),
+            transcript_hash: Some(transcript_hash),
+            peer_confirmed: false,
+            bootstrap_hct: Some(hct.clone()),
+            pq_our_keypair,
+            pq_prev_keypair: None,
+            pq_their_encaps_key,
+            pq_pending_ct: None,
+            pq_pending_sent: None,
+            pq_pending_recv: None,
+            pq_last_mixed_fp: None,
+            transition_counter: 0,
+        })
+    }
+
+    /// Initialize a new ratchet session as the initiator (Alice) using hybrid
+    /// encryption -- suite 0x02, the ORIGINAL derivation.
+    ///
+    /// Preserved byte-for-byte from before PR #221 for interop with a peer
+    /// that only ever advertises suite 0x02: the root key is derived from the
+    /// ML-KEM/X25519 hybrid shared secret and the negotiation transcript hash
+    /// ONLY (domain separator "iron-core session-root v2 2026-07") -- there is
+    /// NO static-static DH sender-authentication term, unlike suite 0x03's
+    /// `init_as_sender_hybrid`. `_our_signing_key` is intentionally unused;
+    /// that is the original 0x02 contract, not an oversight. A current node
+    /// never volunteers 0x02 in its own `supported_suites` (see
+    /// `identity::keys::sign_bundle`), so this path is only reached when
+    /// negotiation is forced down to 0x02 by a peer that has no 0x03 support.
+    ///
+    /// Do NOT change this function's derivation. If suite 0x02's behavior
+    /// ever needs to change, mint a new suite ID instead -- see
+    /// `crypto::negotiation::HYBRID_SUITE_IDS` for why.
+    pub fn init_as_sender_hybrid_suite02(
         _our_signing_key: &ed25519_dalek::SigningKey,
         their_bundle: &crate::identity::PublicKeyBundle,
         transcript_hash: [u8; 32],
@@ -457,7 +642,7 @@ impl RatchetSession {
             &their_bundle.mlkem_encaps_key,
         )?;
 
-        // Derive root key
+        // Derive root key (suite 0x02: no sender-authentication DH term)
         let root_key_0 = blake3::derive_key(
             "iron-core session-root v2 2026-07",
             &[&ss_hybrid.as_bytes()[..], &transcript_hash[..]].concat(),
@@ -474,7 +659,7 @@ impl RatchetSession {
 
         let sending_chain = Chain::new(sending_chain_key);
 
-        // Initialize PQ state for suite 0x02
+        // Initialize PQ state (shared mechanics across every hybrid suite)
         let pq_our_keypair = Some(crate::crypto::pq::generate());
         let pq_their_encaps_key = Some(their_bundle.mlkem_encaps_key.to_vec());
 
@@ -504,8 +689,13 @@ impl RatchetSession {
         })
     }
 
-    /// Initialize a new ratchet session as the receiver (Bob) using hybrid decryption.
-    pub fn init_as_receiver_hybrid(
+    /// Initialize a new ratchet session as the receiver (Bob) using hybrid
+    /// decryption -- suite 0x02, the ORIGINAL derivation.
+    ///
+    /// Preserved byte-for-byte from before PR #221; see
+    /// `init_as_sender_hybrid_suite02` for why this must never be merged into
+    /// the suite 0x03 code path.
+    pub fn init_as_receiver_hybrid_suite02(
         _our_signing_key: &ed25519_dalek::SigningKey,
         our_x25519_secret: &x25519_dalek::StaticSecret,
         our_mlkem_keypair: &crate::crypto::pq::MlKem768KeyPair,
@@ -527,7 +717,7 @@ impl RatchetSession {
             hct,
         )?;
 
-        // Derive root key
+        // Derive root key (suite 0x02: no sender-authentication DH term)
         let root_key_0 = blake3::derive_key(
             "iron-core session-root v2 2026-07",
             &[&ss_hybrid.as_bytes()[..], &transcript_hash[..]].concat(),
@@ -536,14 +726,14 @@ impl RatchetSession {
         // Store our identity secret for the first DH ratchet step
         let our_identity_secret = our_x25519_secret.clone();
 
-        // Initialize PQ state for suite 0x02
+        // Initialize PQ state (shared mechanics across every hybrid suite)
         let pq_our_keypair = Some(our_mlkem_keypair.clone());
         let pq_their_encaps_key = Some(hct.mlkem_ciphertext.to_vec());
 
         Ok(Self {
             our_dh_secret,
             our_dh_public,
-            their_dh_public: None, // Fixed: should be None initially, like classical receiver
+            their_dh_public: None, // should be None initially, like classical receiver
             root_key: RatchetKey::from_bytes(root_key_0),
             sending_chain: None,
             receiving_chain: None,
@@ -577,6 +767,19 @@ impl RatchetSession {
 
     pub fn is_initialized(&self) -> bool {
         self.initialized
+    }
+
+    /// True if this session negotiated a PQ-hybrid suite (0x02 or 0x03) --
+    /// i.e. it mixes ML-KEM shared secrets into the ratchet -- as opposed to
+    /// suite 0x01 (classical, no PQ). Both hybrid suites share identical
+    /// post-handshake ratchet-stepping and PQ-mixing mechanics; they differ
+    /// ONLY in how the session's initial root key was derived at
+    /// establishment (see `crypto::negotiation::HYBRID_SUITE_IDS`). Use this
+    /// instead of comparing `negotiated_suite` against a single suite literal
+    /// so a future suite bump can't silently disable PQ mixing for sessions
+    /// established under the new suite ID.
+    pub fn is_pq_hybrid(&self) -> bool {
+        matches!(self.negotiated_suite, Some(s) if crate::crypto::negotiation::HYBRID_SUITE_IDS.contains(&s))
     }
 
     /// Encrypt a message using the current sending chain.
@@ -720,12 +923,12 @@ impl RatchetSession {
                 secret
             };
             let dh_output = first_dh_secret.diffie_hellman(their_new_dh);
-            let pq_ss_1 = if trial.negotiated_suite == Some(0x02) {
+            let pq_ss_1 = if trial.is_pq_hybrid() {
                 trial.pq_pending_recv.clone()
             } else {
                 None
             };
-            let (new_root_key, receiving_chain_key) = if trial.negotiated_suite == Some(0x02) {
+            let (new_root_key, receiving_chain_key) = if trial.is_pq_hybrid() {
                 root_key_ratchet_v2(
                     &trial.root_key,
                     dh_output.as_bytes(),
@@ -744,12 +947,12 @@ impl RatchetSession {
             let new_dh_public = X25519PublicKey::from(&new_dh_secret);
 
             let dh_output_2 = new_dh_secret.diffie_hellman(their_new_dh);
-            let pq_ss_2 = if trial.negotiated_suite == Some(0x02) {
+            let pq_ss_2 = if trial.is_pq_hybrid() {
                 candidate.clone()
             } else {
                 None
             };
-            let (new_root_key_2, sending_chain_key) = if trial.negotiated_suite == Some(0x02) {
+            let (new_root_key_2, sending_chain_key) = if trial.is_pq_hybrid() {
                 root_key_ratchet_v2(
                     &new_root_key,
                     dh_output_2.as_bytes(),
@@ -830,14 +1033,14 @@ impl RatchetSession {
 
         let dh_output = first_dh_secret.diffie_hellman(their_new_dh);
 
-        // Handle PQ ratchet step if this is a suite 0x02 session
-        let pq_ss = if self.negotiated_suite == Some(0x02) {
+        // Handle PQ ratchet step if this is a PQ-hybrid session (suite 0x02 or 0x03)
+        let pq_ss = if self.is_pq_hybrid() {
             self.pq_pending_recv.clone()
         } else {
             None
         };
 
-        let (new_root_key, receiving_chain_key) = if self.negotiated_suite == Some(0x02) {
+        let (new_root_key, receiving_chain_key) = if self.is_pq_hybrid() {
             root_key_ratchet_v2(
                 &self.root_key,
                 dh_output.as_bytes(),
@@ -856,12 +1059,12 @@ impl RatchetSession {
         let new_dh_public = X25519PublicKey::from(&new_dh_secret);
 
         let dh_output_2 = new_dh_secret.diffie_hellman(their_new_dh);
-        let pq_ss_2 = if self.negotiated_suite == Some(0x02) {
+        let pq_ss_2 = if self.is_pq_hybrid() {
             self.pq_pending_sent.as_ref().map(|p| p.ss.clone())
         } else {
             None
         };
-        let (new_root_key_2, sending_chain_key) = if self.negotiated_suite == Some(0x02) {
+        let (new_root_key_2, sending_chain_key) = if self.is_pq_hybrid() {
             root_key_ratchet_v2(
                 &new_root_key,
                 dh_output_2.as_bytes(),
@@ -922,10 +1125,14 @@ impl RatchetSession {
         Ok(chain.next_message_key())
     }
 
-    /// Perform a PQ ratchet step when initiating a DH step (suite 0x02 only).
+    /// Perform a PQ ratchet step when initiating a DH step (PQ-hybrid sessions only).
     pub fn perform_pq_ratchet_step(&mut self) -> Result<(Vec<u8>, Vec<u8>)> {
-        if self.negotiated_suite != Some(0x02) {
-            bail!("PQ ratchet step only supported for suite 0x02");
+        if !self.is_pq_hybrid() {
+            bail!(
+                "PQ ratchet step only supported for PQ-hybrid suites (0x02/0x03), \
+                 session negotiated {:?}",
+                self.negotiated_suite
+            );
         }
 
         let their_encaps_key = self
@@ -956,14 +1163,18 @@ impl RatchetSession {
         Ok((ct, new_encaps_key))
     }
 
-    /// Handle incoming PQ fields during DH ratchet step (suite 0x02 only).
+    /// Handle incoming PQ fields during DH ratchet step (PQ-hybrid sessions only).
     pub fn handle_incoming_pq_fields(
         &mut self,
         pq_kem_ciphertext: &[u8],
         pq_encaps_key: &[u8],
     ) -> Result<Vec<u8>> {
-        if self.negotiated_suite != Some(0x02) {
-            bail!("PQ fields only expected for suite 0x02");
+        if !self.is_pq_hybrid() {
+            bail!(
+                "PQ fields only expected for PQ-hybrid suites (0x02/0x03), \
+                 session negotiated {:?}",
+                self.negotiated_suite
+            );
         }
 
         let mut decapsulation_success = None;
@@ -1025,13 +1236,14 @@ impl RatchetSession {
         Ok(ss_pq.to_vec())
     }
 
-    /// Validate that PQ fields are present when expected (suite 0x02 only).
+    /// Validate that PQ fields are present when expected (PQ-hybrid sessions only).
     pub fn validate_pq_fields_present(&self, has_pq_fields: bool) -> Result<()> {
-        if self.negotiated_suite == Some(0x02)
-            && self.pq_their_encaps_key.is_some()
-            && !has_pq_fields
-        {
-            bail!("PQ stripping attempt detected: DH step without PQ fields on suite 0x02 session");
+        if self.is_pq_hybrid() && self.pq_their_encaps_key.is_some() && !has_pq_fields {
+            bail!(
+                "PQ stripping attempt detected: DH step without PQ fields on a \
+                 PQ-hybrid session (suite {:?})",
+                self.negotiated_suite
+            );
         }
         Ok(())
     }
@@ -1121,6 +1333,14 @@ mod tests {
         X25519PublicKey::from(&secret)
     }
 
+    /// Test-only helper: derive a dedicated-style X25519 secret consistently from a signing
+    /// key, so a test's `PublicKeyBundle.x25519_public` (built via
+    /// `signing_key_to_x25519_public`) and the secret passed to `init_as_sender_hybrid` /
+    /// `init_as_receiver_hybrid` describe the same keypair.
+    fn signing_key_to_x25519_secret(signing_key: &SigningKey) -> X25519StaticSecret {
+        super::super::encrypt::ed25519_to_x25519_secret(signing_key)
+    }
+
     #[test]
     fn test_ratchet_key_zeroizes() {
         let key = RatchetKey::from_bytes([0xAB; 32]);
@@ -1205,9 +1425,12 @@ mod tests {
         };
         let transcript_hash = [0u8; 32];
 
-        let mut alice_session =
-            RatchetSession::init_as_sender_hybrid(&alice_key, &bob_bundle, transcript_hash)
-                .unwrap();
+        let mut alice_session = RatchetSession::init_as_sender_hybrid(
+            &signing_key_to_x25519_secret(&alice_key),
+            &bob_bundle,
+            transcript_hash,
+        )
+        .unwrap();
         assert!(alice_session.is_initialized());
         assert_eq!(alice_session.dh_step_count(), 1);
 
@@ -1247,9 +1470,12 @@ mod tests {
         };
         let transcript_hash = [0u8; 32];
 
-        let mut alice_session =
-            RatchetSession::init_as_sender_hybrid(&alice_key, &bob_bundle, transcript_hash)
-                .unwrap();
+        let mut alice_session = RatchetSession::init_as_sender_hybrid(
+            &signing_key_to_x25519_secret(&alice_key),
+            &bob_bundle,
+            transcript_hash,
+        )
+        .unwrap();
         let hct = alice_session
             .bootstrap_hct
             .clone()
@@ -1300,9 +1526,12 @@ mod tests {
         };
         let transcript_hash = [0u8; 32];
 
-        let mut alice_session =
-            RatchetSession::init_as_sender_hybrid(&alice_key, &bob_bundle, transcript_hash)
-                .unwrap();
+        let mut alice_session = RatchetSession::init_as_sender_hybrid(
+            &signing_key_to_x25519_secret(&alice_key),
+            &bob_bundle,
+            transcript_hash,
+        )
+        .unwrap();
 
         // Perform PQ ratchet step
         let (ct, new_encaps_key) = alice_session.perform_pq_ratchet_step().unwrap();
@@ -1331,9 +1560,12 @@ mod tests {
         };
         let transcript_hash = [0u8; 32];
 
-        let alice_session =
-            RatchetSession::init_as_sender_hybrid(&alice_key, &bob_bundle, transcript_hash)
-                .unwrap();
+        let alice_session = RatchetSession::init_as_sender_hybrid(
+            &signing_key_to_x25519_secret(&alice_key),
+            &bob_bundle,
+            transcript_hash,
+        )
+        .unwrap();
 
         // Should reject DH step without PQ fields after initialization
         let result = alice_session.validate_pq_fields_present(false);
@@ -1342,5 +1574,157 @@ mod tests {
         // Should accept when PQ fields are present
         let result = alice_session.validate_pq_fields_present(true);
         assert!(result.is_ok());
+    }
+
+    /// Regression test for the suite 0x02 silent-redefinition bug: suite 0x02
+    /// (the ORIGINAL, pre-#221 derivation, preserved via
+    /// `init_as_sender_hybrid_suite02` / `init_as_receiver_hybrid_suite02`)
+    /// must still fully interoperate end-to-end for a peer that only ever
+    /// advertises 0x02, completely independent of the suite 0x03 code path.
+    #[test]
+    fn test_suite02_sender_receiver_roundtrip_still_works() {
+        let alice_key = generate_keypair();
+        let bob_key = generate_keypair();
+        let alice_x25519 = signing_key_to_x25519_public(&alice_key);
+        let bob_x25519 = signing_key_to_x25519_public(&bob_key);
+        let alice_bundle = crate::identity::PublicKeyBundle {
+            ed25519_public: alice_key.verifying_key().to_bytes(),
+            x25519_public: alice_x25519.to_bytes(),
+            mlkem_encaps_key: crate::crypto::pq::generate().public_key().to_vec(),
+            created_at: 0,
+            supported_suites: vec![0x01, 0x02],
+            signature: vec![],
+            mldsa_public: None,
+            mldsa_signature: None,
+        };
+        let bob_mlkem_keypair = crate::crypto::pq::generate();
+        let bob_bundle = crate::identity::PublicKeyBundle {
+            ed25519_public: bob_key.verifying_key().to_bytes(),
+            x25519_public: bob_x25519.to_bytes(),
+            mlkem_encaps_key: bob_mlkem_keypair.public_key().to_vec(),
+            created_at: 0,
+            supported_suites: vec![0x01, 0x02],
+            signature: vec![],
+            mldsa_public: None,
+            mldsa_signature: None,
+        };
+        let transcript_hash = [0u8; 32];
+
+        let mut alice_session =
+            RatchetSession::init_as_sender_hybrid_suite02(&alice_key, &bob_bundle, transcript_hash)
+                .unwrap();
+        assert_eq!(alice_session.negotiated_suite, Some(0x02));
+        assert!(alice_session.is_pq_hybrid());
+
+        let hct = alice_session
+            .bootstrap_hct
+            .clone()
+            .expect("sender_hybrid_suite02 sets bootstrap_hct");
+        let bob_x25519_secret = super::super::encrypt::ed25519_to_x25519_secret(&bob_key);
+        let mut bob_session = RatchetSession::init_as_receiver_hybrid_suite02(
+            &bob_key,
+            &bob_x25519_secret,
+            &bob_mlkem_keypair,
+            &alice_bundle,
+            &hct,
+            transcript_hash,
+        )
+        .unwrap();
+        assert_eq!(bob_session.negotiated_suite, Some(0x02));
+        assert!(bob_session.is_pq_hybrid());
+
+        let encrypted = alice_session
+            .encrypt(b"hello via old suite", b"aad")
+            .unwrap();
+        let plaintext = bob_session
+            .decrypt(
+                &encrypted.our_dh_public,
+                encrypted.message_number,
+                &encrypted.nonce,
+                &encrypted.ciphertext,
+                b"aad",
+            )
+            .unwrap();
+
+        assert_eq!(plaintext, b"hello via old suite");
+        assert!(bob_session.is_initialized());
+    }
+
+    /// Regression test proving suite 0x02 and suite 0x03 are NOT the same
+    /// derivation under the hood.
+    ///
+    /// Compares the RECEIVER side (`init_as_receiver_hybrid_suite02` vs
+    /// `init_as_receiver_hybrid`) rather than the sender side, and holds the
+    /// hybrid ciphertext fixed across both calls: unlike the sender
+    /// functions (which generate a fresh ephemeral X3DH keypair AND a fresh
+    /// hybrid encapsulation internally, so their root keys would differ on
+    /// every call for reasons having nothing to do with which suite was
+    /// used), the receiver's `root_key` immediately after `init_as_receiver_*`
+    /// is exactly `root_key_0` -- deterministic decapsulation of a caller-
+    /// supplied `hct`, with no additional per-call randomness. That isolates
+    /// this comparison to ONLY the domain-separator / static-static-DH
+    /// difference between the two suites.
+    ///
+    /// If this ever fails, suite 0x02 and 0x03 have been silently aliased
+    /// back together -- exactly the class of bug this suite split exists to
+    /// prevent (see `crypto::negotiation::HYBRID_SUITE_IDS`).
+    #[test]
+    fn test_suite02_and_suite03_derive_different_root_keys() {
+        let alice_key = generate_keypair();
+        let bob_key = generate_keypair();
+        let bob_x25519_secret = signing_key_to_x25519_secret(&bob_key);
+        let bob_x25519_public = X25519PublicKey::from(&bob_x25519_secret);
+        let bob_x25519_public_bytes = bob_x25519_public.to_bytes();
+        let bob_mlkem_keypair = crate::crypto::pq::generate();
+
+        let alice_bundle = crate::identity::PublicKeyBundle {
+            ed25519_public: alice_key.verifying_key().to_bytes(),
+            x25519_public: signing_key_to_x25519_public(&alice_key).to_bytes(),
+            mlkem_encaps_key: crate::crypto::pq::generate().public_key().to_vec(),
+            created_at: 0,
+            supported_suites: vec![0x01, 0x03],
+            signature: vec![],
+            mldsa_public: None,
+            mldsa_signature: None,
+        };
+
+        // Encapsulate ONCE against Bob's real ML-KEM public key, so both
+        // init_as_receiver_hybrid* calls below decapsulate the exact same
+        // hybrid shared secret from the exact same ciphertext.
+        let (hct, _ss_hybrid_unused) = crate::crypto::pq::hybrid::hybrid_encapsulate(
+            &bob_x25519_public_bytes,
+            bob_mlkem_keypair.public_key(),
+        )
+        .unwrap();
+        let transcript_hash = [7u8; 32];
+
+        let old_receiver = RatchetSession::init_as_receiver_hybrid_suite02(
+            &bob_key,
+            &bob_x25519_secret,
+            &bob_mlkem_keypair,
+            &alice_bundle,
+            &hct,
+            transcript_hash,
+        )
+        .unwrap();
+        let new_receiver = RatchetSession::init_as_receiver_hybrid(
+            &bob_key,
+            &bob_x25519_secret,
+            &bob_mlkem_keypair,
+            &alice_bundle,
+            &hct,
+            transcript_hash,
+        )
+        .unwrap();
+
+        assert_eq!(old_receiver.negotiated_suite, Some(0x02));
+        assert_eq!(new_receiver.negotiated_suite, Some(0x03));
+        assert_ne!(
+            old_receiver.root_key_bytes(),
+            new_receiver.root_key_bytes(),
+            "suite 0x02 and suite 0x03 must never derive the same root key from \
+             the same hybrid ciphertext, sender bundle, and transcript hash -- \
+             they are different, non-interchangeable protocol versions"
+        );
     }
 }

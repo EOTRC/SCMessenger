@@ -302,12 +302,14 @@ pub fn decrypt_message_ratcheted_v2(
         }
     }
 
-    // Handle ongoing PQ ratchet fields (suite 0x02 only). The bootstrap
+    // Handle ongoing PQ ratchet fields (PQ-hybrid sessions only, suite 0x02
+    // or 0x03 -- see RatchetSession::is_pq_hybrid). The bootstrap
     // ciphertext (first message, !peer_confirmed) is already consumed by
-    // init_as_receiver_hybrid at session setup -- only process pq fields
-    // here for post-confirmation messages, which represent a genuine PQ
-    // ratchet step from perform_pq_ratchet_step, not the initial bootstrap.
-    if session.negotiated_suite == Some(0x02) && session.peer_confirmed {
+    // init_as_receiver_hybrid / init_as_receiver_hybrid_suite02 at session
+    // setup -- only process pq fields here for post-confirmation messages,
+    // which represent a genuine PQ ratchet step from perform_pq_ratchet_step,
+    // not the initial bootstrap.
+    if session.is_pq_hybrid() && session.peer_confirmed {
         // The anti-stripping check only applies at genuine cadence boundaries
         // (mirrors encrypt_message_ratcheted's own `current_message_number % 100
         // == 0` trigger). pq_their_encaps_key is already `Some` from the initial
@@ -366,7 +368,7 @@ pub fn encrypt_message_ratcheted(
     let mut pq_kem_ciphertext = None;
     let mut pq_encaps_key = None;
 
-    if session.negotiated_suite == Some(0x02) {
+    if session.is_pq_hybrid() {
         if !session.peer_confirmed {
             if let Some(hct) = &session.bootstrap_hct {
                 pq_kem_ciphertext = Some(hct.mlkem_ciphertext.clone());
@@ -404,7 +406,13 @@ pub fn encrypt_message_ratcheted(
 
         Ok(crate::message::WireEnvelope::V2(
             crate::message::EnvelopeV2 {
-                suite: 0x02,
+                // Reflect the SESSION's actual negotiated suite on the wire
+                // instead of hardcoding one value -- suite 0x02 and 0x03
+                // sessions both reach this branch (is_pq_hybrid() is true for
+                // both). `unwrap_or(0x02)` is an unreachable-in-practice
+                // defensive fallback: `is_pq_hybrid()` being true guarantees
+                // `negotiated_suite` is `Some(0x02)` or `Some(0x03)` here.
+                suite: session.negotiated_suite.unwrap_or(0x02),
                 sender_public_key: sender_public_bytes.to_vec(),
                 ephemeral_public_key,
                 nonce: result.nonce,
@@ -450,13 +458,23 @@ fn should_use_ratcheted_encryption(
 ) -> Result<bool> {
     match recipient_bundle {
         Some(bundle) => {
-            // V2 peer (has bundle)
-            if bundle.supported_suites.contains(&0x02) {
-                // Peer supports v2 hybrid ratchet - always use ratcheted encryption
+            // V2 peer (has bundle). Suite 0x02 and 0x03 are both PQ-hybrid
+            // suites (see crypto::negotiation::HYBRID_SUITE_IDS) -- a peer
+            // advertising EITHER one supports hybrid ratchet establishment.
+            // The exact suite is re-negotiated (and dispatched to the correct
+            // derivation) inside get_or_create_session_hybrid /
+            // create_receiver_session_hybrid; this is only the coarse gate
+            // deciding whether to attempt the hybrid path at all.
+            if bundle
+                .supported_suites
+                .iter()
+                .any(|s| crate::crypto::negotiation::HYBRID_SUITE_IDS.contains(s))
+            {
+                // Peer supports a hybrid ratchet suite - always use ratcheted encryption
                 // Session establishment vs. reuse is handled by the caller
                 Ok(true)
             } else {
-                // V2 peer but doesn't support suite 0x02 - treat as v1
+                // V2 peer but doesn't support any hybrid suite - treat as v1
                 if session_exists {
                     Ok(true)
                 } else if require_pq {
@@ -498,6 +516,9 @@ fn should_use_ratcheted_encryption(
 /// * `session_manager` - Optional ratchet session manager
 /// * `peer_id` - Peer identifier for ratchet session lookup
 /// * `our_bundle` - Our public key bundle (None for V1 senders)
+/// * `our_x25519_secret` - Our dedicated X25519 encryption secret (required for hybrid
+///   sessions; used for the static-static DH sender-authentication step instead of an
+///   Ed25519-derived key, avoiding cross-protocol reuse of the signing key)
 /// * `require_pq` - Whether PQ encryption is strictly required
 /// * `audit_log` - Audit log manager for logging legacy sends
 ///
@@ -512,6 +533,7 @@ pub fn encrypt_with_ratchet_fallback(
     session_manager: Option<&mut crate::crypto::RatchetSessionManager>,
     peer_id: &str,
     our_bundle: Option<&crate::identity::PublicKeyBundle>,
+    our_x25519_secret: Option<&x25519_dalek::StaticSecret>,
     require_pq: bool,
     audit_log: Option<&mut crate::observability::AuditLog>,
 ) -> Result<crate::message::WireEnvelope> {
@@ -525,9 +547,16 @@ pub fn encrypt_with_ratchet_fallback(
             if let Some(manager) = session_manager {
                 // If we have bundles for both sides, try hybrid session
                 if let (Some(our_b), Some(their_b)) = (our_bundle, recipient_bundle) {
+                    let our_x25519 = our_x25519_secret.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Hybrid session for peer {} requires our dedicated X25519 secret",
+                            peer_id
+                        )
+                    })?;
                     let session = manager.get_or_create_session_hybrid(
                         peer_id,
                         sender_signing_key,
+                        our_x25519,
                         our_b,
                         their_b,
                     )?;
@@ -1173,6 +1202,7 @@ mod tests {
             None, // no session manager
             "test_peer",
             None,  // no our bundle
+            None,  // no our x25519 secret
             false, // require_pq = false
             Some(&mut audit_log),
         );

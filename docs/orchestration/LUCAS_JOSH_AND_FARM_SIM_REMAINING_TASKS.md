@@ -23,7 +23,7 @@ Goal: Lucas (fiber) and Josh (cellular/WiFi, his phone) message each other relia
 - Lucas's Windows CLI → relay: real connection, confirmed via `ss -tn state established` on the relay itself. Ledger exchange completed (48 entries).
 - Lucas's local Android emulator → relay: confirmed via app logs (`Connected(peerId=..., transport=INTERNET)`).
 - Graceful-AF dial policy (self-dial prevention + RFC1918 private-range awareness) implemented in `cli/src/ledger.rs`, adversarial-reviewed (caught and fixed a real bug in the relay-circuit exemption before merge), committed.
-- E-00 (ratchet/PQ subsystem wiring) — **done 2026-07-17**, separately from this session: real messages now get actual forward secrecy + PQ protection. Before this fix, every message sent by the app had zero forward secrecy regardless of how correct the underlying crypto code was. Kill switch: env `SCM_RATCHET_DISABLE`.
+- E-00 (ratchet/PQ subsystem wiring) — **done 2026-07-17**, separately from this session: real messages now get actual forward secrecy + PQ protection. Before this fix, every message sent by the app had zero forward secrecy regardless of how correct the underlying crypto code was. Kill switch: env `SCM_RATCHET_DISABLE`. **REMOVED 2026-08-24** (PR #221): the switch bypassed ingress signature verification entirely and reopened the original P0 forgery hole; `SCM_RATCHET_DISABLE` no longer exists and must not be reintroduced.
 - All of the above is committed and pushed to `origin/main` (commits `f2831458`, `1950c374`, `2eaad174`, `efd164de`, `2bbea431`).
 
 ### Still open — what's actually blocking the Josh test

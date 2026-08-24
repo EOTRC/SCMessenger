@@ -18,10 +18,10 @@ use crate::abuse::auto_block::{AutoBlockConfig, AutoBlockEngine};
 use crate::abuse::spam_detection::{SpamDetectionConfig, SpamDetectionEngine};
 use crate::abuse::EnhancedAbuseReputationManager;
 use crate::crypto::encrypt::{ed25519_public_to_x25519, ed25519_to_x25519_secret};
-use crate::crypto::{decrypt_message, encrypt_message, session_manager::RatchetSessionManager};
+use crate::crypto::session_manager::RatchetSessionManager;
 use crate::drift::{MeshStore, NetworkState, RelayConfig, RelayEngine};
 use crate::identity::IdentityManager;
-use crate::message::{decode_envelope, decode_message, Message};
+use crate::message::{decode_message, Message};
 use crate::notification::NotificationEndpointRegistry;
 use crate::observability::{AuditEventType, AuditLog as AuditLogType};
 use crate::privacy::{
@@ -103,25 +103,6 @@ pub trait CoreDelegate: Send + Sync {
 pub enum ConsentState {
     NotGranted,
     Granted,
-}
-
-/// Kill switch for the E-00 ratchet-aware send/receive wiring.
-///
-/// When `SCM_RATCHET_DISABLE` is set to any non-empty, non-zero, non-"false"
-/// value, IronCore takes the exact legacy code path for both
-/// `prepare_message_internal` and `receive_message`.  This preserves the
-/// pre-ratchet behavior byte-for-byte and guarantees zero behavior change for
-/// mixed-fleet peers that cannot consume the new wire format.
-fn ratchet_disabled() -> bool {
-    static FLAG: std::sync::OnceLock<std::sync::atomic::AtomicBool> = std::sync::OnceLock::new();
-    let f = FLAG.get_or_init(|| {
-        std::sync::atomic::AtomicBool::new(
-            std::env::var("SCM_RATCHET_DISABLE")
-                .map(|v| !v.is_empty() && v != "0" && v.to_lowercase() != "false")
-                .unwrap_or(false),
-        )
-    });
-    f.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The main entry point for the SCMessenger core.
@@ -921,20 +902,7 @@ impl IronCore {
         let message_bytes =
             crate::message::encode_message(&message).map_err(|_| IronCoreError::Internal)?;
 
-        let (mut envelope_data, drift_env) = if ratchet_disabled() {
-            // LEGACY PATH (kill switch) -- verbatim current behavior
-            let envelope = encrypt_message(&keys.signing_key, &recipient_pk, &message_bytes)
-                .map_err(|_| IronCoreError::CryptoError)?;
-            let drift_env = crate::drift::DriftEnvelope::from_legacy_envelope(
-                envelope,
-                message_id.clone(),
-                recipient_pk,
-                &keys.signing_key,
-            )
-            .map_err(|_| IronCoreError::Internal)?;
-            let envelope_data = drift_env.to_bytes().map_err(|_| IronCoreError::Internal)?;
-            (envelope_data, drift_env)
-        } else {
+        let (mut envelope_data, drift_env) = {
             // RATCHET PATH -- identity.read() already held; take
             // ratchet_sessions.write() AFTER (identity-first, proven-safe).
             // TODO cache our_bundle per identity_id (per-send Ed25519+ML-DSA
@@ -958,6 +926,7 @@ impl IronCore {
                 Some(&mut *sessions),
                 &peer_id,
                 our_bundle.as_ref(),
+                Some(&keys.x25519_encryption_secret),
                 false,
                 Some(&mut *audit),
             )
@@ -3343,37 +3312,80 @@ impl IronCore {
             .map_err(|_| IronCoreError::CryptoError)
     }
     pub fn receive_message(&self, envelope_data: Vec<u8>) -> Result<Message, IronCoreError> {
-        // Hoist sender public key and local identity id out of the legacy /
-        // ratchet branches so they remain in scope for downstream inbox / audit
+        // Hoist sender public key and local identity id out of the ratchet
+        // block below so they remain in scope for downstream inbox / audit
         // handling.
         let sender_pubkey: Vec<u8>;
         let local_identity_id: Option<String>;
 
-        let plaintext = if ratchet_disabled() {
-            // LEGACY PATH (kill switch)
-            let envelope = decode_envelope(&envelope_data).map_err(|e| {
-                tracing::warn!("Failed to decode envelope: {:?}", e);
-                IronCoreError::CryptoError
-            })?;
-            let identity = self.identity.read();
-            let keys = identity.keys().ok_or(IronCoreError::NotInitialized)?;
-            local_identity_id = identity.identity_id();
-            sender_pubkey = envelope.sender_public_key.clone();
-            let signing_key = keys.signing_key.clone();
-            decrypt_message(&signing_key, &envelope).map_err(|e| {
-                tracing::warn!("Failed to decrypt message: {:?}", e);
-                IronCoreError::CryptoError
-            })?
-        } else {
+        let plaintext = {
             // RATCHET PATH -- identity.read() then ratchet_sessions.write().
             // identity and ratchet_sessions are disjoint fields of self, so
             // both guards can be held simultaneously while preserving the
             // identity-first lock order.
+            // Ingress verification: Drift and V2 envelopes MUST verify their signature.
             let wire =
-                crate::message::codec::decode_wire_envelope(&envelope_data).map_err(|e| {
-                    tracing::warn!("Failed to decode wire envelope: {:?}", e);
-                    IronCoreError::CryptoError
-                })?;
+                if !envelope_data.is_empty() && envelope_data[0] == crate::drift::DRIFT_VERSION {
+                    let drift_env = crate::drift::DriftEnvelope::from_bytes(&envelope_data)
+                        .map_err(|e| {
+                            tracing::warn!("Failed to decode drift envelope: {:?}", e);
+                            IronCoreError::CryptoError
+                        })?;
+                    drift_env.verify().map_err(|e| {
+                        tracing::warn!("Drift envelope signature verification failed: {:?}", e);
+                        IronCoreError::CryptoError
+                    })?;
+                    drift_env.to_wire_envelope()
+                } else if let Ok(signed_wire) =
+                    crate::message::codec::decode_wire_signed_envelope(&envelope_data)
+                {
+                    match signed_wire {
+                        crate::message::WireSignedEnvelope::V1(s1) => {
+                            crate::crypto::verify_envelope(&s1).map_err(|e| {
+                                tracing::warn!("V1 signed envelope verification failed: {:?}", e);
+                                IronCoreError::CryptoError
+                            })?;
+                            crate::message::WireEnvelope::V1(s1.envelope)
+                        }
+                        crate::message::WireSignedEnvelope::V2(s2) => {
+                            crate::crypto::verify_envelope_v2(&s2).map_err(|e| {
+                                tracing::warn!("V2 signed envelope verification failed: {:?}", e);
+                                IronCoreError::CryptoError
+                            })?;
+                            crate::message::WireEnvelope::V2(s2.envelope)
+                        }
+                    }
+                } else {
+                    // Reaching this branch means envelope_data was neither a
+                    // Drift-signed envelope (checked above) nor decodable as
+                    // WireSignedEnvelope (V1 or V2, checked above). The only
+                    // thing `decode_wire_envelope` can produce here is an
+                    // UNSIGNED WireEnvelope -- V1 or V2 -- reconstructed via
+                    // the raw-bincode fallback. No legitimate sender emits
+                    // this on the wire: `prepare_message_internal` always
+                    // wraps outgoing envelopes (both V1 legacy-ECDH and V2)
+                    // in a signed DriftEnvelope before serializing. Accepting
+                    // an unsigned envelope here -- of either version -- lets
+                    // an attacker forge `sender_public_key` (used only as AAD,
+                    // never proof of key possession) and have the message
+                    // filed under an impersonated identity. Reject regardless
+                    // of decoded version; do not attempt decryption or
+                    // attribution on unauthenticated wire data.
+                    let decoded = crate::message::codec::decode_wire_envelope(&envelope_data)
+                        .map_err(|e| {
+                            tracing::warn!("Failed to decode wire envelope: {:?}", e);
+                            IronCoreError::CryptoError
+                        })?;
+                    let version = match decoded {
+                        crate::message::WireEnvelope::V1(_) => "V1",
+                        crate::message::WireEnvelope::V2(_) => "V2",
+                    };
+                    tracing::warn!(
+                        "Unsigned {} wire envelope rejected at ingress (no signature to verify)",
+                        version
+                    );
+                    return Err(IronCoreError::CryptoError);
+                };
             let identity = self.identity.read();
             let keys = identity.keys().ok_or(IronCoreError::NotInitialized)?;
             local_identity_id = identity.identity_id();

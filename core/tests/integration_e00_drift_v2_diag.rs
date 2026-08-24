@@ -187,6 +187,7 @@ fn test_drift_v2_ratchet_roundtrip_diagnostic() {
         Some(&mut alice_manager),
         &bob_id,
         Some(&alice_bundle),
+        Some(&alice.x25519_encryption_secret),
         false,
         None,
     )
@@ -234,9 +235,14 @@ fn test_drift_v2_ratchet_roundtrip_diagnostic() {
         }
     };
 
-    assert_eq!(
-        v2_original.suite, 0x02,
-        "V2 envelope must advertise suite 0x02"
+    // Two current nodes negotiate suite 0x03 (see sign_bundle advertising
+    // [0x01, 0x03]); a legacy peer pair would stamp 0x02 here instead. Both
+    // are valid PQ-hybrid suites -- the assertion pins "hybrid, not classical",
+    // not one specific suite ID.
+    assert!(
+        matches!(v2_original.suite, 0x02 | 0x03),
+        "V2 envelope must advertise a PQ-hybrid suite (0x02 or 0x03), got 0x{:02x}",
+        v2_original.suite
     );
     assert!(
         v2_original.pq_kem_ciphertext.is_some(),
@@ -436,6 +442,7 @@ fn test_from_bytes_offset_trace() {
         Some(&mut alice_manager),
         &bob_id,
         Some(&alice_bundle),
+        Some(&alice.x25519_encryption_secret),
         false,
         None,
     )
