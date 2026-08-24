@@ -546,6 +546,26 @@ pub async fn export_diagnostics_via_api() -> Result<String> {
     String::from_utf8(body_bytes.to_vec()).context("Diagnostics response was not UTF-8")
 }
 
+pub async fn get_identity_via_api() -> Result<serde_json::Value> {
+    use http_body_util::{BodyExt, Empty};
+    use hyper::body::Bytes;
+    use hyper_util::client::legacy::Client;
+    use hyper_util::rt::TokioExecutor;
+
+    let client = Client::builder(TokioExecutor::new()).build_http();
+
+    let req = hyper::Request::builder()
+        .method(Method::GET)
+        .uri(format!("http://{}/api/identity", API_ADDR))
+        .body(Empty::<Bytes>::new())?;
+
+    let resp = client.request(req).await?;
+    let body_bytes = resp.into_body().collect().await?.to_bytes();
+    let value: serde_json::Value =
+        serde_json::from_slice(&body_bytes).context("Failed to parse identity response JSON")?;
+    Ok(value)
+}
+
 // Server implementation
 
 #[derive(Clone)]
