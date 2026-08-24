@@ -2628,16 +2628,65 @@ impl HistoryManager {
     #[uniffi::constructor]
     pub fn new(storage_path: String) -> Result<Self, crate::IronCoreError> {
         let path = std::path::PathBuf::from(storage_path).join("history.db");
-        let db = sled::Config::default()
-            .path(path)
-            .mode(sled::Mode::LowSpace)
-            .use_compression(false)
-            .open()
-            .map_err(|_| crate::IronCoreError::StorageError)?;
 
-        Ok(Self {
-            db: Arc::new(Mutex::new(db)),
-        })
+        // A prior handle on this path can still be releasing sled's file lock
+        // and draining its background flusher when we get here -- an app
+        // restart reopening its own store, or a caller that just dropped a
+        // `HistoryManager`. That window is short but real, and it surfaced as
+        // a hard StorageError on macOS CI. Retry briefly before giving up: a
+        // handle mid-close is a transient, not a degraded store. An exhausted
+        // retry budget IS a degraded store, and still fails loud.
+        const OPEN_ATTEMPTS: u32 = 5;
+        let mut last_err: Option<sled::Error> = None;
+
+        for attempt in 0..OPEN_ATTEMPTS {
+            match sled::Config::default()
+                .path(&path)
+                .mode(sled::Mode::LowSpace)
+                .use_compression(false)
+                .open()
+            {
+                Ok(db) => {
+                    if attempt > 0 {
+                        tracing::warn!(
+                            "HistoryManager::new: opened {:?} on attempt {} of {}",
+                            path,
+                            attempt + 1,
+                            OPEN_ATTEMPTS
+                        );
+                    }
+                    return Ok(Self {
+                        db: Arc::new(Mutex::new(db)),
+                    });
+                }
+                Err(err) => {
+                    if attempt + 1 < OPEN_ATTEMPTS {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            50 * u64::from(attempt + 1),
+                        ));
+                    }
+                    last_err = Some(err);
+                }
+            }
+        }
+
+        // Never discard the cause. This change exists to stop storage failing
+        // silently; a StorageError with no reason attached is only half of
+        // that, and it is what made this failure undiagnosable from CI logs.
+        match last_err {
+            Some(err) => tracing::error!(
+                "HistoryManager::new: sled failed to open {:?} after {} attempts: {}",
+                path,
+                OPEN_ATTEMPTS,
+                err
+            ),
+            None => tracing::error!(
+                "HistoryManager::new: sled failed to open {:?} after {} attempts",
+                path,
+                OPEN_ATTEMPTS
+            ),
+        }
+        Err(crate::IronCoreError::StorageError)
     }
 
     pub fn add(&self, record: MessageRecord) -> Result<(), crate::IronCoreError> {
