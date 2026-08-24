@@ -464,6 +464,14 @@ class MeshRepositoryTest {
 
     @Test
     fun `isStorageDegraded initial state is false`() {
+        // Constructing a real MeshRepository runs initializeManagers(), which
+        // builds MeshSettingsManager -- a uniffi.api class whose <clinit> loads
+        // libscmessenger_core via JNA. The PR-gate JVM job
+        // (mobile.yml android-unit-tests) deliberately skips the native build
+        // (-x buildRustAndroid), so the library does not exist there and this
+        // test must skip rather than fail; the Docker Integration Suite stages
+        // the native library and enforces this assertion for real.
+        org.junit.Assume.assumeTrue(nativeCoreAvailable())
         val mockContext = mockk<android.content.Context>(relaxed = true)
         val mockPrefs = mockk<SharedPreferences>(relaxed = true)
         every { mockContext.getSharedPreferences(any(), any()) } returns mockPrefs
@@ -471,5 +479,14 @@ class MeshRepositoryTest {
 
         val repo = MeshRepository(mockContext)
         assertFalse(repo.isStorageDegraded.value)
+    }
+
+    private fun nativeCoreAvailable(): Boolean = try {
+        // Same lookup UniffiLib's <clinit> performs via JNA; probing here
+        // avoids depending on generated-code internals.
+        com.sun.jna.NativeLibrary.getInstance("scmessenger_core")
+        true
+    } catch (_: Throwable) {
+        false
     }
 }
