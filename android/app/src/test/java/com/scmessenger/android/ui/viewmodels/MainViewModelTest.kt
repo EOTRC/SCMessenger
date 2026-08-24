@@ -20,6 +20,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -126,13 +127,26 @@ class MainViewModelTest {
         assertEquals(validPeerId, pending?.peerId)
         assertEquals(listOf("/ip4/8.8.8.8/tcp/9001"), pending?.listeners)
 
-        // Assert dial DOES occur after explicit confirmation
+        // Assert dial DOES occur after explicit confirmation.
+        // confirmAndDialPendingDeepLink launches on Dispatchers.IO, which the
+        // test scheduler cannot drain via advanceUntilIdle -- poll until the
+        // IO coroutine lands its connectToPeer call (CI runners have lost this
+        // race under load and failed the verification spuriously).
         viewModel.confirmAndDialPendingDeepLink(pending)
-        testDispatcher.scheduler.advanceUntilIdle()
-
-        coVerify(exactly = 1) {
-            mockMeshRepository.connectToPeer(validPeerId, listOf("/ip4/8.8.8.8/tcp/9001"))
+        val deadline = System.currentTimeMillis() + 5_000
+        var dialed = false
+        while (!dialed && System.currentTimeMillis() < deadline) {
+            dialed = try {
+                coVerify(exactly = 1) {
+                    mockMeshRepository.connectToPeer(validPeerId, listOf("/ip4/8.8.8.8/tcp/9001"))
+                }
+                true
+            } catch (_: AssertionError) {
+                Thread.sleep(25)
+                false
+            }
         }
+        assertTrue("connectToPeer was not dialed within 5s of confirmation", dialed)
     }
 
     @Test
@@ -197,5 +211,23 @@ class MainViewModelTest {
         coVerify(exactly = 0) {
             mockMeshRepository.connectToPeer(any(), any())
         }
+    }
+
+    @Test
+    fun `isStorageDegraded flow reflects meshRepository`() = runTest {
+        val degradedFlow = MutableStateFlow(false)
+        every { mockMeshRepository.isStorageDegraded } returns degradedFlow
+
+        viewModel = MainViewModel(
+            meshRepository = mockMeshRepository,
+            preferencesRepository = mockPreferencesRepository,
+            identityCreationCoordinator = mockIdentityCoordinator,
+            context = mockContext
+        )
+
+        assertEquals(false, viewModel.isStorageDegraded.value)
+
+        degradedFlow.value = true
+        assertEquals(true, viewModel.isStorageDegraded.value)
     }
 }

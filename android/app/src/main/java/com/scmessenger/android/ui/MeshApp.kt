@@ -51,6 +51,7 @@ fun MeshApp(mainViewModel: MainViewModel = hiltViewModel()) {
     val showOnboarding by mainViewModel.showOnboarding.collectAsState()
     val isStorageLow by mainViewModel.isStorageLow.collectAsState()
     val availableStorageMB by mainViewModel.availableStorageMB.collectAsState()
+    val isStorageDegraded by mainViewModel.isStorageDegraded.collectAsState()
     val navController = rememberNavController()
     val pendingDeepLink by mainViewModel.pendingDeepLink.collectAsState()
     val pendingRequestsInbox by mainViewModel.pendingRequestsInbox.collectAsState()
@@ -112,7 +113,11 @@ fun MeshApp(mainViewModel: MainViewModel = hiltViewModel()) {
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        if (isStorageLow) {
+        if (isStorageDegraded) {
+            com.scmessenger.android.ui.components.StorageErrorBanner(
+                onRetry = { mainViewModel.retryStartMeshService() }
+            )
+        } else if (isStorageLow) {
             com.scmessenger.android.ui.components.StorageWarningBanner(availableMB = availableStorageMB)
         }
 

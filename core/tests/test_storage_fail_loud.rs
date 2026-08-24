@@ -145,3 +145,113 @@ fn test_try_with_storage_and_logs_fails_on_locked_storage() {
         "try_with_storage_and_logs must return Err when storage cannot be opened"
     );
 }
+
+#[test]
+fn test_mesh_service_start_refuses_degraded_storage_and_succeeds_when_healthy() {
+    use scmessenger_core::mobile_bridge::{MeshService, MeshServiceConfig};
+    use scmessenger_core::IronCoreError;
+    use std::sync::Arc;
+
+    let dir = tempdir().expect("tempdir");
+    let path = dir
+        .path()
+        .join("storage_db")
+        .to_str()
+        .expect("valid path")
+        .to_string();
+
+    let config = MeshServiceConfig {
+        discovery_interval_ms: 5000,
+        battery_floor_pct: 20,
+    };
+
+    // 1. Locked storage: hold sled lock, verify start() fails loud with StorageError before starting core
+    {
+        let _held_sled = sled::Config::default()
+            .path(&path)
+            .mode(sled::Mode::LowSpace)
+            .use_compression(false)
+            .open()
+            .expect("held sled open");
+
+        let service = Arc::new(MeshService::with_storage(config.clone(), path.clone()));
+        let result = service.start();
+        assert!(
+            matches!(result, Err(IronCoreError::StorageError)),
+            "MeshService::start must return Err(IronCoreError::StorageError) on locked storage, got {:?}",
+            result
+        );
+    }
+
+    // 2. Healthy storage: lock released, verify start() succeeds
+    {
+        let service = Arc::new(MeshService::with_storage(config, path));
+        let result = service.clone().start();
+        assert!(
+            result.is_ok(),
+            "MeshService::start must return Ok(()) on healthy storage, got {:?}",
+            result
+        );
+        service.stop();
+    }
+}
+
+#[test]
+fn test_mesh_service_start_with_logs_refuses_degraded_storage_and_succeeds_when_healthy() {
+    use scmessenger_core::mobile_bridge::{MeshService, MeshServiceConfig};
+    use scmessenger_core::IronCoreError;
+    use std::sync::Arc;
+
+    let dir = tempdir().expect("tempdir");
+    let path = dir
+        .path()
+        .join("storage_db")
+        .to_str()
+        .expect("valid path")
+        .to_string();
+    let log_dir = dir
+        .path()
+        .join("logs")
+        .to_str()
+        .expect("valid path")
+        .to_string();
+
+    let config = MeshServiceConfig {
+        discovery_interval_ms: 5000,
+        battery_floor_pct: 20,
+    };
+
+    // 1. Locked storage: hold sled lock, verify start() fails loud with StorageError before starting core
+    {
+        let _held_sled = sled::Config::default()
+            .path(&path)
+            .mode(sled::Mode::LowSpace)
+            .use_compression(false)
+            .open()
+            .expect("held sled open");
+
+        let service = Arc::new(MeshService::with_storage_and_logs(
+            config.clone(),
+            path.clone(),
+            log_dir.clone(),
+        ));
+        let result = service.start();
+        assert!(
+            matches!(result, Err(IronCoreError::StorageError)),
+            "MeshService::start with logs must return Err(IronCoreError::StorageError) on locked storage, got {:?}",
+            result
+        );
+    }
+
+    // 2. Healthy storage: lock released, verify start() succeeds
+    {
+        let service = Arc::new(MeshService::with_storage_and_logs(config, path, log_dir));
+        let result = service.clone().start();
+        assert!(
+            result.is_ok(),
+            "MeshService::start with logs must return Ok(()) on healthy storage, got {:?}",
+            result
+        );
+        service.stop();
+    }
+}

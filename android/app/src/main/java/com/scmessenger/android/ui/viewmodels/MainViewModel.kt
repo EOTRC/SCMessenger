@@ -83,6 +83,8 @@ class MainViewModel @Inject constructor(
     private val _availableStorageMB = MutableStateFlow(0L)
     val availableStorageMB = _availableStorageMB.asStateFlow()
 
+    val isStorageDegraded: StateFlow<Boolean> = meshRepository.isStorageDegraded
+
     private val _pendingDeepLink = MutableStateFlow<DeepLinkData?>(null)
     val pendingDeepLink: StateFlow<DeepLinkData?> = _pendingDeepLink.asStateFlow()
 
@@ -399,6 +401,19 @@ class MainViewModel @Inject constructor(
         val peerId = _pendingRequestsInbox.value
         _pendingRequestsInbox.value = null
         return peerId
+    }
+
+    fun retryStartMeshService() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val intent = android.content.Intent(context, com.scmessenger.android.service.MeshForegroundService::class.java).apply {
+                    action = com.scmessenger.android.service.MeshForegroundService.ACTION_START
+                }
+                context.startForegroundService(intent)
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to retry mesh service start")
+            }
+        }
     }
 }
 

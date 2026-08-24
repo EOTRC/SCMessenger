@@ -61,6 +61,7 @@ fun SettingsScreen(
     val isLoading by settingsViewModel.isLoading.collectAsState()
     val serviceState by serviceViewModel.serviceState.collectAsState()
     val isRunning by serviceViewModel.isRunning.collectAsState()
+    val isStorageDegraded by serviceViewModel.isStorageDegraded.collectAsState()
     val serviceStats by serviceViewModel.serviceStats.collectAsState()
     val settingsError by settingsViewModel.error.collectAsState()
 
@@ -130,8 +131,13 @@ fun SettingsScreen(
             )
         }
 
-        // Wire WarningBanner into settings for service warnings
-        if (!isRunning) {
+        // Wire StorageErrorBanner / WarningBanner into settings for service state
+        if (isStorageDegraded) {
+            com.scmessenger.android.ui.components.StorageErrorBanner(
+                onRetry = { serviceViewModel.startService() }
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        } else if (!isRunning) {
             WarningBanner(
                 message = stringResource(R.string.settings_error_not_running),
                 onDismiss = {}
@@ -143,7 +149,8 @@ fun SettingsScreen(
             isRunning = isRunning,
             serviceState = serviceState,
             onToggleService = { serviceViewModel.toggleService() },
-            stats = statsText
+            stats = statsText,
+            isStorageDegraded = isStorageDegraded
         )
 
         Spacer(modifier = Modifier.height(24.dp))
@@ -527,7 +534,8 @@ fun ServiceControlSection(
     isRunning: Boolean,
     serviceState: uniffi.api.ServiceState,
     onToggleService: () -> Unit,
-    stats: String
+    stats: String,
+    isStorageDegraded: Boolean = false
 ) {
     Card(
         modifier = Modifier.fillMaxWidth()
@@ -553,6 +561,12 @@ fun ServiceControlSection(
                             text = stringResource(R.string.settings_status_active),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.primary
+                        )
+                    } else if (isStorageDegraded) {
+                        Text(
+                            text = stringResource(R.string.storage_error_title),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
                         )
                     }
                 }
