@@ -392,13 +392,30 @@ pub fn sign_bundle(keys: &IdentityKeys) -> Result<PublicKeyBundle> {
         .as_secs();
 
     // Only advertise negotiable RATCHET/encryption suites here. `negotiate_suite`
-    // picks the highest value in the intersection of both peers' supported_suites,
-    // but `encrypt_message_ratcheted` only special-cases suite 0x02 for V2 envelope
-    // construction -- advertising 0x03 caused negotiation to pick it and then fall
-    // through to the legacy V1 path. ML-DSA identity-signature capability is already
-    // signaled independently via `mldsa_public`/`mldsa_signature` being `Some(..)`,
-    // so it doesn't need its own entry in this list.
-    let supported_suites = vec![0x01, 0x02];
+    // picks the highest value in the intersection of both peers' supported_suites.
+    //
+    // 0x03 is the current hybrid derivation (static-static DH sender
+    // authentication folded into the root key; see
+    // `RatchetSession::init_as_sender_hybrid` / `init_as_receiver_hybrid`,
+    // domain separator "iron-core session-root v3 2026-08"). We deliberately do
+    // NOT advertise 0x02 here anymore: 0x02 was silently redefined in place to
+    // mean the 0x03 derivation without a suite bump, so a node running that code
+    // and a node still running the ORIGINAL 0x02 derivation ("iron-core
+    // session-root v2 2026-07", no sender-authentication DH term) would both
+    // negotiate 0x02 and silently derive different, incompatible root keys --
+    // permanent, silent decryption failure with no error surfaced to either
+    // side. Advertising only 0x01 and 0x03 means a peer that only offers 0x02
+    // negotiates down to 0x01 (fully classical, both sides implement it
+    // identically) instead of colliding on a redefined 0x02. See
+    // `crypto::session_manager::get_or_create_session_hybrid` /
+    // `create_receiver_session_hybrid` for the suite dispatch, which still
+    // handles 0x02 with its ORIGINAL (pre-redefinition) behavior for any peer
+    // that offers it.
+    //
+    // ML-DSA identity-signature capability is already signaled independently
+    // via `mldsa_public`/`mldsa_signature` being `Some(..)`, so it doesn't need
+    // its own entry in this list.
+    let supported_suites = vec![0x01, 0x03];
 
     // Signature input: b"iron-core keybundle v3" || ed25519_public || x25519_public || mlkem_encaps_key || mldsa_public || created_at.to_le_bytes() || supported_suites
     let mut sig_input = Vec::new();

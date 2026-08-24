@@ -55,7 +55,9 @@ update this section when the operator settles a new decision.
    then **v1.0.0 GA** — see `HANDOFF/plans/MILESTONE_RELEASE_PLAN.md`. Alpha tag:
    **`v0.4.0-alpha.1`** (not `v1.0.0-alpha.1`).
 7. **E-00 ratchet wiring:** **DONE 2026-07-17** (`HANDOFF/done/CRITICAL_RATCHET_SUBSYSTEM_NOT_WIRED_INTO_IRONCORE.md`;
-   kill switch `SCM_RATCHET_DISABLE`; `core/tests/integration_e00_ratchet_wiring.rs`).
+   kill switch `SCM_RATCHET_DISABLE` -- **REMOVED 2026-08-24, PR #221**: it bypassed
+   ingress signature verification and reopened the P0 forgery hole, do not
+   reintroduce it; `core/tests/integration_e00_ratchet_wiring.rs`).
 8. **Outbox delivery (2026-07-12 finding):** Closed **2026-07-17** (Sites 2+3;
    `HANDOFF/done/CRITICAL_OUTBOX_NEVER_FLUSHES_DESPITE_ACTIVE_CONNECTION.md`). Farm P0
    still requires **re-proving** CLI↔emulator end-to-end delivery under current HEAD

@@ -119,8 +119,22 @@ impl RatchetSessionManager {
                     &their_bundle.ed25519_public,
                 )?;
 
-                let session = if suite == 0x02 {
+                let session = if suite == 0x03 {
+                    // Current hybrid derivation: static-static DH sender
+                    // authentication folded into the root key ("iron-core
+                    // session-root v3 2026-08").
                     RatchetSession::init_as_sender_hybrid(our_x25519_secret, their_bundle, hash)?
+                } else if suite == 0x02 {
+                    // ORIGINAL hybrid derivation, preserved byte-for-byte for
+                    // a peer that only ever advertises suite 0x02 ("iron-core
+                    // session-root v2 2026-07", no sender-authentication DH
+                    // term). Never merge this into the 0x03 branch above --
+                    // see crypto::negotiation::HYBRID_SUITE_IDS.
+                    RatchetSession::init_as_sender_hybrid_suite02(
+                        our_signing_key,
+                        their_bundle,
+                        hash,
+                    )?
                 } else {
                     let their_x25519 = crate::crypto::encrypt::ed25519_public_to_x25519(
                         &their_bundle.ed25519_public,
@@ -156,9 +170,25 @@ impl RatchetSessionManager {
         )?;
 
         let sender_x25519 = x25519_dalek::PublicKey::from(their_bundle.x25519_public);
-        let session = if suite == 0x02 {
+        let session = if suite == 0x03 {
+            // Current hybrid derivation -- see get_or_create_session_hybrid.
             if let Some(hct) = hct_opt {
                 RatchetSession::init_as_receiver_hybrid(
+                    our_signing_key,
+                    our_x25519_secret,
+                    our_mlkem_keypair,
+                    their_bundle,
+                    hct,
+                    hash,
+                )?
+            } else {
+                anyhow::bail!("Suite 0x03 requires hybrid ciphertext for receiver initialization");
+            }
+        } else if suite == 0x02 {
+            // ORIGINAL hybrid derivation, preserved for a peer that only ever
+            // advertises suite 0x02 -- see get_or_create_session_hybrid.
+            if let Some(hct) = hct_opt {
+                RatchetSession::init_as_receiver_hybrid_suite02(
                     our_signing_key,
                     our_x25519_secret,
                     our_mlkem_keypair,

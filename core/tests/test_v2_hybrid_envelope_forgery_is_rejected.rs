@@ -41,7 +41,17 @@ fn test_v2_hybrid_envelope_forgery_is_rejected() {
         &mallory_known_bob_bundle.ed25519_public,
     )
     .expect("Suite negotiation must succeed");
-    assert_eq!(suite, 0x02, "Expected suite 0x02 (ML-KEM-768 hybrid)");
+    // Both 0x02 (original hybrid) and 0x03 (current hybrid with sender-auth DH)
+    // are valid PQ-hybrid suites. The negotiated suite depends on what both peers
+    // advertise in their bundles. Current nodes advertise [0x01, 0x03], so two
+    // current nodes negotiate 0x03. The test logic works identically for either
+    // suite since both use the same hybrid encryption primitives -- only the
+    // initial root key derivation differs (see RatchetSession::is_pq_hybrid).
+    assert!(
+        matches!(suite, 0x02 | 0x03),
+        "Expected suite 0x02 or 0x03 (PQ-hybrid), got 0x{:02x}",
+        suite
+    );
 
     // Mallory generates her own throwaway signing key because she does not possess Alice's.
     let mut mallory_secret = [0u8; 32];
@@ -91,7 +101,7 @@ fn test_v2_hybrid_envelope_forgery_is_rejected() {
 
     // Construct forged WireEnvelope::V2 directly
     let forged_wire_v2 = WireEnvelope::V2(EnvelopeV2 {
-        suite: 0x02,
+        suite,
         sender_public_key: mallory_known_alice_bundle.ed25519_public.to_vec(),
         ephemeral_public_key: bootstrap_hct.x25519_ephemeral_public.to_vec(),
         nonce: encrypt_result.nonce.clone(),
@@ -129,7 +139,7 @@ fn test_v2_hybrid_envelope_forgery_is_rejected() {
         ciphertext: encrypt_result.ciphertext,
         ratchet_dh_public: Some(encrypt_result.our_dh_public),
         ratchet_message_number: Some(encrypt_result.message_number),
-        suite: Some(0x02),
+        suite: Some(suite),
         pq_kem_ciphertext: Some(bootstrap_hct.mlkem_ciphertext.clone()),
         pq_encaps_key: Some(pq_our_keypair.public_key().to_vec()),
         transcript_hash: Some(transcript_hash.to_vec()),
@@ -194,7 +204,11 @@ fn test_v2_hybrid_envelope_forgery_is_rejected() {
         &bob_node_bundle.ed25519_public,
     )
     .expect("Suite negotiation with bob_node must succeed");
-    assert_eq!(node_suite, 0x02);
+    assert!(
+        matches!(node_suite, 0x02 | 0x03),
+        "Expected suite 0x02 or 0x03 (PQ-hybrid), got 0x{:02x}",
+        node_suite
+    );
 
     let mut mallory_session_for_node = RatchetSession::init_as_sender_hybrid(
         &mallory_dummy_x25519_secret,
@@ -247,7 +261,7 @@ fn test_v2_hybrid_envelope_forgery_is_rejected() {
         ciphertext: node_encrypt_result.ciphertext,
         ratchet_dh_public: Some(node_encrypt_result.our_dh_public),
         ratchet_message_number: Some(node_encrypt_result.message_number),
-        suite: Some(0x02),
+        suite: Some(node_suite),
         pq_kem_ciphertext: Some(node_bootstrap_hct.mlkem_ciphertext.clone()),
         pq_encaps_key: Some(node_pq_keypair.public_key().to_vec()),
         transcript_hash: Some(node_transcript_hash.to_vec()),
@@ -290,7 +304,11 @@ fn test_v2_hybrid_honest_sender_succeeds() {
         &bob_public_bundle.ed25519_public,
     )
     .expect("Suite negotiation must succeed");
-    assert_eq!(suite, 0x02);
+    assert!(
+        matches!(suite, 0x02 | 0x03),
+        "Expected suite 0x02 or 0x03 (PQ-hybrid), got 0x{:02x}",
+        suite
+    );
 
     let mut alice_session = RatchetSession::init_as_sender_hybrid(
         &alice_keys.x25519_encryption_secret,
@@ -325,7 +343,7 @@ fn test_v2_hybrid_honest_sender_succeeds() {
         .expect("pq_our_keypair must exist");
 
     let honest_wire_v2 = WireEnvelope::V2(EnvelopeV2 {
-        suite: 0x02,
+        suite,
         sender_public_key: alice_public_bundle.ed25519_public.to_vec(),
         ephemeral_public_key: bootstrap_hct.x25519_ephemeral_public.to_vec(),
         nonce: encrypt_result.nonce.clone(),
@@ -425,7 +443,11 @@ fn test_v2_hybrid_honest_sender_succeeds() {
         &bob_node_bundle.ed25519_public,
     )
     .expect("Suite negotiation with bob_node must succeed");
-    assert_eq!(node_suite, 0x02);
+    assert!(
+        matches!(node_suite, 0x02 | 0x03),
+        "Expected suite 0x02 or 0x03 (PQ-hybrid), got 0x{:02x}",
+        node_suite
+    );
 
     let mut alice_session_for_node = RatchetSession::init_as_sender_hybrid(
         &alice_keys.x25519_encryption_secret,
@@ -453,7 +475,7 @@ fn test_v2_hybrid_honest_sender_succeeds() {
 
     let node_honest_drift_envelope = DriftEnvelope::from_v2_envelope(
         EnvelopeV2 {
-            suite: 0x02,
+            suite: node_suite,
             sender_public_key: alice_public_bundle.ed25519_public.to_vec(),
             ephemeral_public_key: node_bootstrap_hct.x25519_ephemeral_public.to_vec(),
             nonce: node_encrypt_result.nonce.clone(),

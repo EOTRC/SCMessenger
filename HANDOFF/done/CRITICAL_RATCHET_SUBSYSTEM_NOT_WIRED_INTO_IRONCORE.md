@@ -1,6 +1,14 @@
 # CRITICAL: Ratchet + PQ subsystem is unreachable from IronCore's production message path
 
-Status: DONE 2026-07-17 -- implemented (dispatch A: DriftEnvelope PQ ext + decode order; dispatch B: IronCore send/receive wiring + kill switch), build-verified (cargo check + 1140 unit tests + 17 integration tests across 4 suites), Fusion adversarial review UNANIMOUS PASS (round 2, tmp/fusion-e00-adversarial-verdict-r2.md). Kill switch = env SCM_RATCHET_DISABLE. Pre-existing from_bytes offset+=4 bug fixed (exposed by PQ ext). Audit logging enabled on legacy fallback.
+> **UPDATE 2026-08-24 (PR #221):** the `SCM_RATCHET_DISABLE` kill switch described
+> below has been REMOVED. It bypassed the ingress signature verification added by
+> PR #221 entirely, so setting it reopened the original P0 message-forgery hole
+> byte-for-byte. No fleet ever set this variable (verified: no script, CI job,
+> Dockerfile, Kotlin, Swift, or config referenced it, and the last public release
+> predates this subsystem). Do not reintroduce it; there is no legacy-format
+> fleet to support. `ratchet_disabled()` no longer exists in `core/src/iron_core.rs`.
+
+Status: DONE 2026-07-17 -- implemented (dispatch A: DriftEnvelope PQ ext + decode order; dispatch B: IronCore send/receive wiring + kill switch), build-verified (cargo check + 1140 unit tests + 17 integration tests across 4 suites), Fusion adversarial review UNANIMOUS PASS (round 2, tmp/fusion-e00-adversarial-verdict-r2.md). Kill switch = env SCM_RATCHET_DISABLE (REMOVED 2026-08-24, see update above). Pre-existing from_bytes offset+=4 bug fixed (exposed by PQ ext). Audit logging enabled on legacy fallback.
 Filed: 2026-07-17 (native audit session, code-truth verification pass)
 Tier: MAX design review, then CODER implementation waves
 Review: crypto-security-auditor MANDATORY = Fusion adversarial panel, unanimous (docs/ORCHESTRATION.md Section 10)
@@ -10,7 +18,8 @@ Review: crypto-security-auditor MANDATORY = Fusion adversarial panel, unanimous 
 Operator approved wiring the production path through the session manager.
 Decisions taken: (1) wire send + receive through the fallback wrappers;
 (2) legacy fallback preserved for no-session/no-bundle peers (mixed fleet);
-(3) kill switch = env var `SCM_RATCHET_DISABLE` (all-platform, zero plumbing);
+(3) kill switch = env var `SCM_RATCHET_DISABLE` (all-platform, zero plumbing) --
+REMOVED 2026-08-24, see update banner at top of this file;
 (4) E-00 first, then E-01 family lands in a live path.
 
 ## PRE-FLIGHT ANALYSIS FINDINGS (qwen THINK, tmp/e00_analysis_task_response.md -- pending Fusion unanimous judgement)
