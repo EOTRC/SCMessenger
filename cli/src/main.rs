@@ -1058,16 +1058,17 @@ async fn cmd_identity(action: Option<IdentityAction>) -> Result<()> {
     // If running with default data directory and API is available (node is running),
     // prefer querying the live node's API to avoid sled lock contention.
     let is_custom_data_dir = std::env::var("SCMESSENGER_DATA_DIR").is_ok();
-    if !is_custom_data_dir && api::is_api_available().await {
-        if matches!(action, None | Some(IdentityAction::Show)) {
-            match api::get_identity_via_api().await {
-                Ok(info) => {
-                    print_api_identity(&info, &config)?;
-                    return Ok(());
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to query identity from running node API: {}", e);
-                }
+    if !is_custom_data_dir
+        && api::is_api_available().await
+        && matches!(action, None | Some(IdentityAction::Show))
+    {
+        match api::get_identity_via_api().await {
+            Ok(info) => {
+                print_api_identity(&info, &config)?;
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::warn!("Failed to query identity from running node API: {}", e);
             }
         }
     }
