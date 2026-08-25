@@ -1,4 +1,4 @@
-﻿package com.scmessenger.android.test
+package com.scmessenger.android.test
 
 import android.content.Context
 import android.content.SharedPreferences
