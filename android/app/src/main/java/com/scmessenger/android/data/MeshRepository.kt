@@ -925,7 +925,12 @@ open class MeshRepository(
         }
     }
 
-    private fun initializeManagers() {
+    // `protected open` seam: hermetic JVM unit tests subclass MeshRepository and
+    // override this with a no-op, because every manager constructed here is a
+    // UniFFI object whose instantiation loads libscmessenger_core via JNA
+    // (UniffiLib <clinit>) — impossible on the JVM test tier. Production keeps
+    // this exact behaviour; the override exists only under app/src/test.
+    protected open fun initializeManagers() {
         try {
             // REGRESSION FIX (AND-CONTACTS-WIPE-001): Migrate contacts BEFORE ContactManager
             // opens the new database. Previously the migration ran after construction, which

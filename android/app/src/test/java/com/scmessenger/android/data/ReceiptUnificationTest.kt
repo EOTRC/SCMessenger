@@ -1,4 +1,4 @@
-package com.scmessenger.android.data
+﻿package com.scmessenger.android.data
 
 import android.content.Context
 import android.content.SharedPreferences
@@ -44,6 +44,20 @@ import uniffi.api.ServiceState
  * absent and `encodeReceipt` cannot link); either way the assertions below
  * fail loudly. On fixed code they pass.
  */
+/**
+ * JVM-only MeshRepository: skips native UniFFI manager construction.
+ *
+ * MeshRepository's init calls initializeManagers(), which instantiates real
+ * uniffi.api objects (MeshSettingsManager/HistoryManager/ContactManager/
+ * LedgerManager) â€” each of which triggers UniffiLib's <clinit> and a JNA
+ * load of libscmessenger_core that does not exist on the JVM test tier
+ * (UnsatisfiedLinkError, then NoClassDefFoundError for every later test).
+ * The no-op override is exactly why this hook was made `protected open`.
+ */
+private class HermeticMeshRepository(context: Context) : MeshRepository(context) {
+    override fun initializeManagers() { /* native managers unavailable on JVM */ }
+}
+
 class ReceiptUnificationTest {
 
     companion object {
@@ -110,15 +124,18 @@ class ReceiptUnificationTest {
         return repo
     }
 
+    // Resolve on MeshRepository itself: the hermetic subclass does not
+    // redeclare these private fields (inherited ones are not returned by
+    // getDeclaredField on the subclass).
     private fun setField(target: Any, name: String, value: Any?) {
-        val field = target.javaClass.getDeclaredField(name)
+        val field = MeshRepository::class.java.getDeclaredField(name)
         field.isAccessible = true
         field.set(target, value)
     }
 
     @Suppress("UNCHECKED_CAST")
     private fun <T> getField(target: Any, name: String): T? {
-        val field = target.javaClass.getDeclaredField(name)
+        val field = MeshRepository::class.java.getDeclaredField(name)
         field.isAccessible = true
         return field.get(target) as? T
     }
@@ -171,7 +188,7 @@ class ReceiptUnificationTest {
 
     @Test
     fun `send path delivers prepareReceipt envelope bytes to transport not bare receipt json`() = runTest {
-        val repo = trackRepo(MeshRepository(fakeContext(freshFilesDir())))
+        val repo = trackRepo(HermeticMeshRepository(fakeContext(freshFilesDir())))
 
         // RUNNING state keeps ensureServiceInitializedFireAndForget() a no-op
         // (MeshRepository.ensureServiceInitializedDeferred returns immediately),
