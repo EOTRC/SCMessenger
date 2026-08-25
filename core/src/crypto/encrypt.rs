@@ -805,8 +805,7 @@ pub fn decrypt_with_ratchet_fallback(
                     envelope_v2,
                 ) {
                     Ok(()) => match manager.get_session_mut(&peer_id) {
-                        Some(session) => match decrypt_message_ratcheted_v2(session, envelope_v2)
-                        {
+                        Some(session) => match decrypt_message_ratcheted_v2(session, envelope_v2) {
                             Ok(plaintext) => {
                                 tracing::warn!(
                                     "V2 session re-established from bootstrap for peer {}..; message recovered",
