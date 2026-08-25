@@ -3448,16 +3448,15 @@ impl IronCore {
         // identity_id. This is unambiguous (no double-hash risk on an
         // identity_id-valued sender_id) and immune to plaintext-tampering.
         let sender_public_key_hex = hex::encode(&sender_pubkey);
-        let canonical_peer_id = crate::identity::keys::identity_id_from_public_key_hex(
-            &sender_public_key_hex,
-        )
-        .ok_or_else(|| {
-            tracing::error!(
+        let canonical_peer_id =
+            crate::identity::keys::identity_id_from_public_key_hex(&sender_public_key_hex)
+                .ok_or_else(|| {
+                    tracing::error!(
                 "receive_message: cannot derive canonical identity for sender {}..; dropping",
                 &sender_public_key_hex[..16]
             );
-            IronCoreError::CryptoError
-        })?;
+                    IronCoreError::CryptoError
+                })?;
 
         // Also check device-specific blocks using the sender's last known device ID
         // Try the authenticated public key and its canonical identity_id; first
