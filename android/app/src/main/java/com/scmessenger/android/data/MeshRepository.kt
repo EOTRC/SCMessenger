@@ -4181,7 +4181,26 @@ open class MeshRepository(
     }
 
     fun getContact(peerId: String): uniffi.api.Contact? {
-        return contactManager?.get(canonicalId(peerId))
+        val canonical = canonicalId(peerId)
+        contactManager?.get(canonical)?.let { return it }
+
+        // UNKNOWN-CONTACT-001: canonicalContactId() cannot map a transport
+        // libp2p peer ID to its contact when the identity ledger has no
+        // annotation yet, and the unmapped ID is then cached as-is. Retry by
+        // matching against stored routing hints and the contact's public key,
+        // and seed the cache so subsequent lookups hit directly.
+        val trimmed = peerId.trim()
+        if (trimmed.isEmpty()) return null
+        return try {
+            contactManager?.list()?.firstOrNull { contact ->
+                val hintPeerId = parseRoutingHints(contact.notes).libp2pPeerId
+                (hintPeerId != null && PeerIdValidator.isSame(hintPeerId, trimmed)) ||
+                    contact.publicKey?.trim()?.equals(trimmed, ignoreCase = true) == true
+            }?.also { identityIdCache[trimmed] = it.peerId }
+        } catch (e: Exception) {
+            Timber.d("Failed routing-hint contact lookup for $trimmed: ${e.message}")
+            null
+        }
     }
 
     /**
