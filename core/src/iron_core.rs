@@ -3387,7 +3387,16 @@ impl IronCore {
                     return Err(IronCoreError::CryptoError);
                 };
             let identity = self.identity.read();
-            let keys = identity.keys().ok_or(IronCoreError::NotInitialized)?;
+            let keys = match identity.keys() {
+                Some(k) => k,
+                None => {
+                    tracing::error!(
+                        "receive_message: dropping inbound envelope ({} bytes): local identity keys not initialized",
+                        envelope_data.len()
+                    );
+                    return Err(IronCoreError::NotInitialized);
+                }
+            };
             local_identity_id = identity.identity_id();
             sender_pubkey = match &wire {
                 crate::message::WireEnvelope::V1(e) => e.sender_public_key.clone(),
@@ -3412,7 +3421,12 @@ impl IronCore {
                 sender_bundle.as_ref(),
             )
             .map_err(|e| {
-                tracing::warn!("Failed to decrypt ratchet message: {:?}", e);
+                tracing::warn!(
+                    "Failed to decrypt ratchet message from peer {}..: {:?} (envelope_len={})",
+                    &hex::encode(&sender_pubkey)[..16],
+                    e,
+                    envelope_data.len()
+                );
                 IronCoreError::CryptoError
             })?
         };
@@ -3436,7 +3450,13 @@ impl IronCore {
         let sender_public_key_hex = hex::encode(&sender_pubkey);
         let canonical_peer_id =
             crate::identity::keys::identity_id_from_public_key_hex(&sender_public_key_hex)
-                .ok_or(IronCoreError::CryptoError)?;
+                .ok_or_else(|| {
+                    tracing::error!(
+                        "receive_message: cannot derive canonical identity for sender {}..; dropping",
+                        &sender_public_key_hex[..16]
+                    );
+                    IronCoreError::CryptoError
+                })?;
 
         // Also check device-specific blocks using the sender's last known device ID
         // Try the authenticated public key and its canonical identity_id; first
