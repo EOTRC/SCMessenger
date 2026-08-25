@@ -50,6 +50,7 @@ fun DashboardScreen(
 ) {
     val serviceState by serviceViewModel.serviceState.collectAsState()
     val isRunning by serviceViewModel.isRunning.collectAsState()
+    val isStorageDegraded by serviceViewModel.isStorageDegraded.collectAsState()
     val stats by serviceViewModel.serviceStats.collectAsState()
 
     val fullPeers by dashboardViewModel.fullPeersCount.collectAsState()
@@ -78,7 +79,8 @@ fun DashboardScreen(
             item {
                 StatusCard(
                     isRunning = isRunning,
-                    stateName = serviceState.name
+                    stateName = serviceState.name,
+                    isStorageDegraded = isStorageDegraded
                 )
             }
 
@@ -275,12 +277,17 @@ fun PeerItem(peer: com.scmessenger.android.ui.viewmodels.PeerInfo) {
 @Composable
 fun StatusCard(
     isRunning: Boolean,
-    stateName: String
+    stateName: String,
+    isStorageDegraded: Boolean = false
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = if (isRunning) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+            containerColor = when {
+                isRunning -> MaterialTheme.colorScheme.primaryContainer
+                isStorageDegraded -> MaterialTheme.colorScheme.errorContainer
+                else -> MaterialTheme.colorScheme.surfaceVariant
+            }
         )
     ) {
         Row(
@@ -292,15 +299,31 @@ fun StatusCard(
         ) {
             Column {
                 Text(
-                    text = if (isRunning) stringResource(R.string.dashboard_status_active) else stringResource(R.string.dashboard_status_stopped),
+                    text = when {
+                        isRunning -> stringResource(R.string.dashboard_status_active)
+                        isStorageDegraded -> stringResource(R.string.storage_error_title)
+                        else -> stringResource(R.string.dashboard_status_stopped)
+                    },
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
-                    color = if (isRunning) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                    color = when {
+                        isRunning -> MaterialTheme.colorScheme.onPrimaryContainer
+                        isStorageDegraded -> MaterialTheme.colorScheme.onErrorContainer
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
                 )
                 Text(
-                    text = stringResource(R.string.dashboard_label_state_format, stateName),
+                    text = if (isStorageDegraded) {
+                        stringResource(R.string.storage_error_degraded_description)
+                    } else {
+                        stringResource(R.string.dashboard_label_state_format, stateName)
+                    },
                     style = MaterialTheme.typography.bodyMedium,
-                    color = if (isRunning) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
+                    color = when {
+                        isRunning -> MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                        isStorageDegraded -> MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.9f)
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
                 )
             }
         }

@@ -61,6 +61,14 @@ class MeshServiceViewModel @Inject constructor(
             initialValue = false
         )
 
+    // Degraded storage tracking
+    val isStorageDegraded = meshRepository.isStorageDegraded
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = false
+        )
+
     init {
         Timber.d("MeshServiceViewModel initialized")
     }

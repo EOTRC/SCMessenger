@@ -34,8 +34,15 @@ import javax.inject.Singleton
 class NetworkDetector @Inject constructor(
     private val context: Context
 ) {
-    private val connectivityManager =
+    // Lazy: JVM unit tests construct MeshRepository (and therefore this class)
+    // with a bare mocked Context that has no getSystemService(CONNECTIVITY_SERVICE)
+    // stub. Resolving eagerly threw a ClassCastException during construction,
+    // before any of the existing try/catch degradation in startMonitoring() could
+    // apply. All real call sites already sit behind startMonitoring()/stopMonitoring(),
+    // so deferring resolution to first use changes nothing on a real device.
+    private val connectivityManager: ConnectivityManager by lazy {
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    }
 
     /** Current network type detected */
     private val _networkType = MutableStateFlow(NetworkType.UNKNOWN)

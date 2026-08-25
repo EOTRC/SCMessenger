@@ -431,5 +431,10 @@ jobs:
             **/*.ts
             SHA256SUMS.txt
           body_path: CHANGELOG.md
-          draft: false
+          # Pre-release tags (alpha/beta/rc) create DRAFT releases. A GitHub
+          # release is public the moment it exists, and the operator ruling
+          # (CTO_STATE 0-2026-08-23d) locks pre-release builds behind draft
+          # status: publishing gates on the external audit being commissioned
+          # plus the four-node gate passing. Only final version tags publish.
+          draft: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}

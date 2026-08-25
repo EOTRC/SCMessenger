@@ -531,4 +531,9 @@
     <string name="share_toast_message_queued">Message queued for sending</string>
     <string name="share_error_failed_to_send">Failed to send message</string>
 
+    <!-- Storage error strings -->
+    <string name="storage_error_title">Message Store Unavailable</string>
+    <string name="storage_error_degraded_description">The message store could not be opened and the app cannot run safely. Another copy of the app or a CLI tool may be holding the database lock. Please close other instances and restart the app.</string>
+    <string name="storage_error_content_desc">Storage Error</string>
+
 </resources>

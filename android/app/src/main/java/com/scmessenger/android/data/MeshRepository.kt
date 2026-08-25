@@ -1,5 +1,6 @@
 package com.scmessenger.android.data
 
+import com.scmessenger.android.R
 import android.content.Context
 import android.content.pm.PackageManager
 import android.content.SharedPreferences
@@ -374,6 +375,10 @@ open class MeshRepository(
     // Service state
     private val _serviceState = MutableStateFlow(uniffi.api.ServiceState.STOPPED)
     open val serviceState: StateFlow<uniffi.api.ServiceState> = _serviceState.asStateFlow()
+
+    // Degraded storage tracking (lock contention or corrupt sled store)
+    private val _isStorageDegraded = MutableStateFlow(false)
+    open val isStorageDegraded: StateFlow<Boolean> = _isStorageDegraded.asStateFlow()
 
     // P0_SHARED_IDENTITY: Centralized identity StateFlow. All ViewModels (Main,
     // Identity, Settings, MeshService, Dashboard) should observe this single
@@ -1384,6 +1389,7 @@ open class MeshRepository(
 
             // 1. Start the Rust Core service
             meshService?.start()
+            _isStorageDegraded.value = false
 
             // 2. Obtain shared IronCore instance
             ironCore = meshService?.getCore()
@@ -2457,7 +2463,16 @@ open class MeshRepository(
             Timber.i("SC_IDENTITY_OWN p2p_id=${info?.libp2pPeerId ?: "unknown"} pk=${info?.publicKeyHex ?: "unknown"}")
             Timber.i("Mesh service started successfully")
         } catch (e: Exception) {
-            Timber.e(e, "Failed to start mesh service")
+            val isStorageError = e is uniffi.api.IronCoreException.StorageException ||
+                e.message?.contains("StorageException", ignoreCase = true) == true ||
+                e.message?.contains("StorageError", ignoreCase = true) == true ||
+                e.message?.contains("storage", ignoreCase = true) == true
+            if (isStorageError) {
+                _isStorageDegraded.value = true
+                Timber.e(e, "Persistent storage is degraded or locked; mesh service cannot start safely")
+            } else {
+                Timber.e(e, "Failed to start mesh service")
+            }
             stopMeshService()
             return
         }
@@ -5212,6 +5227,11 @@ open class MeshRepository(
                     // can fire periodic elapsed-time updates during the wait.
                     progress(IdentityCreationEvent.PreparingStorage, "Waking the encrypted key vault…")
                     if (!ensureServiceInitialized(progress) || ironCore == null) {
+                        if (_isStorageDegraded.value) {
+                            throw IllegalStateException(
+                                context.getString(R.string.storage_error_degraded_description)
+                            )
+                        }
                         // Throw instead of silent return — the ViewModel catch block
                         // will set _identityError and reset _isCreating, giving the
                         // user visible feedback instead of a frozen progress display.
@@ -5421,6 +5441,10 @@ open class MeshRepository(
         val timeoutMs = 60_000L
         var lastProgressMs = 0L
         while (System.currentTimeMillis() - startTime < timeoutMs) {
+            if (_isStorageDegraded.value) {
+                Timber.e("ensureServiceInitialized aborted: persistent storage is degraded or locked")
+                return false
+            }
             if (meshService?.getState() == uniffi.api.ServiceState.RUNNING && ironCore != null) {
                 return true
             }
