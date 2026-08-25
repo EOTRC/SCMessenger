@@ -1797,27 +1797,29 @@ open class MeshRepository(
                 ) {
                     Timber.i("Message from $senderId: $messageId")
                     repoScope.launch {
-                        // Fail fast on duplicate messages before any decode/history/receipt side effects.
-                        val (isDuplicate, timeVarianceMs, firstTransport) = gateInboundMessage(messageId)
-                        if (isDuplicate) {
-                            Timber.i("Message duplicate detected (core transport): $messageId time_variance=${timeVarianceMs}ms first_transport=$firstTransport")
-                            return@launch
+                        // DELIVERY-DIVERGENCE FIX (2026-08-25): the previous order ran
+                        // gateInboundMessage() FIRST, recording the message id in the
+                        // dedup cache before any droppable check. A message arriving
+                        // during a doze/wake window -- settings store still unavailable
+                        // (fail-safe "disabled"), storage contention throwing below, or
+                        // any early return -- was dropped AFTER its id was recorded.
+                        // Every sender retry of the queued envelope then hit the
+                        // duplicate gate and returned silently: no UI record, no
+                        // delivery receipt, sender stuck "pending" until the 5-minute
+                        // dedup TTL expired (or forever, if the original failure was
+                        // deterministic). Reordered so droppable checks run BEFORE the
+                        // dedup slot is consumed, and duplicates of an already-stored
+                        // inbound message are re-acknowledged instead of dropped.
+
+                        // 1. Participation gate first: dropping here must not consume
+                        //    a dedup slot. Treat load errors as disabled (fail-safe)
+                        //    but WITHOUT poisoning dedup for future retries.
+                        val currentSettings = try {
+                            settingsManager?.load()
+                        } catch (e: Exception) {
+                            Timber.w("Settings load failed in onMessageReceived (fail-safe): ${e.message}")
+                            null
                         }
-
-                        logDeliveryAttempt(
-                            messageId = messageId,
-                            medium = "core",
-                            phase = "rx",
-                            outcome = "received",
-                            detail = "sender=$senderId",
-                            callerContext = "onMessageReceived"
-                        )
-
-                        try {
-                        // Check if relay/messaging is enabled (bidirectional control)
-                        // Treat null/missing settings as disabled (fail-safe)
-                        // Cache settings value to avoid race condition during check
-                        val currentSettings = settingsManager?.load()
                         if (!Companion.isMeshParticipationEnabled(currentSettings)) {
                             Timber.w("Dropping received message - mesh participation is disabled or settings unavailable")
                             return@launch
@@ -1831,6 +1833,46 @@ open class MeshRepository(
                             Timber.d("Suppressing delivery receipt from text/UI path: msg=$messageId")
                             return@launch
                         }
+
+                        // 2. Stored-record check BEFORE the dedup gate so retries of an
+                        //    already-stored inbound message can be re-acknowledged.
+                        val storedBeforeGate = try {
+                            historyManager?.get(messageId)
+                        } catch (_: Exception) {
+                            null
+                        }
+                        val alreadyStoredInbound =
+                            storedBeforeGate?.direction == uniffi.api.MessageDirection.RECEIVED
+
+                        // 3. Dedup gate last. A duplicate either re-acks a stored
+                        //    message (sender's retry loop needs the receipt to
+                        //    converge) or falls through for reprocessing when the
+                        //    earlier copy never made it to history.
+                        val (isDuplicate, timeVarianceMs, firstTransport) = gateInboundMessage(messageId)
+                        if (isDuplicate) {
+                            if (alreadyStoredInbound) {
+                                Timber.i("Duplicate inbound $messageId already stored; re-acknowledging (time_variance=${timeVarianceMs}ms first_transport=$firstTransport)")
+                                val ackCanonicalPeerId = resolveCanonicalPeerId(senderId, senderPublicKeyHex)
+                                sendDeliveryReceiptAsync(
+                                    senderPublicKeyHex = senderPublicKeyHex,
+                                    messageId = messageId,
+                                    senderId = ackCanonicalPeerId
+                                )
+                                return@launch
+                            }
+                            Timber.i("Duplicate $messageId without stored record (earlier copy lost mid-window); reprocessing")
+                        }
+
+                        logDeliveryAttempt(
+                            messageId = messageId,
+                            medium = "core",
+                            phase = "rx",
+                            outcome = "received",
+                            detail = "sender=$senderId",
+                            callerContext = "onMessageReceived"
+                        )
+
+                        try {
                         val hintedIdentity = decodedPayload.hints
                         val hintedKey = normalizePublicKey(hintedIdentity?.publicKey)
                         val verifiedHints = if (
