@@ -5062,6 +5062,11 @@ pub async fn start_swarm_with_config(
                                 // P1 Item 3: Reset backoff state on successful connection
                                 let addr_key = multiaddr_to_key(&remote_addr);
                                 dial_policy_manager.reset_on_connection_established(&addr_key, Some(peer_id));
+                                // An established connection is proof of liveness for the PEER,
+                                // not just this address: clear dead/backoff on every addr entry
+                                // attributed to this peer (inbound remote addrs are ephemeral
+                                // ports that never match the dialed addr_key).
+                                dial_policy_manager.reset_peer_backoff(peer_id);
                                 // Complete the dial attempt since it succeeded
                                 dial_policy_manager.complete_dial_attempt(&addr_key);
 
