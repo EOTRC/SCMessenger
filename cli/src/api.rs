@@ -792,33 +792,45 @@ async fn handle_send_message(
             )
         })?;
 
-    let ble_result =
-        crate::ble_mesh::send_ble_message(&recipient.peer_id.to_string(), &prepared.envelope_data)
-            .await;
-    let (http_status, status, error) = if ble_result.is_ok() {
-        (StatusCode::OK, "accepted".to_string(), None)
-    } else {
-        match ctx
-            .swarm_handle
-            .send_message(
-                recipient.peer_id,
-                prepared.envelope_data,
-                Some(recipient.identity_id.clone()),
-                None,
+    // SWARM-FIRST DISPATCH. The previous order tried BLE GATT first and
+    // short-circuited the swarm send whenever the GATT write reported success.
+    // After a doze/offline window the phone's GATT server still accepts writes
+    // (notification "completes") while its ingress cannot receive, so messages
+    // were silently lost and never reached the libp2p path that actually works.
+    // SwarmBridge::send_message already performs dual-stack delivery (BLE when
+    // the peer is nearby + swarm), so it goes first; the raw BLE write below is
+    // only a last-resort fallback when the swarm dispatch itself fails.
+    let ble_fallback_data = prepared.envelope_data.clone();
+    let (http_status, status, error) = match ctx
+        .swarm_handle
+        .send_message(
+            recipient.peer_id,
+            prepared.envelope_data,
+            Some(recipient.identity_id.clone()),
+            None,
+        )
+        .await
+    {
+        Ok(()) => (StatusCode::OK, "accepted".to_string(), None),
+        Err(_swarm_err) => {
+            match crate::ble_mesh::send_ble_message(
+                &recipient.peer_id.to_string(),
+                &ble_fallback_data,
             )
             .await
-        {
-            Ok(()) => (StatusCode::OK, "accepted".to_string(), None),
-            Err(e) if ctx.swarm_handle.is_event_loop_alive() => (
-                StatusCode::ACCEPTED,
-                "retrying".to_string(),
-                Some(format!("Initial dispatch failed; retrying: {}", e)),
-            ),
-            Err(e) => {
-                return Err((
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    format!("Message was not accepted by BLE or Swarm: {}", e),
-                ));
+            {
+                Ok(()) => (StatusCode::OK, "accepted".to_string(), None),
+                Err(e) if ctx.swarm_handle.is_event_loop_alive() => (
+                    StatusCode::ACCEPTED,
+                    "retrying".to_string(),
+                    Some(format!("Initial dispatch failed; retrying: {}", e)),
+                ),
+                Err(e) => {
+                    return Err((
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        format!("Message was not accepted by BLE or Swarm: {}", e),
+                    ));
+                }
             }
         }
     };
