@@ -177,13 +177,19 @@ class DashboardViewModel @Inject constructor(
                 )
             }.toMutableMap()
 
-            // Enrich/Add with ledger entries (dialable + seed + dead peers) - authoritative nickname wins over synthetic
+            // Enrich/Add with ledger entries — canonicalize: 12D3 (libp2p) and 30d0fa (hex) for same identity must merge
             ledgerEntries.forEach { entry ->
                 val rawPeerId = entry.peerId ?: return@forEach
-                val peerId = routeAliasToCanonical[rawPeerId]
+                val resolvedPeerId = routeAliasToCanonical[rawPeerId]
                     ?: normalizePublicKey(entry.publicKey)?.let { canonicalByPublicKey[it] }
                     ?: rawPeerId
-                val existing = peerMap[peerId]
+                // Canonicalize libp2p -> hex so 12D3KooWD6... and 30d0fa... share one key (both hashes needed but not duplicate nodes)
+                val peerId = try {
+                    meshRepository.canonicalContactIdPublic(resolvedPeerId).takeIf { it.isNotEmpty() } ?: resolvedPeerId
+                } catch (_: Exception) { resolvedPeerId }
+                // For lookup, also try canonical variant of existing keys (peerMap is keyed by canonical hex)
+                val lookupKey = peerId.trim().lowercase()
+                val existing = peerMap[lookupKey] ?: peerMap[peerId] ?: peerMap[resolvedPeerId]
                 if (existing != null) {
                     val entryLastSeen = entry.lastSeen
                     val existingLastSeen = existing.lastSeen
@@ -191,7 +197,8 @@ class DashboardViewModel @Inject constructor(
                         ?: selectAuthoritativeNickname(entry.nickname, existing.nickname)
                         ?: existing.nickname
                     val authoritativeLocal = existing.localNickname
-                    peerMap[peerId] = existing.copy(
+                    // Update via canonical key to avoid 12D3/30d0fa duplicate
+                    peerMap[lookupKey] = existing.copy(
                         nickname = authoritativeNick,
                         localNickname = authoritativeLocal,
                         multiaddr = if (entry.multiaddr.contains("/p2p-circuit/") || existing.multiaddr.isEmpty()) entry.multiaddr else existing.multiaddr,
@@ -206,10 +213,13 @@ class DashboardViewModel @Inject constructor(
                             MeshRepository.parseTransportsFromMultiaddrs(listOf(entry.multiaddr)))
                             .distinct()
                     )
+                    // Remove any stale alias key if lookup used alternative
+                    if (lookupKey != peerId && peerMap.containsKey(peerId)) peerMap.remove(peerId)
+                    if (lookupKey != resolvedPeerId && peerMap.containsKey(resolvedPeerId)) peerMap.remove(resolvedPeerId)
                 } else {
                     // Preserve authoritative nickname: filter synthetic ledger nicknames
                     val ledgerNick = selectAuthoritativeNickname(entry.nickname, null)
-                    peerMap[peerId] = PeerInfo(
+                    peerMap[lookupKey] = PeerInfo(
                         peerId = peerId,
                         nickname = ledgerNick,
                         multiaddr = entry.multiaddr,
@@ -279,16 +289,25 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
+    // UNIFICATION: canonical dedup by public_key_hex — 12D3 (libp2p) and 30d0fa (hex) for same identity must merge.
     private fun deduplicateDiscoveredPeers(
         discovered: Map<String, MeshRepository.PeerDiscoveryInfo>
     ): Map<String, MeshRepository.PeerDiscoveryInfo> {
         val merged = linkedMapOf<String, MeshRepository.PeerDiscoveryInfo>()
         discovered.values.forEach { info ->
-            val canonicalPeerId = info.peerId.trim()
-            if (canonicalPeerId.isEmpty()) return@forEach
-            val existing = merged[canonicalPeerId]
+            val rawId = info.peerId.trim()
+            if (rawId.isEmpty()) return@forEach
+            // Canonicalize: libp2p 12D3Koo... -> 64-hex public_key via MeshRepository, hex stays lowercased
+            val canonicalPeerId = try {
+                meshRepository.canonicalContactIdPublic(rawId).takeIf { it.isNotEmpty() } ?: rawId
+            } catch (_: Exception) { rawId }
+            // Also consider publicKey field as stronger canonical source
+            val canonicalByKey = normalizePublicKey(info.publicKey)?.let { it } ?: canonicalPeerId
+            val mapKey = canonicalByKey.lowercase()
+            val existing = merged[mapKey]
             if (existing == null) {
-                merged[canonicalPeerId] = info.copy(peerId = canonicalPeerId)
+                // Store with canonical peerId (public_key_hex) so UI shows correct hash (30d0fa...), not libp2p
+                merged[mapKey] = info.copy(peerId = canonicalPeerId)
             } else {
                 val authoritativeNick = selectAuthoritativeNickname(existing.nickname, info.nickname)
                     ?: selectAuthoritativeNickname(info.nickname, existing.nickname)

@@ -4247,6 +4247,9 @@ open class MeshRepository(
         return resolvedCanonicalId
     }
 
+    // Public for ViewModel dedup — canonical public_key_hex for any id (hex, libp2p, identity_id)
+    internal fun canonicalContactIdPublic(id: String): String = canonicalContactId(id)
+
     private fun canonicalContactId(id: String): String {
         val trimmed = id.trim()
         if (trimmed.isEmpty()) return trimmed
