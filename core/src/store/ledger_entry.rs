@@ -263,6 +263,37 @@ fn evict_one_locked(entries: &mut Vec<LedgerEntry>) {
     }
 }
 
+/// Derive the libp2p peer id that a hex-encoded Ed25519 public key
+/// self-certifies, or `None` when the value is not a valid Ed25519 public key.
+///
+/// Ed25519 libp2p peer ids are identity multihashes of the protobuf-encoded
+/// public key, so a genuine (key, peer_id) binding ALWAYS re-derives exactly.
+fn peer_id_from_public_key_hex(public_key_hex: &str) -> Option<String> {
+    let bytes = hex::decode(public_key_hex).ok()?;
+    let arr: [u8; 32] = bytes.as_slice().try_into().ok()?;
+    let ed25519_pk = libp2p::identity::ed25519::PublicKey::try_from_bytes(&arr).ok()?;
+    Some(libp2p::identity::PublicKey::from(ed25519_pk)
+        .to_peer_id()
+        .to_string())
+}
+
+/// A ledger `public_key` may only be bound to a transport `peer_id` when the
+/// binding is SELF-CERTIFYING (the peer id re-derives from the key).
+///
+/// Bindings learned out of band -- circuit-relay route annotations attributing
+/// the relay hop's key to the destination peer, ledger-exchange gossip,
+/// identity-sync hints -- are rejected so they can never poison identity
+/// resolution or receipt encryption on the platform clients. Mirrors the Kotlin
+/// `isSelfCertifyingKeyBinding` gate in MeshRepository.
+fn is_self_certifying_binding(peer_id: &str, public_key_hex: &str) -> bool {
+    peer_id_from_public_key_hex(public_key_hex)
+        .is_some_and(|derived| derived == peer_id)
+}
+
+fn truncate_tail_for_log(value: &str) -> &str {
+    value.get(value.len().saturating_sub(8)..).unwrap_or(value)
+}
+
 fn annotate_identity_locked(
     entries: &mut Vec<LedgerEntry>,
     multiaddr: String,
@@ -299,6 +330,24 @@ fn annotate_identity_locked(
     {
         return false;
     }
+
+    // SELF-CERTIFYING KEY GATE. A public key may ride along only when it
+    // re-derives the transport peer id; otherwise the annotation is a routing
+    // hint and the key (which would misattribute another node's identity to
+    // this peer) is dropped before it can reach the ledger.
+    let normalized_public_key = normalized_public_key.and_then(|key| {
+        if peer_id.is_empty() || is_self_certifying_binding(&peer_id, &key) {
+            Some(key)
+        } else {
+            tracing::warn!(
+                "Ledger guard: refusing to bind public_key {}.. to unrelated transport \
+                 peer ..{} -- storing routing hint without a key",
+                key.get(..8).unwrap_or(&key),
+                truncate_tail_for_log(&peer_id)
+            );
+            None
+        }
+    });
 
     let target_port = get_multiaddr_port(&multiaddr);
     let mut found_dns_idx = None;
@@ -613,10 +662,43 @@ impl LedgerManager {
             entries.truncate(MAX_LEDGER_ENTRIES);
             changed = true;
         }
+        let mut repaired_bindings = 0usize;
         for entry in &mut entries {
             changed |= sanitize_optional_ledger_text(&mut entry.public_key, MAX_LEN_PUBLIC_KEY);
             changed |= sanitize_optional_ledger_text(&mut entry.nickname, MAX_LEN_NICKNAME);
             changed |= sanitize_legacy_topics(&mut entry.topics);
+
+            // DATA REPAIR: apply the self-certifying check to ALL persisted
+            // entries regardless of which writer produced them. Older builds
+            // wrote circuit-relay route annotations that bound another node's
+            // public key to this transport peer id; such bindings survive as
+            // valid JSON and corrupt identity resolution on every reload.
+            // Routing metadata is preserved; only the identity claim is stripped.
+            let poisoned = match (&entry.peer_id, &entry.public_key) {
+                (Some(peer_id), Some(public_key)) => {
+                    !peer_id.is_empty() && !is_self_certifying_binding(peer_id, public_key)
+                }
+                _ => false,
+            };
+            if poisoned {
+                let public_key = entry.public_key.as_deref().unwrap_or_default();
+                let peer_id = entry.peer_id.as_deref().unwrap_or_default();
+                tracing::warn!(
+                    "Ledger load repair: stripping poisoned public_key {}.. bound to \
+                     unrelated transport peer ..{}",
+                    public_key.get(..8).unwrap_or(public_key),
+                    truncate_tail_for_log(peer_id)
+                );
+                entry.public_key = None;
+                changed = true;
+                repaired_bindings += 1;
+            }
+        }
+        if repaired_bindings > 0 {
+            tracing::info!(
+                "Ledger load repair: corrected {} non-self-certifying public_key binding(s)",
+                repaired_bindings
+            );
         }
 
         // Compact input can expand beyond the durable bound when pretty
@@ -1302,6 +1384,21 @@ mod tests {
     /// to parse, so the fixtures have to be real.
     fn peer() -> String {
         libp2p::PeerId::random().to_string()
+    }
+
+    /// A (peer_id, public_key_hex) pair that genuinely self-certifies: the
+    /// peer id re-derives from the Ed25519 public key.
+    fn self_certifying_pair() -> (String, String) {
+        let keypair = libp2p::identity::Keypair::generate_ed25519();
+        let public_key = keypair.public();
+        let peer_id = public_key.to_peer_id().to_string();
+        let key_hex = hex::encode(
+            public_key
+                .try_into_ed25519()
+                .expect("ed25519 public key")
+                .to_bytes(),
+        );
+        (peer_id, key_hex)
     }
 
     #[test]
@@ -2151,8 +2248,14 @@ mod tests {
     fn exchange_response_excludes_unproven_entries_carrying_a_public_key() {
         let (_dir, mgr) = manager();
         let addr = "/ip4/198.51.100.7/tcp/9001";
+        let (self_peer, self_key) = self_certifying_pair();
 
-        mgr.annotate_identities_batch(vec![(addr.to_string(), peer(), Some("a".repeat(64)), None)]);
+        mgr.annotate_identities_batch(vec![(
+            addr.to_string(),
+            self_peer,
+            Some(self_key),
+            None,
+        )]);
 
         let unproven = mgr.seed_addresses(64);
         assert!(
@@ -2400,6 +2503,117 @@ mod tests {
         // The IP form still works, so this is a filter and not an outage.
         mgr.annotate_identity("/ip4/198.51.100.8/tcp/9001".to_string(), pid, None, None);
         assert_eq!(mgr.seed_addresses(64).len(), 1);
+    }
+
+    /// A public_key that does not derive its transport peer_id is a poisoned
+    /// binding (circuit-relay route attribution). The annotation must survive
+    /// as a ROUTING HINT ONLY: the key is dropped, the address is kept.
+    #[test]
+    fn annotate_identity_stores_routing_only_when_binding_is_not_self_certifying() {
+        let (_dir, mgr) = manager();
+        let addr = "/ip4/198.51.100.9/tcp/9001";
+        let unrelated_peer = peer();
+        let (other_peer, other_key) = self_certifying_pair();
+        assert_ne!(other_peer, unrelated_peer);
+
+        mgr.annotate_identity(
+            addr.to_string(),
+            unrelated_peer.clone(),
+            Some(other_key),
+            Some("Alice".to_string()),
+        );
+
+        let entries = mgr.entries.lock();
+        let entry = entries
+            .iter()
+            .find(|e| e.multiaddr == addr)
+            .expect("routing hint entry stored");
+        assert_eq!(entry.peer_id.as_deref(), Some(unrelated_peer.as_str()));
+        assert!(
+            entry.public_key.is_none(),
+            "poisoned key must not be persisted"
+        );
+        assert_eq!(entry.nickname.as_deref(), Some("Alice"));
+    }
+
+    /// Positive control: a genuine self-certifying binding is preserved.
+    #[test]
+    fn annotate_identity_keeps_self_certifying_bindings() {
+        let (_dir, mgr) = manager();
+        let addr = "/ip4/198.51.100.10/tcp/9001";
+        let (self_peer, self_key) = self_certifying_pair();
+
+        mgr.annotate_identity(addr.to_string(), self_peer.clone(), Some(self_key), None);
+
+        let entries = mgr.entries.lock();
+        let entry = entries
+            .iter()
+            .find(|e| e.multiaddr == addr)
+            .expect("entry stored");
+        assert_eq!(entry.peer_id.as_deref(), Some(self_peer.as_str()));
+        assert!(
+            entry.public_key.is_some(),
+            "a self-certifying binding must be kept"
+        );
+    }
+
+    /// Load-time repair must strip poisoned bindings from ALL persisted entries
+    /// regardless of which writer produced them (older builds wrote valid-JSON,
+    /// wrong-key rows through uniffi annotate_identity with no guard).
+    #[test]
+    fn load_strips_non_self_certifying_bindings_from_any_writer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (victim_peer, _victim_key) = self_certifying_pair();
+        let (_other_peer, other_key) = self_certifying_pair();
+        let entries = vec![
+            LedgerEntry {
+                multiaddr: "/ip4/198.51.100.11/tcp/9001".to_string(),
+                peer_id: Some(victim_peer.clone()),
+                public_key: Some(other_key),
+                nickname: Some("Bob".to_string()),
+                success_count: 1,
+                failure_count: 0,
+                last_seen: Some(42),
+                topics: Vec::new(),
+            },
+            LedgerEntry {
+                multiaddr: "/ip4/198.51.100.12/tcp/9001".to_string(),
+                peer_id: None,
+                public_key: None,
+                nickname: None,
+                success_count: 0,
+                failure_count: 0,
+                last_seen: None,
+                topics: Vec::new(),
+            },
+        ];
+        let ledger_file = dir.path().join("ledger.json");
+        std::fs::write(
+            &ledger_file,
+            serde_json::to_string_pretty(&entries).expect("serialize fixture"),
+        )
+        .expect("write ledger fixture");
+
+        let mgr = LedgerManager::new(dir.path().to_string_lossy().to_string());
+        mgr.load().expect("load");
+
+        let repaired = mgr.entries.lock();
+        assert_eq!(repaired.len(), 2);
+        let victim = repaired
+            .iter()
+            .find(|e| e.peer_id.as_deref() == Some(victim_peer.as_str()))
+            .expect("poisoned entry retained as routing record");
+        assert!(
+            victim.public_key.is_none(),
+            "load repair must strip the poisoned binding"
+        );
+        assert_eq!(victim.nickname.as_deref(), Some("Bob"));
+        assert_eq!(victim.success_count, 1, "routing metadata preserved");
+        assert_eq!(
+            std::fs::read_to_string(&ledger_file).expect("rewritten ledger"),
+            serde_json::to_string_pretty(&*repaired).expect("serialize repaired"),
+            "repair must be durable, not in-memory only"
+        );
     }
 
     // ------------------------------------------------------------------

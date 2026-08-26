@@ -5796,8 +5796,32 @@ open class MeshRepository(
         ledgerManager?.recordFailure(multiaddr)
     }
 
+    /**
+     * Dial candidates from the ledger, with identity fields masked on any
+     * entry whose key binding is not self-certifying.
+     *
+     * Resolution precedence enforcement (see isSelfCertifyingKeyBinding): a
+     * relay-hop-derived key can never win identity resolution because every
+     * ledger consumer reads entries through this accessor — poisoned keys are
+     * logged and stripped here even if a writer bypassed the annotation guards,
+     * and routing metadata (multiaddr, peer_id, last_seen) is preserved so
+     * dialing and node retention are unaffected.
+     */
     fun getDialableAddresses(): List<uniffi.api.LedgerEntry> {
-        return ledgerManager?.dialableAddresses() ?: emptyList()
+        val raw = ledgerManager?.dialableAddresses() ?: return emptyList()
+        return raw.map { entry ->
+            val pid = entry.peerId?.trim().orEmpty()
+            val key = entry.publicKey?.trim().orEmpty()
+            if (pid.isNotEmpty() && key.isNotEmpty() && !isSelfCertifyingKeyBinding(pid, key)) {
+                Timber.w(
+                    "Ledger read guard: masking poisoned key ${key.take(8)}... bound to " +
+                        "transport peer ...${pid.takeLast(8)} (would have won resolution pre-fix)"
+                )
+                entry.copy(publicKey = null, nickname = null)
+            } else {
+                entry
+            }
+        }
     }
 
     /**
@@ -5922,7 +5946,10 @@ open class MeshRepository(
                     )
                 }
 
-            ledgerManager?.dialableAddresses().orEmpty().forEach { entry ->
+            // Guarded accessor: poisoned relay-hop bindings are masked before
+            // they can seed the discovery map (NODE-RETENTION-001 must not
+            // resurrect identity poison across WiFi/BLE cycles).
+            getDialableAddresses().forEach { entry ->
                 val rawPeerId = entry.peerId?.trim().takeIf { !it.isNullOrEmpty() } ?: return@forEach
                 val transports = parseTransportsFromMultiaddrs(listOf(entry.multiaddr))
                 val existing = seeded[rawPeerId]
@@ -8169,9 +8196,12 @@ open class MeshRepository(
             .mapNotNull { normalizeNickname(it.nickname) }
             .firstOrNull()
 
-        val fromLedger = ledgerManager?.dialableAddresses()
-            ?.asSequence()
-            ?.filter { entry ->
+        // Precedence (b)/(c): ledger nicknames are the LOWEST-trust tier and
+        // only count when the entry's key binding survives the self-certifying
+        // gate; contact records (a) outrank them via selectAuthoritativeNickname.
+        val fromLedger = getDialableAddresses()
+            .asSequence()
+            .filter { entry ->
                 entry.peerId == canonicalPeerId ||
                     (!routeCandidate.isNullOrBlank() && entry.peerId == routeCandidate) ||
                     (
@@ -8179,8 +8209,8 @@ open class MeshRepository(
                             normalizePublicKey(entry.publicKey) == normalizedKey
                         )
             }
-            ?.mapNotNull { normalizeNickname(it.nickname) }
-            ?.firstOrNull()
+            .mapNotNull { normalizeNickname(it.nickname) }
+            .firstOrNull()
 
         val fromContact = try {
             contactManager?.list()
@@ -8882,7 +8912,7 @@ open class MeshRepository(
             }
             .toList()
 
-        val fromLedger = (ledgerManager?.dialableAddresses() ?: emptyList())
+        val fromLedger = getDialableAddresses()
             .asSequence()
             .mapNotNull { entry ->
                 val candidate = entry.peerId?.trim().orEmpty()
@@ -8932,7 +8962,7 @@ open class MeshRepository(
         // entries attribute relay-hop keys to unrelated transport peers.
         // Only accept the binding when an existing Contact record corroborates
         // the route association (explicit user add or signed-message source).
-        val ledgerMatch = (ledgerManager?.dialableAddresses() ?: emptyList()).any { entry ->
+        val ledgerMatch = getDialableAddresses().any { entry ->
             entry.peerId?.trim() == normalizedRoute &&
                 normalizePublicKey(entry.publicKey) == normalizedRecipientKey
         }
