@@ -25,6 +25,7 @@ import com.scmessenger.android.service.MeshEventBus
 import androidx.compose.ui.res.stringResource
 import com.scmessenger.android.R
 import com.scmessenger.android.ui.viewmodels.ConversationsViewModel
+import com.scmessenger.android.utils.displayName
 import com.scmessenger.android.utils.toEpochMillis
 import java.text.SimpleDateFormat
 import java.util.*
@@ -153,13 +154,9 @@ fun ConversationsScreen(
                 ) {
                     items(conversations) { (peerId, messages) ->
                         val contact = viewModel.getContactForPeer(peerId)
-                        val localNickname = contact?.localNickname?.trim().orEmpty()
-                        val federatedNickname = contact?.nickname?.trim().orEmpty()
-                        val displayName = when {
-                            localNickname.isNotEmpty() -> localNickname
-                            federatedNickname.isNotEmpty() -> federatedNickname
-                            else -> peerId.take(8) + "..."
-                        }
+                        val idFallback = peerId.take(8) + "..."
+                        // Dual-nickname: localNickname primary, chosen nickname in parens.
+                        val displayName = contact?.displayName(idFallback) ?: idFallback
                         ConversationItem(
                             displayName = displayName,
                             peerId = peerId,
@@ -209,13 +206,8 @@ fun ConversationsScreen(
             text = {
                 val (peerId, _) = conversationToDelete ?: return@AlertDialog
                 val contact = viewModel.getContactForPeer(peerId)
-                val localNickname = contact?.localNickname?.trim().orEmpty()
-                val federatedNickname = contact?.nickname?.trim().orEmpty()
-                val displayName = when {
-                    localNickname.isNotEmpty() -> localNickname
-                    federatedNickname.isNotEmpty() -> federatedNickname
-                    else -> "${peerId.take(8)}..."
-                }
+                val idFallback = "${peerId.take(8)}..."
+                val displayName = contact?.displayName(idFallback) ?: idFallback
                 Text(stringResource(R.string.conversations_dialog_delete_description, displayName))
             },
             confirmButton = {

@@ -40,6 +40,8 @@ import com.scmessenger.android.R
 import com.scmessenger.android.ui.viewmodels.ContactsViewModel
 import com.scmessenger.android.ui.viewmodels.NearbyPeer
 import com.scmessenger.android.utils.ContactImportParseResult
+import com.scmessenger.android.utils.displayName
+import com.scmessenger.android.utils.displayNames
 import com.scmessenger.android.utils.parseContactImportPayload
 import com.scmessenger.android.utils.toEpochMillis
 import java.text.SimpleDateFormat
@@ -345,14 +347,17 @@ fun ContactItem(
                 // ID text. Matches the pattern in NearbyPeerItem (line 543).
                 Column(modifier = Modifier.weight(1f)) {
                     val unknownFallback = stringResource(R.string.unknown_contact)
-                    val currentNickname = contact.localNickname ?: contact.nickname ?: ""
+                    // Dual-nickname: localNickname is primary; the peer's own
+                    // chosen nickname shows as a secondary "@name" subtitle.
+                    val names = contact.displayNames()
+                    val primaryName = names.primary ?: names.secondary ?: ""
                     Text(
-                        text = currentNickname.ifBlank { unknownFallback },
+                        text = primaryName.ifBlank { unknownFallback },
                         style = MaterialTheme.typography.titleMedium
                     )
-                    if (contact.localNickname != null && contact.nickname != null) {
+                    if (names.primary != null && names.secondary != null) {
                         Text(
-                            text = "@${contact.nickname}",
+                            text = "(@${names.secondary})",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -449,7 +454,7 @@ fun ContactItem(
 
     // Edit nickname dialog
     if (showEditNicknameDialog) {
-        var newNickname by remember { mutableStateOf(contact.localNickname ?: contact.nickname ?: "") }
+        var newNickname by remember { mutableStateOf(contact.localNickname?.trim() ?: "") }
         val focusRequester = remember { FocusRequester() }
 
         AlertDialog(
@@ -475,7 +480,7 @@ fun ContactItem(
                     if (contact.nickname != null) {
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Federated nickname: @${contact.nickname}",
+                            text = stringResource(R.string.contact_chosen_nickname_value, contact.nickname ?: ""),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -511,7 +516,7 @@ fun ContactItem(
             onDismissRequest = { showDeleteDialog = false },
             title = { Text(stringResource(R.string.contacts_dialog_delete_title)) },
             text = {
-                Text(stringResource(R.string.contacts_dialog_delete_description, contact.localNickname ?: contact.nickname ?: "this contact"))
+                Text(stringResource(R.string.contacts_dialog_delete_description, contact.displayName("this contact")))
             },
             confirmButton = {
                 TextButton(

@@ -26,6 +26,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.ui.res.stringResource
 import uniffi.api.*
 import com.scmessenger.android.R
+import com.scmessenger.android.utils.displayName
 import com.scmessenger.android.utils.toEpochMillis
 import com.scmessenger.android.ui.viewmodels.ConversationsViewModel
 import com.scmessenger.android.ui.viewmodels.ContactsViewModel
@@ -119,13 +120,11 @@ fun ChatScreen(
         viewModel.isPeerAvailable(normalizedPeerId)
     }
 
+    val idFallback = conversationId.take(12) + "..."
+    // Dual-nickname: localNickname primary, chosen nickname in parens.
+    val displayName = contact?.displayName(idFallback) ?: idFallback
     val localNickname = contact?.localNickname?.trim().orEmpty()
     val federatedNickname = contact?.nickname?.trim().orEmpty()
-    val displayName = when {
-        localNickname.isNotEmpty() -> localNickname
-        federatedNickname.isNotEmpty() -> federatedNickname
-        else -> conversationId.take(12) + "..."
-    }
 
     Timber.d("CHAT_SCREEN: conversationId=$conversationId, normalizedPeerId=$normalizedPeerId, displayName=$displayName, localNick=$localNickname, fedNick=$federatedNickname, contactFound=${contact != null}, isBlocked=$isBlocked")
     var showAddContactDialog by remember { mutableStateOf(false) }
