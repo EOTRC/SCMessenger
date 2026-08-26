@@ -32,6 +32,7 @@ import androidx.compose.ui.res.stringResource
 import com.scmessenger.android.R
 import com.scmessenger.android.ui.dashboard.PeerListScreen
 import com.scmessenger.android.ui.dashboard.TopologyScreen
+import com.scmessenger.android.utils.toEpochMillis
 import com.scmessenger.android.ui.viewmodels.MeshServiceViewModel
 import com.scmessenger.android.ui.viewmodels.DashboardViewModel
 import com.scmessenger.android.ui.viewmodels.SettingsViewModel
@@ -150,8 +151,13 @@ fun DashboardScreen(
                 )
             }
 
-            // Discovered Nodes List
-            if (peers.isEmpty()) {
+            // NODE-RELAY-LABEL-002: infrastructure relay nodes are sectioned
+            // separately from user-visible peer nodes.
+            val regularPeers = peers.filterNot { it.isRelay }
+            val infrastructureRelays = peers.filter { it.isRelay }
+
+            // Discovered Nodes List (user-visible peer nodes only)
+            if (regularPeers.isEmpty()) {
                 item {
                     Text(
                         text = stringResource(R.string.dashboard_empty_state_discovered),
@@ -160,8 +166,26 @@ fun DashboardScreen(
                     )
                 }
             } else {
-                items(peers) { peer ->
+                items(regularPeers, key = { "peer-${it.peerId}" }) { peer ->
                     PeerItem(peer)
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                }
+            }
+
+            // Relays / Infrastructure section
+            if (infrastructureRelays.isNotEmpty()) {
+                item(key = "relays-header") {
+                    Text(
+                        text = stringResource(R.string.dashboard_section_relays),
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+                items(infrastructureRelays, key = { "relay-${it.peerId}" }) { peer ->
+                    PeerItem(peer, isInfrastructure = true)
                     HorizontalDivider(
                         modifier = Modifier.padding(vertical = 4.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant
@@ -199,7 +223,7 @@ fun DashboardScreen(
 }
 
 @Composable
-fun PeerItem(peer: com.scmessenger.android.ui.viewmodels.PeerInfo) {
+fun PeerItem(peer: com.scmessenger.android.ui.viewmodels.PeerInfo, isInfrastructure: Boolean = false) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -245,12 +269,21 @@ fun PeerItem(peer: com.scmessenger.android.ui.viewmodels.PeerInfo) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            if (isInfrastructure) {
+                Text(
+                    text = stringResource(R.string.peer_label_infrastructure_relay),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.tertiary
+                )
+            }
+            // NODE-TRANSPORT-VIS-001: show every known transport distinctly.
             Text(
                 text = buildString {
                     append("ID: ")
                     append(peer.peerId.take(12))
-                    append("... • ")
-                    append(peer.transport)
+                    append(" • ")
+                    append(peer.transports.ifEmpty { listOf(peer.transport) }.joinToString(" / "))
                     append(" • ")
                     append(
                         when {
@@ -262,6 +295,13 @@ fun PeerItem(peer: com.scmessenger.android.ui.viewmodels.PeerInfo) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (!peer.isOnline && peer.lastSeen != null && peer.lastSeen > 0uL) {
+                Text(
+                    text = stringResource(R.string.peer_list_last_seen, formatRelativeTimestamp(peer.lastSeen)),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         if (peer.isOnline) {
@@ -271,6 +311,16 @@ fun PeerItem(peer: com.scmessenger.android.ui.viewmodels.PeerInfo) {
                     .background(Color.Green, CircleShape)
             )
         }
+    }
+}
+
+private fun formatRelativeTimestamp(timestamp: ULong): String {
+    val diff = (System.currentTimeMillis() - timestamp.toEpochMillis()) / 1000
+    return when {
+        diff < 60 -> "just now"
+        diff < 3600 -> "${diff / 60}m ago"
+        diff < 86400 -> "${diff / 3600}h ago"
+        else -> "${diff / 86400}d ago"
     }
 }
 

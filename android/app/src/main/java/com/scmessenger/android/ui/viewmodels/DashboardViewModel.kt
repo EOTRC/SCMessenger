@@ -139,19 +139,22 @@ class DashboardViewModel @Inject constructor(
                 .toMap()
 
             val peerMap = discovered.mapValues { (_, info) ->
+                val primaryTransport = when (info.transport) {
+                    com.scmessenger.android.service.TransportType.BLE -> "BLE"
+                    com.scmessenger.android.service.TransportType.WIFI_AWARE -> "WiFi Aware"
+                    com.scmessenger.android.service.TransportType.WIFI_DIRECT -> "WiFi Direct"
+                    com.scmessenger.android.service.TransportType.INTERNET -> "Internet"
+                    com.scmessenger.android.service.TransportType.TCP_MDNS -> "TCP/LAN"
+                }
                 PeerInfo(
                     peerId = info.peerId,
                     nickname = info.nickname,
                     localNickname = info.localNickname,
                     multiaddr = "", // Might be empty for BLE/headless
                     lastSeen = info.lastSeen,
-                    transport = when (info.transport) {
-                        com.scmessenger.android.service.TransportType.BLE -> "BLE"
-                        com.scmessenger.android.service.TransportType.WIFI_AWARE -> "WiFi Aware"
-                        com.scmessenger.android.service.TransportType.WIFI_DIRECT -> "WiFi Direct"
-                        com.scmessenger.android.service.TransportType.INTERNET -> "Internet"
-                        com.scmessenger.android.service.TransportType.TCP_MDNS -> "TCP/mDNS"
-                    },
+                    transport = primaryTransport,
+                    // NODE-TRANSPORT-VIS-001: every transport known for this node
+                    transports = (info.transports + primaryTransport).toList().sorted(),
                     isOnline = isRecent(info.lastSeen),
                     isFull = info.isFull,
                     isRelay = meshRepository.isKnownRelay(info.peerId)
@@ -177,7 +180,10 @@ class DashboardViewModel @Inject constructor(
                             else -> existingLastSeen
                         },
                         isOnline = isRecent(entry.lastSeen) || existing.isOnline,
-                        isRelay = existing.isRelay || meshRepository.isKnownRelay(peerId)
+                        isRelay = existing.isRelay || meshRepository.isKnownRelay(peerId),
+                        transports = (existing.transports +
+                            MeshRepository.parseTransportsFromMultiaddrs(listOf(entry.multiaddr)))
+                            .distinct()
                     )
                 } else {
                     peerMap[peerId] = PeerInfo(
@@ -186,6 +192,8 @@ class DashboardViewModel @Inject constructor(
                         multiaddr = entry.multiaddr,
                         lastSeen = entry.lastSeen,
                         transport = determineTransport(entry.multiaddr),
+                        transports = MeshRepository.parseTransportsFromMultiaddrs(listOf(entry.multiaddr))
+                            .toList().sorted(),
                         isOnline = isRecent(entry.lastSeen),
                         isFull = false,
                         isRelay = meshRepository.isKnownRelay(peerId)
@@ -334,10 +342,11 @@ class DashboardViewModel @Inject constructor(
     }
 
     /**
-     * Determine transport type from multiaddr.
+     * Determine primary transport type from multiaddr.
      */
     private fun determineTransport(multiaddr: String): String {
         return when {
+            "/p2p-circuit/" in multiaddr -> "Relay-circuit"
             "/ble/" in multiaddr -> "BLE"
             "/wifi-aware/" in multiaddr -> "WiFi Aware"
             "/wifi-direct/" in multiaddr -> "WiFi Direct"
@@ -375,6 +384,9 @@ data class PeerInfo(
     val multiaddr: String,
     val lastSeen: ULong?,
     val transport: String,
+    // NODE-TRANSPORT-VIS-001: all transports known for this node (BLE, TCP/LAN,
+    // WiFi Aware, WiFi Direct, Relay-circuit, Internet).
+    val transports: List<String> = emptyList(),
     val isOnline: Boolean,
     val isFull: Boolean,
     val isRelay: Boolean = false

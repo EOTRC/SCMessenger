@@ -303,6 +303,10 @@
     <string name="peer_list_status_online">Online</string>
     <string name="peer_list_status_offline">Offline</string>
     <string name="peer_list_last_seen">Last seen: %1$s</string>
+    <string name="peer_list_section_peers">Peers</string>
+    <string name="peer_list_section_relays">Relays / Infrastructure</string>
+    <string name="peer_label_infrastructure_relay">Infrastructure relay node</string>
+    <string name="dashboard_section_relays">Relays / Infrastructure</string>
 
     <!-- Topology Screen -->
     <string name="topology_title">Mesh Topology</string>

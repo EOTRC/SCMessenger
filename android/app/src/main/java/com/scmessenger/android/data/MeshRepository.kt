@@ -122,6 +122,65 @@ open class MeshRepository(
         /** Cap on how many ledger-sourced relays are surfaced in the Settings UI. */
         private const val MAX_SETTINGS_RELAYS = 10u
 
+        // NODE-TRANSPORT-VIS-001: canonical transport labels shown per node row.
+        internal const val TRANSPORT_BLE = "BLE"
+        internal const val TRANSPORT_TCP_LAN = "TCP/LAN"
+        internal const val TRANSPORT_WIFI_AWARE = "WiFi Aware"
+        internal const val TRANSPORT_WIFI_DIRECT = "WiFi Direct"
+        internal const val TRANSPORT_RELAY_CIRCUIT = "Relay-circuit"
+        internal const val TRANSPORT_INTERNET = "Internet"
+
+        /**
+         * Parse transport labels from multiaddr protocol paths.
+         *
+         * Recognised patterns:
+         * - "/p2p-circuit/" → Relay-circuit (node reachable via a relay hop)
+         * - "/ble/" → BLE
+         * - "/wifi-aware/" → WiFi Aware
+         * - "/wifi-direct/" → WiFi Direct
+         * - private-range /ip4/ + "/tcp/" → TCP/LAN (mDNS-discovered LAN node)
+         * - any other IP/dns path with a stream protocol → Internet
+         */
+        internal fun parseTransportsFromMultiaddrs(addresses: Collection<String>): Set<String> {
+            val out = linkedSetOf<String>()
+            for (raw in addresses) {
+                val addr = raw.trim()
+                if (addr.isEmpty()) continue
+                if (addr.contains("/p2p-circuit/")) out.add(TRANSPORT_RELAY_CIRCUIT)
+                if (addr.contains("/ble/")) out.add(TRANSPORT_BLE)
+                if (addr.contains("/wifi-aware/")) out.add(TRANSPORT_WIFI_AWARE)
+                if (addr.contains("/wifi-direct/")) out.add(TRANSPORT_WIFI_DIRECT)
+                val hasStreamProto =
+                    addr.contains("/tcp/") || addr.contains("/udp/") ||
+                        addr.contains("/ws") || addr.contains("/quic")
+                if ((addr.contains("/ip4/") || addr.contains("/ip6/") || addr.contains("/dns")) && hasStreamProto) {
+                    val isPrivateLanTcp = addr.startsWith("/ip4/192.168.") ||
+                        addr.startsWith("/ip4/10.") ||
+                        (addr.startsWith("/ip4/172.") && run {
+                            val parts = addr.removePrefix("/ip4/").split(".")
+                            val secondOctet = parts.getOrNull(1)?.toIntOrNull() ?: 0
+                            secondOctet in 16..31
+                        })
+                    out.add(if (isPrivateLanTcp && addr.contains("/tcp/")) TRANSPORT_TCP_LAN else TRANSPORT_INTERNET)
+                }
+            }
+            return out
+        }
+
+        /**
+         * NODE-RELAY-LABEL-002: detect infrastructure relay nodes by their
+         * libp2p agent string (e.g. the AWS "scm-always-on-node/x.y.z" headless
+         * daemon). Infrastructure nodes must never be mixed into the user's
+         * contacts/people list.
+         */
+        internal fun isInfrastructureAgent(agentVersion: String): Boolean {
+            val agent = agentVersion.trim().lowercase()
+            if (agent.isEmpty()) return false
+            return agent.contains("scm-always-on-node") ||
+                agent.contains("always-on") ||
+                agent.contains("infra-relay")
+        }
+
         /** Cap on how many ledger addresses the bounded startup dial sweep attempts. */
         private const val STARTUP_DIAL_SWEEP_MAX_ADDRESSES = 10
 
@@ -568,7 +627,10 @@ open class MeshRepository(
         val transport: com.scmessenger.android.service.TransportType,
         val isFull: Boolean,         // True if peer identity is authenticated (non-relay)
         val isRelay: Boolean = false,
-        val lastSeen: ULong = System.currentTimeMillis().toULong() / 1000u
+        val lastSeen: ULong = System.currentTimeMillis().toULong() / 1000u,
+        // NODE-TRANSPORT-VIS-001: every transport this node is known to speak,
+        // derived from listen addrs / ledger multiaddrs / contact routing hints.
+        val transports: Set<String> = emptySet()
     )
 
     private data class DeliveryAttemptResult(
@@ -988,6 +1050,11 @@ open class MeshRepository(
 
             // AND-CONTACTS-WIPE-001: Verify contact data integrity after initialization
             verifyContactDataIntegrity()
+
+            // NODE-RETENTION-001: populate the Mesh/peers list from persisted
+            // contacts + ledger so known nodes are visible (offline) before the
+            // mesh service ever connects.
+            seedKnownPeersFromPersistedData()
 
             // P0_ANDROID_001: Emergency contact corruption detection and recovery
             // Run corruption detection after managers are initialized
@@ -1459,6 +1526,14 @@ open class MeshRepository(
                             publicKey = transportIdentity?.publicKey ?: extractedKey
                         )
 
+                        val relayHints = if (transportIdentity != null) {
+                            buildDialCandidatesForPeer(
+                                routePeerId = peerId,
+                                rawAddresses = emptyList(),
+                                includeRelayCircuits = true
+                            )
+                        } else emptyList()
+
                         // Update discovery map
                         val discoveryInfo = PeerDiscoveryInfo(
                             peerId = transportIdentity?.canonicalPeerId ?: peerId,
@@ -1472,7 +1547,8 @@ open class MeshRepository(
                                     !extractedKey.isNullOrBlank()
                                 ),
                             isRelay = isRelay,
-                            lastSeen = System.currentTimeMillis().toULong() / 1000u
+                            lastSeen = System.currentTimeMillis().toULong() / 1000u,
+                            transports = parseTransportsFromMultiaddrs(relayHints)
                         )
                         updateDiscoveredPeer(peerId, discoveryInfo)
                         if (discoveryInfo.peerId != peerId) {
@@ -1480,11 +1556,6 @@ open class MeshRepository(
                         }
 
                         if (transportIdentity != null) {
-                            val relayHints = buildDialCandidatesForPeer(
-                                routePeerId = peerId,
-                                rawAddresses = emptyList(),
-                                includeRelayCircuits = true
-                            )
                             emitIdentityDiscoveredIfChanged(
                                 peerId = transportIdentity.canonicalPeerId,
                                 publicKey = transportIdentity.publicKey,
@@ -1598,7 +1669,12 @@ open class MeshRepository(
 	                        val syncPeerIds = linkedSetOf(peerId.trim())
 	                        val isHeadless = agentVersion.contains("/headless/")
 	                        val transportIdentity = resolveTransportIdentity(peerId)
-	                        val shouldTreatAsHeadless = isBootstrapRelayPeer(peerId) || (isHeadless && transportIdentity == null)
+	                        // NODE-RELAY-LABEL-002: infrastructure daemons (e.g. the AWS
+	                        // "scm-always-on-node" headless relay) are classified as relays
+	                        // via their agent string so they can be sectioned separately in
+	                        // the UI, even before/without bootstrap-config recognition.
+	                        val isInfraRelay = isBootstrapRelayPeer(peerId) || isInfrastructureAgent(agentVersion)
+	                        val shouldTreatAsHeadless = isInfraRelay || (isHeadless && transportIdentity == null)
 	                        if (shouldTreatAsHeadless) {
 	                            Timber.i("Headless/Relay transport node identified: $peerId (agent: $agentVersion)")
 	                            emitConnectedIfChanged(
@@ -1637,8 +1713,9 @@ open class MeshRepository(
                                 libp2pPeerId = peerId,
                                 transport = peerTransportType,
                                 isFull = transportIdentity != null,
-                                isRelay = isBootstrapRelayPeer(peerId),
-                                lastSeen = System.currentTimeMillis().toULong() / 1000u
+                                isRelay = isInfraRelay,
+                                lastSeen = System.currentTimeMillis().toULong() / 1000u,
+                                transports = parseTransportsFromMultiaddrs(listenAddrs)
                             )
                             updateDiscoveredPeer(peerId, discoveryInfo)
                             if (discoveryInfo.peerId != peerId) {
@@ -1776,10 +1853,11 @@ open class MeshRepository(
                         val canonicalId = transportToCanonicalMap.remove(peerId) ?: peerId
                         activeSessions.remove(peerId)
 
-                        // Remove disconnected aliases (peerId + canonical + same-key aliases).
-                        pruneDisconnectedPeer(peerId)
+                        // NODE-RETENTION-001: keep the peer visible marked offline
+                        // instead of removing it from the discovery map.
+                        retainDisconnectedPeer(peerId)
                         if (canonicalId != peerId) {
-                            pruneDisconnectedPeer(canonicalId)
+                            retainDisconnectedPeer(canonicalId)
                         }
                         mdnsLanPeers.remove(trimmedPeerId)
 
@@ -3380,7 +3458,8 @@ open class MeshRepository(
                             info.transport
                         },
                         isFull = info.isFull || existing.isFull,
-                        lastSeen = maxOf(info.lastSeen, existing.lastSeen)
+                        lastSeen = maxOf(info.lastSeen, existing.lastSeen),
+                        transports = info.transports + existing.transports
                     )
                 }
                 val canonicalPeerId = PeerIdValidator.normalize(merged.peerId.ifEmpty { normalizedKey })
@@ -3440,27 +3519,24 @@ open class MeshRepository(
             .maxByOrNull { it.lastSeenMs }
     }
 
-    private fun pruneDisconnectedPeer(peerId: String) {
+    /**
+     * NODE-RETENTION-001: a known peer losing its connection must NOT vanish
+     * from the Mesh/peers list. The entry stays in _discoveredPeers with its
+     * lastSeen timestamp frozen at disconnect time, so the UI renders it as
+     * "offline · last seen Xm ago" until the next discovery/identify event
+     * refreshes lastSeen and flips it back online. Only the alias-cleanup
+     * behaviour of the old pruneDisconnectedPeer is gone — removal now
+     * happens exclusively via explicit identity promotion (BLE UUID →
+     * canonical key) or resetAllData().
+     */
+    private fun retainDisconnectedPeer(peerId: String) {
         val normalizedPeerId = peerId.trim()
         if (normalizedPeerId.isEmpty()) return
 
-        _discoveredPeers.update { current ->
-            if (current.isEmpty()) return@update current
-
-            val disconnectedPublicKey = normalizePublicKey(current[normalizedPeerId]?.publicKey)
-            val keysToRemove = current
-                .filter { (key, info) ->
-                    key == normalizedPeerId ||
-                        info.peerId == normalizedPeerId ||
-                        (
-                            disconnectedPublicKey != null &&
-                                normalizePublicKey(info.publicKey) == disconnectedPublicKey
-                            )
-                }
-                .keys
-
-            if (keysToRemove.isEmpty()) current else current - keysToRemove
-        }
+        // Deliberately no mutation: the entry keeps its existing lastSeen
+        // (stamped at the last discovery/identify event), which the UI renders
+        // as a growing "last seen Xm ago" while the node stays offline.
+        Timber.d("NODE-RETENTION-001: retained $normalizedPeerId in peer list after disconnect (offline)")
     }
 
     private fun initializeAndStartWifi() {
@@ -3872,9 +3948,12 @@ open class MeshRepository(
         connectedEmissionCache.clear()
         mdnsLanPeers.clear()
 
-        // Clear discovered peers from UI on service stop
-        _discoveredPeers.value = emptyMap()
-        Timber.i("Cleared all discovered peers on mesh service stop")
+        // NODE-RETENTION-001: do NOT wipe the peer list on service stop —
+        // known peers stay visible marked offline. Re-seed from persisted
+        // contacts + ledger so the list survives stop/start cycles and WiFi
+        // drops without ever collapsing to "0 nodes".
+        seedKnownPeersFromPersistedData()
+        Timber.i("Retained/refreshed known peers on mesh service stop")
 
         // Clear references to avoid stale lifecycle state on next start.
         coreDelegate = null
@@ -5797,6 +5876,96 @@ open class MeshRepository(
             } catch (e: Exception) {
                 Timber.w(e, "triggerTransportRescan failed")
             }
+        }
+    }
+
+    /**
+     * NODE-RETENTION-001: seed the discovery map from persisted state so the
+     * Mesh/peers list is never empty while known nodes exist.
+     *
+     * Sources (both already loaded by initializeManagers):
+     * - Contacts DB: every non-tombstone contact becomes an entry marked
+     *   offline with its stored lastSeen ("last seen Xm ago").
+     * - Connection ledger: dialable addresses / preferred relays enrich or
+     *   create entries; transport labels are parsed from multiaddr protocol
+     *   paths, relay classification via isKnownRelay.
+     *
+     * Live entries always win over seeded ones — seeding only fills gaps and
+     * unions transport labels into existing entries. Re-runs are idempotent.
+     */
+    fun seedKnownPeersFromPersistedData() {
+        try {
+            val now = System.currentTimeMillis().toULong() / 1000u
+            val seeded = linkedMapOf<String, PeerDiscoveryInfo>()
+
+            contactManager?.list().orEmpty()
+                .filter { !it.isTombstone }
+                .forEach { contact ->
+                    val peerKey = contact.peerId.trim()
+                    if (peerKey.isEmpty()) return@forEach
+                    val hints = parseRoutingHints(contact.notes)
+                    val transports = parseTransportsFromMultiaddrs(hints.listeners)
+                    seeded[peerKey] = PeerDiscoveryInfo(
+                        peerId = peerKey,
+                        publicKey = contact.publicKey?.trim()?.takeIf { it.isNotEmpty() },
+                        nickname = contact.nickname,
+                        localNickname = contact.localNickname,
+                        libp2pPeerId = hints.libp2pPeerId,
+                        transport = if (transports.contains(TRANSPORT_TCP_LAN))
+                            com.scmessenger.android.service.TransportType.TCP_MDNS
+                        else
+                            com.scmessenger.android.service.TransportType.INTERNET,
+                        isFull = true,
+                        isRelay = false,
+                        lastSeen = contact.lastSeen ?: 0uL,
+                        transports = transports
+                    )
+                }
+
+            ledgerManager?.dialableAddresses().orEmpty().forEach { entry ->
+                val rawPeerId = entry.peerId?.trim().takeIf { !it.isNullOrEmpty() } ?: return@forEach
+                val transports = parseTransportsFromMultiaddrs(listOf(entry.multiaddr))
+                val existing = seeded[rawPeerId]
+                if (existing != null) {
+                    seeded[rawPeerId] = existing.copy(
+                        nickname = existing.nickname ?: entry.nickname,
+                        lastSeen = maxOf(existing.lastSeen, entry.lastSeen ?: 0uL),
+                        transports = existing.transports + transports
+                    )
+                } else {
+                    seeded[rawPeerId] = PeerDiscoveryInfo(
+                        peerId = rawPeerId,
+                        publicKey = entry.publicKey?.trim()?.takeIf { it.isNotEmpty() },
+                        nickname = entry.nickname,
+                        libp2pPeerId = rawPeerId.takeIf { PeerIdValidator.isLibp2pPeerId(it) },
+                        transport = if (transports.contains(TRANSPORT_TCP_LAN))
+                            com.scmessenger.android.service.TransportType.TCP_MDNS
+                        else
+                            com.scmessenger.android.service.TransportType.INTERNET,
+                        isFull = false,
+                        isRelay = isKnownRelay(rawPeerId),
+                        lastSeen = entry.lastSeen ?: 0uL,
+                        transports = transports
+                    )
+                }
+            }
+
+            if (seeded.isEmpty()) return
+
+            _discoveredPeers.update { current ->
+                val merged = current.toMutableMap()
+                seeded.forEach { (key, info) ->
+                    val live = merged[key]
+                    merged[key] = when {
+                        live == null -> info.copy(lastSeen = minOf(info.lastSeen, now))
+                        else -> live.copy(transports = live.transports + info.transports)
+                    }
+                }
+                merged
+            }
+            Timber.i("NODE-RETENTION-001: seeded ${seeded.size} known node(s) from contacts + ledger")
+        } catch (e: Exception) {
+            Timber.w(e, "NODE-RETENTION-001: failed to seed known peers from persisted data")
         }
     }
 

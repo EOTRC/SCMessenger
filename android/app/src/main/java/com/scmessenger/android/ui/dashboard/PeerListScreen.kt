@@ -128,14 +128,40 @@ fun PeerListScreen(
                             )
                         }
 
+                        // NODE-RELAY-LABEL-002: infrastructure relays get their own
+                        // section, never mixed into the contacts/people list.
+                        val regularPeers = peers.filterNot { it.isRelay }
+                        val infrastructureRelays = peers.filter { it.isRelay }
+
                         // Peer list
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(16.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            items(peers, key = { it.peerId }) { peer ->
+                            item(key = "section-peers") {
+                                Text(
+                                    text = stringResource(R.string.peer_list_section_peers),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            items(regularPeers, key = { it.peerId }) { peer ->
                                 PeerCard(peer = peer)
+                            }
+
+                            if (infrastructureRelays.isNotEmpty()) {
+                                item(key = "section-relays") {
+                                    Text(
+                                        text = stringResource(R.string.peer_list_section_relays),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.tertiary
+                                    )
+                                }
+                                items(infrastructureRelays, key = { "relay-${it.peerId}" }) { peer ->
+                                    PeerCard(peer = peer, isInfrastructure = true)
+                                }
                             }
                         }
                     }
@@ -148,7 +174,8 @@ fun PeerListScreen(
 @Composable
 private fun PeerCard(
     peer: com.scmessenger.android.ui.viewmodels.PeerInfo,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isInfrastructure: Boolean = false
 ) {
     Card(
         modifier = modifier.fillMaxWidth()
@@ -173,19 +200,35 @@ private fun PeerCard(
             ) {
                 // Peer ID
                 Text(
-                    text = peer.peerId.take(16) + "...",
+                    text = peer.displayName(),
                     style = MaterialTheme.typography.bodyMedium,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Medium
                 )
 
-                // Transport
+                if (isInfrastructure) {
+                    Text(
+                        text = stringResource(R.string.peer_label_infrastructure_relay),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.tertiary
+                    )
+                }
+
+                // NODE-TRANSPORT-VIS-001: one badge per known transport.
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TransportBadge(transport = peer.transport)
+                    peer.transports.ifEmpty { listOf(peer.transport) }.forEach { transport ->
+                        TransportBadge(transport = transport)
+                    }
+                }
 
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     StatusIndicator(
                         isOnline = peer.isOnline
                     )
@@ -213,6 +256,11 @@ private fun PeerCard(
     }
 }
 
+private fun com.scmessenger.android.ui.viewmodels.PeerInfo.displayName(): String {
+    val name = localNickname ?: nickname
+    return if (!name.isNullOrEmpty()) name else peerId.take(16) + "..."
+}
+
 @Composable
 private fun TransportBadge(
     transport: String,
@@ -223,6 +271,8 @@ private fun TransportBadge(
         "WiFi Aware" -> TransportWiFiAware
         "WiFi Direct" -> TransportWiFiDirect
         "Internet" -> TransportInternet
+        "TCP/LAN", "TCP/mDNS" -> TransportTcpLan
+        "Relay-circuit" -> TransportRelayCircuit
         else -> MaterialTheme.colorScheme.surfaceVariant
     }
 
