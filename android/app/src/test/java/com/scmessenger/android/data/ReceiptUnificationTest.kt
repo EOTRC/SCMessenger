@@ -1,4 +1,4 @@
-﻿package com.scmessenger.android.data
+package com.scmessenger.android.data
 
 import android.content.Context
 import android.content.SharedPreferences
