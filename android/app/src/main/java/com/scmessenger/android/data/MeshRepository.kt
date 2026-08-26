@@ -1051,6 +1051,12 @@ open class MeshRepository(
             // AND-CONTACTS-WIPE-001: Verify contact data integrity after initialization
             verifyContactDataIntegrity()
 
+            // FIX: backfill synthetic "peer-xxxx" contact nicknames from ledger authoritative nicknames
+            // (contacts persist across adb install -r; ledger already has "Claude-Windows-Driver"
+            // for peer 12D3KooWD6... while contact still shows synthetic "peer-30d0fa67").
+            // Idempotent; preserves localNickname.
+            repairSyntheticContactNicknames()
+
             // NODE-RETENTION-001: populate the Mesh/peers list from persisted
             // contacts + ledger so known nodes are visible (offline) before the
             // mesh service ever connects.
@@ -6170,6 +6176,10 @@ open class MeshRepository(
      */
     fun seedKnownPeersFromPersistedData() {
         try {
+            // FIX: ensure synthetic contacts are backfilled from ledger before seeding discovery map,
+            // so seeded PeerDiscoveryInfo already carries "Claude-Windows-Driver" not "peer-30d0fa67".
+            // Idempotent; also called explicitly from initializeManagers().
+            repairSyntheticContactNicknames()
             val now = System.currentTimeMillis().toULong() / 1000u
             val seeded = linkedMapOf<String, PeerDiscoveryInfo>()
 
@@ -6298,6 +6308,88 @@ open class MeshRepository(
             Timber.i("NODE-RETENTION-001: seeded ${seeded.size} known node(s) from contacts + ledger (incl. ${relayHops.size} relay hops)")
         } catch (e: Exception) {
             Timber.w(e, "NODE-RETENTION-001: failed to seed known peers from persisted data")
+        }
+    }
+
+    /**
+     * Startup one-time repair: backfill synthetic contact nicknames from ledger authoritative nicknames.
+     *
+     * Contacts persist across `adb install -r` while ledger.json is the source of truth for
+     * authoritative nicknames (e.g. "Claude-Windows-Driver"). Legacy contacts created via
+     * prepopulateDiscoveryNickname may hold synthetic "peer-xxxx" that never gets updated
+     * unless a new envelope arrives. This repair scans all libp2p contacts whose
+     * nickname is synthetic or blank and, when ledger holds a non-synthetic nickname for
+     * the same peerId or publicKey, promotes the contact and refreshes _discoveredPeers.
+     *
+     * Idempotent: only touches synthetic/blank nicknames; never overwrites localNickname.
+     */
+    private fun repairSyntheticContactNicknames() {
+        try {
+            val cm = contactManager ?: return
+            val contacts = try { cm.list() } catch (e: Exception) {
+                Timber.w(e, "repairSyntheticContactNicknames: failed to list contacts")
+                return
+            }
+            if (contacts.isEmpty()) return
+            val ledgerEntries = getAllLedgerEntries()
+            if (ledgerEntries.isEmpty()) return
+            var repaired = 0
+            for (contact in contacts) {
+                if (contact.isTombstone) continue
+                val nickBlank = contact.nickname.isNullOrBlank()
+                val nickSynthetic = isSyntheticFallbackNickname(contact.nickname)
+                if (!nickBlank && !nickSynthetic) continue
+                val peerIdTrimmed = contact.peerId.trim()
+                if (peerIdTrimmed.isEmpty()) continue
+                if (!PeerIdValidator.isLibp2pPeerId(peerIdTrimmed)) continue
+                // Do not overwrite if localNickname is already a real (non-synthetic) value:
+                // the contact's displayName will already be correct via displayNames() primary,
+                // but we still repair nickname so ledger authority is not lost. We preserve localNickname.
+                val normalizedContactKey = normalizePublicKey(contact.publicKey)
+                val authoritative = ledgerEntries.asSequence()
+                    .filter { entry ->
+                        entry.peerId == peerIdTrimmed ||
+                            (normalizedContactKey != null && normalizePublicKey(entry.publicKey) == normalizedContactKey)
+                    }
+                    .mapNotNull { normalizeNickname(it.nickname)?.takeIf { v -> v.isNotEmpty() } }
+                    .firstOrNull { !isSyntheticFallbackNickname(it) }
+                    ?: ledgerEntries.asSequence()
+                        .filter { entry ->
+                            entry.peerId == peerIdTrimmed ||
+                                (normalizedContactKey != null && normalizePublicKey(entry.publicKey) == normalizedContactKey)
+                        }
+                        .mapNotNull { it.nickname }
+                        .firstOrNull { !isSyntheticFallbackNickname(it) }
+                    ?: continue
+                if (authoritative == contact.nickname) continue
+                if (isSyntheticFallbackNickname(authoritative)) continue
+                val before = contact.nickname
+                val updated = contact.copy(nickname = authoritative)
+                try {
+                    cm.add(updated)
+                    // Refresh discovery map so UI reflects the authoritative name immediately.
+                    refreshDiscoveredPeerForContact(peerIdTrimmed)
+                    _discoveredPeers.update { cur ->
+                        cur.mapValues { (k, v) ->
+                            val matches = k == peerIdTrimmed || v.peerId == peerIdTrimmed ||
+                                (normalizedContactKey != null && normalizePublicKey(v.publicKey) == normalizedContactKey) ||
+                                (v.libp2pPeerId != null && v.libp2pPeerId == peerIdTrimmed)
+                            if (matches) {
+                                v.copy(nickname = selectAuthoritativeNickname(authoritative, v.nickname) ?: authoritative)
+                            } else v
+                        }
+                    }
+                    Timber.i("Backfilled contact nickname for $peerIdTrimmed from ledger: $before -> $authoritative")
+                    repaired++
+                } catch (e: Exception) {
+                    Timber.w(e, "Failed to backfill contact nickname for $peerIdTrimmed")
+                }
+            }
+            if (repaired > 0) {
+                Timber.i("Synthetic contact nickname repair: backfilled $repaired contact(s) from ledger")
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "repairSyntheticContactNicknames failed")
         }
     }
 
