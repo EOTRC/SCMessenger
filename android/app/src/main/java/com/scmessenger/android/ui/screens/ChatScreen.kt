@@ -107,7 +107,12 @@ fun ChatScreen(
     // UI-thread-blocking FFI calls that froze the send button.
     val normalizedPeerId = com.scmessenger.android.utils.PeerIdValidator.normalize(conversationId)
 
-    val contact = remember(normalizedPeerId) {
+    // NICKNAME-STALE-001: also key on chatMessages.size. remember(peerId) alone
+    // captured the Contact once at first composition -- typically the nickname-less
+    // auto-created record -- so a contact added/renamed mid-session (quick-add
+    // dialog, Contacts screen) never refreshed the title until the chat was
+    // fully reopened. Message-list churn now re-resolves the contact.
+    val contact = remember(normalizedPeerId, chatMessages.size) {
         viewModel.getContactForPeer(normalizedPeerId)
     }
     val isPeerAvailable = remember(normalizedPeerId) {

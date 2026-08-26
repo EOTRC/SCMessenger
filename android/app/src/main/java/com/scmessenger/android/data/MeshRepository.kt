@@ -1984,7 +1984,14 @@ open class MeshRepository(
                                 updateContactDeviceId(canonicalPeerId, discoveredDeviceId)
                             }
 
-                            if (existingContact.nickname.isNullOrBlank() && !knownNickname.isNullOrBlank()) {
+                            // NICKNAME-STALE-001: a synthetic auto-name ("peer-xxxx")
+                            // is placeholder metadata, not a saved nickname. Allow
+                            // authoritative sources to replace it just like null.
+                            val existingNickIsSynthetic =
+                                isSyntheticFallbackNickname(existingContact.nickname)
+                            if ((existingContact.nickname.isNullOrBlank() || existingNickIsSynthetic) &&
+                                !knownNickname.isNullOrBlank()
+                            ) {
                                 val updatedContact = uniffi.api.Contact(
                                     peerId = existingContact.peerId,
                                     nickname = knownNickname,
