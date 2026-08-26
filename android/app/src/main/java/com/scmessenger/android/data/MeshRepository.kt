@@ -970,6 +970,7 @@ open class MeshRepository(
             ensureTransportManager()
 
             // Pre-load data where applicable
+            sanitizeLedgerPublicKeyBindings()
             ledgerManager?.load()
 
             Timber.i("all_managers_init_success")
@@ -8026,6 +8027,64 @@ open class MeshRepository(
         return selectAuthoritativeNickname(discoveryOrLedger, fromContact)
     }
 
+    /**
+     * A public key may only be bound to a libp2p peer id when the binding is
+     * self-certifying (Ed25519 peer ids embed their key). Bindings learned from
+     * transport routing hints — relay hops, /p2p-circuit dial candidates,
+     * self-reported identity-sync hints — are rejected here so circuit-relay
+     * route annotations can never poison ledger identity resolution.
+     */
+    private fun isSelfCertifyingKeyBinding(peerId: String, publicKey: String): Boolean {
+        if (!PeerKeyUtils.isValidPublicKey(publicKey)) return false
+        return PeerKeyUtils.extractPeerIdFromPublicKey(publicKey) == peerId
+    }
+
+    /**
+     * One-time data repair on load: ledger entries written by older builds may
+     * carry a public_key bound to a transport peer id that the key does not
+     * actually derive (circuit-relay route annotations attributed the relay
+     * hop's key to the destination peer). Such bindings corrupt identity
+     * resolution and receipt encryption. Strip any public_key that is not
+     * self-certifying for its peer_id; routing metadata is preserved.
+     */
+    private fun sanitizeLedgerPublicKeyBindings() {
+        kotlin.runCatching {
+            val ledgerFile = java.io.File(storagePath, "ledger.json")
+            if (!ledgerFile.isFile) return
+            val raw = ledgerFile.readText()
+            val arr = org.json.JSONArray(raw)
+            var changed = false
+            for (i in 0 until arr.length()) {
+                val entry = arr.optJSONObject(i) ?: continue
+                val peerId = entry.optString("peer_id").trim()
+                val publicKey = if (entry.has("public_key") && !entry.isNull("public_key")) {
+                    entry.optString("public_key").trim()
+                } else {
+                    ""
+                }
+                if (peerId.isEmpty() || publicKey.isEmpty()) continue
+                if (isSelfCertifyingKeyBinding(peerId, publicKey)) continue
+                Timber.w(
+                    "Ledger repair: dropping poisoned key ${publicKey.take(8)}... bound to " +
+                        "unrelated transport peer ${peerId.takeLast(8)}..."
+                )
+                entry.remove("public_key")
+                changed = true
+            }
+            if (changed) {
+                val tmp = java.io.File(storagePath, "ledger.json.tmp.repair")
+                tmp.writeText(arr.toString())
+                if (!tmp.renameTo(ledgerFile)) {
+                    ledgerFile.writeText(arr.toString())
+                    tmp.delete()
+                }
+                Timber.i("Ledger repair: sanitized poisoned public_key bindings")
+            }
+        }.onFailure {
+            Timber.w("Ledger public-key sanitation skipped: ${it.message}")
+        }
+    }
+
     private fun annotateIdentityInLedger(
         routePeerId: String?,
         listeners: List<String>,
@@ -8043,13 +8102,22 @@ open class MeshRepository(
         if (dialHints.isEmpty()) return
 
         val normalizedKey = normalizePublicKey(publicKey)
+        val trustedKey = if (normalizedKey != null && !isSelfCertifyingKeyBinding(normalizedRoute, normalizedKey)) {
+            Timber.w(
+                "Ledger guard: refusing to bind key ${normalizedKey.take(8)}... to unrelated " +
+                    "transport peer ${normalizedRoute.takeLast(8)}... (route-hint attribution)"
+            )
+            null
+        } else {
+            normalizedKey
+        }
         val normalizedNickname = nickname?.trim()?.takeIf { it.isNotEmpty() }
         dialHints.forEach { multiaddr ->
             kotlin.runCatching {
                 ledgerManager?.annotateIdentity(
                     multiaddr,
                     normalizedRoute,
-                    normalizedKey,
+                    trustedKey,
                     normalizedNickname
                 )
             }.onFailure {
@@ -8645,7 +8713,11 @@ open class MeshRepository(
                 if (candidate.isEmpty() || !PeerIdValidator.isLibp2pPeerId(candidate)) {
                     return@mapNotNull null
                 }
+                // Identity-resolution hardening: a poisoned entry can claim the
+                // recipient's key for an unrelated transport peer (relay-hop
+                // attribution). Only accept bindings that are self-certifying.
                 val candidateKey = normalizePublicKey(entry.publicKey) ?: return@mapNotNull null
+                if (!isSelfCertifyingKeyBinding(candidate, candidateKey)) return@mapNotNull null
                 if (candidateKey != normalizedRecipientKey) return@mapNotNull null
                 candidate
             }
@@ -8679,11 +8751,26 @@ open class MeshRepository(
         }
         if (discoveryMatch) return true
 
+        // Key derivation could not vouch for this route (extraction failed
+        // above). A ledger entry alone is not trustworthy here: poisoned
+        // entries attribute relay-hop keys to unrelated transport peers.
+        // Only accept the binding when an existing Contact record corroborates
+        // the route association (explicit user add or signed-message source).
         val ledgerMatch = (ledgerManager?.dialableAddresses() ?: emptyList()).any { entry ->
             entry.peerId?.trim() == normalizedRoute &&
                 normalizePublicKey(entry.publicKey) == normalizedRecipientKey
         }
-        return ledgerMatch
+        if (!ledgerMatch) return false
+
+        val contactCorroborated = try {
+            contactManager?.list().orEmpty().any { contact ->
+                contact.peerId == normalizedRoute ||
+                    parseRoutingHints(contact.notes).libp2pPeerId == normalizedRoute
+            }
+        } catch (_: Exception) {
+            false
+        }
+        return contactCorroborated
     }
 
     // Identity validation logic centralized in PeerIdValidator
