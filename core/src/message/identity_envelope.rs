@@ -74,6 +74,7 @@ fn clean_hints(values: &[String]) -> Vec<String> {
 
 /// Build the wire form of an identity envelope. Falls back to bare text if
 /// serialization ever fails (additive wrapping must never eat a message).
+#[allow(clippy::disallowed_methods)] // json! macro expansion contains serde_json internals
 pub fn build_identity_envelope(kind: &str, text: &str, sender: &EnvelopeSenderHints) -> String {
     let mut listeners = clean_hints(&sender.listeners);
     listeners.truncate(MAX_LISTENERS);
