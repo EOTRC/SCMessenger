@@ -71,6 +71,8 @@ fun DashboardScreen(
         val peers by dashboardViewModel.peers.collectAsState()
         // UNIFICATION_V2 crash guard: ensure distinct keys for Compose stability (outside LazyColumn scope)
         val sortedPeers = remember(peers) { peers.filter { it.peerId.isNotBlank() }.distinctBy { it.peerId } }
+
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues),
