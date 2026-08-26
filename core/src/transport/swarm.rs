@@ -1726,6 +1726,23 @@ async fn apply_delivery_convergence_marker(
     }
 }
 
+/// Pick a carrier peer for the drift store-and-forward fallback.
+///
+/// Returns the first connected peer that is neither the destination nor
+/// ourselves. Used when a direct send fails but an established connection
+/// (e.g. a relay over cellular) can carry custody of the envelope until the
+/// destination reconnects.
+#[cfg(not(target_arch = "wasm32"))]
+fn select_drift_fallback_carrier(
+    connected_peers: impl IntoIterator<Item = PeerId>,
+    target_peer: PeerId,
+    local_peer_id: PeerId,
+) -> Option<PeerId> {
+    connected_peers
+        .into_iter()
+        .find(|peer| *peer != target_peer && *peer != local_peer_id)
+}
+
 fn dispatch_pending_custody_for_peer(
     swarm: &mut libp2p::Swarm<IronCoreBehaviour>,
     custody_store: &RelayCustodyStore,
@@ -2926,6 +2943,9 @@ pub async fn start_swarm_with_config(
         };
         let mut relay_reconnect_pending: Vec<(PeerId, u32, web_time::Instant)> = Vec::new();
         let mut seen_delivery_convergence_markers: HashSet<String> = HashSet::new();
+        // Messages already committed to the drift store-and-forward fallback;
+        // prevents re-committing on every direct retry after relay acceptance.
+        let mut drift_fallback_committed: HashSet<String> = HashSet::new();
 
         // Auto-dial bootstrap nodes for cross-network discovery
         // Self-dial guard: track bootstrap addrs that resolve to our own peer
@@ -3743,6 +3763,59 @@ pub async fn start_swarm_with_config(
                                                 engine.record_unreachable_peer(&pending.target_peer.to_string());
                                                 let peer_bytes = extract_peer_id_bytes(&pending.target_peer.to_bytes());
                                                 engine.base_engine_mut().local_cell_mut().update_reliability(&peer_bytes, false);
+                                            }
+                                        }
+                                        // DRIFT FALLBACK: the direct route failed (e.g. stale
+                                        // LAN hints while only a relay is reachable). If any
+                                        // other peer is connected right now, commit the
+                                        // encrypted envelope to store-and-forward custody on
+                                        // that carrier; its custody ledger holds it until the
+                                        // destination connects and pulls it via drift sync.
+                                        if !swarm.is_connected(&pending.target_peer)
+                                            && !drift_fallback_committed.contains(&message_id)
+                                        {
+                                            let carrier = select_drift_fallback_carrier(
+                                                swarm.connected_peers().cloned(),
+                                                pending.target_peer,
+                                                local_peer_id,
+                                            )
+                                            .filter(|candidate| {
+                                                !peer_is_blocked(&core_handle, *candidate)
+                                            });
+                                            if let Some(carrier) = carrier {
+                                                tracing::warn!(
+                                                    "no direct route; committing to drift store via relay carrier={} destination={} message={}",
+                                                    carrier,
+                                                    pending.target_peer,
+                                                    message_id
+                                                );
+                                                if let Some(core) =
+                                                    core_handle.as_ref().and_then(|w| w.upgrade())
+                                                {
+                                                    core.drift_activate();
+                                                }
+                                                let relay_request = RelayRequest {
+                                                    destination_peer: pending
+                                                        .target_peer
+                                                        .to_bytes(),
+                                                    envelope_data: wrap_in_drift_frame(
+                                                        &pending.envelope_data,
+                                                    ),
+                                                    message_id: message_id.clone(),
+                                                    recipient_identity_id: pending
+                                                        .recipient_identity_id
+                                                        .clone(),
+                                                    intended_device_id: pending
+                                                        .intended_device_id
+                                                        .clone(),
+                                                };
+                                                let request_id = swarm
+                                                    .behaviour_mut()
+                                                    .relay
+                                                    .send_request(&carrier, relay_request);
+                                                pending_relay_requests
+                                                    .insert(request_id, message_id.clone());
+                                                drift_fallback_committed.insert(message_id.clone());
                                             }
                                         }
                                         pending_messages.insert(message_id, pending);
@@ -7992,11 +8065,12 @@ mod tests {
     use super::{
         build_mdns_dial_addr, build_routable_relay_addrs, extract_ed25519_public_key_from_peer_id,
         is_ledger_exchange_path_failure, peer_is_blocked, rearm_ledger_exchange_after_failure,
-        resolve_dial_target, should_apply_delivery_convergence_marker,
-        target_peer_id_from_multiaddr, validate_delivery_convergence_marker_shape,
-        verify_registration_message, DeliveryConvergenceMarker, PendingCustodyDispatch,
-        PendingMessage, RelayAbuseGuardrails, RELAY_DUPLICATE_WINDOW_MS,
-        RELAY_PEER_BUCKET_BURST_CAPACITY, RELAY_PEER_BUCKET_REFILL_PER_SEC,
+        resolve_dial_target, select_drift_fallback_carrier,
+        should_apply_delivery_convergence_marker, target_peer_id_from_multiaddr,
+        validate_delivery_convergence_marker_shape, verify_registration_message,
+        DeliveryConvergenceMarker, PendingCustodyDispatch, PendingMessage, RelayAbuseGuardrails,
+        RELAY_DUPLICATE_WINDOW_MS, RELAY_PEER_BUCKET_BURST_CAPACITY,
+        RELAY_PEER_BUCKET_REFILL_PER_SEC,
     };
     use crate::identity::IdentityKeys;
     use crate::store::relay_custody::RelayCustodyStore;
@@ -8028,6 +8102,64 @@ mod tests {
         ));
         assert!(!pending.contains_key(peer));
         assert!(!exchanged.contains(peer));
+    }
+
+    #[test]
+    fn drift_fallback_carrier_skips_target_and_self() {
+        let local = PeerId::random();
+        let target = PeerId::random();
+        let relay = PeerId::random();
+
+        assert_eq!(select_drift_fallback_carrier([], target, local), None);
+        assert_eq!(select_drift_fallback_carrier([target], target, local), None);
+        assert_eq!(select_drift_fallback_carrier([local], target, local), None);
+        assert_eq!(
+            select_drift_fallback_carrier([target, local, relay], target, local),
+            Some(relay)
+        );
+    }
+
+    #[test]
+    fn drift_custody_roundtrip_holds_envelope_until_pickup_and_delivery() {
+        use crate::store::relay_custody::{CustodyState, RelayCustodyStore};
+
+        let source = PeerId::random();
+        let destination = PeerId::random();
+        let store = RelayCustodyStore::in_memory();
+        let envelope = vec![7u8; 64];
+
+        let custody = store
+            .accept_custody(
+                source.to_string(),
+                destination.to_string(),
+                "msg-drift-fallback".to_string(),
+                envelope.clone(),
+                None,
+                None,
+            )
+            .expect("custody acceptance must succeed");
+
+        // Envelope held in Accepted state until the destination connects.
+        assert_eq!(custody.state, CustodyState::Accepted);
+        let pending = store.pending_for_destination(&destination.to_string(), 64);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].envelope_data, envelope);
+        assert_eq!(pending[0].relay_message_id, "msg-drift-fallback");
+
+        // Pickup: mark dispatching, recipient ACKs, custody is finalized.
+        store
+            .mark_dispatching(&destination.to_string(), &custody.custody_id, "drift_pull")
+            .expect("dispatch marking must succeed");
+        store
+            .mark_delivered(
+                &destination.to_string(),
+                &custody.custody_id,
+                "recipient_ack",
+            )
+            .expect("delivery marking must succeed");
+        assert!(store
+            .pending_for_destination(&destination.to_string(), 64)
+            .is_empty());
     }
 
     #[test]
