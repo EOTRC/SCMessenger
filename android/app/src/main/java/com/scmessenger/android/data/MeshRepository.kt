@@ -127,7 +127,7 @@ open class MeshRepository(
         internal const val TRANSPORT_TCP_LAN = "TCP/LAN"
         internal const val TRANSPORT_WIFI_AWARE = "WiFi Aware"
         internal const val TRANSPORT_WIFI_DIRECT = "WiFi Direct"
-        internal const val TRANSPORT_RELAY_CIRCUIT = "Relay-circuit"
+        internal const val TRANSPORT_RELAY_CIRCUIT = "Via shared node"
         internal const val TRANSPORT_INTERNET = "Internet"
 
         /**

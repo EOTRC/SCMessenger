@@ -304,9 +304,10 @@
     <string name="peer_list_status_offline">Offline</string>
     <string name="peer_list_last_seen">Last seen: %1$s</string>
     <string name="peer_list_section_peers">Peers</string>
-    <string name="peer_list_section_relays">Relays / Infrastructure</string>
-    <string name="peer_label_infrastructure_relay">Infrastructure relay node</string>
-    <string name="dashboard_section_relays">Relays / Infrastructure</string>
+    <string name="peer_list_section_relays">Shared Nodes</string>
+    <string name="shared_nodes_subtitle">Always-on · assists delivery when peers cannot connect directly</string>
+    <string name="peer_label_infrastructure_relay">Always-on shared node</string>
+    <string name="dashboard_section_relays">Shared Nodes</string>
 
     <!-- Topology Screen -->
     <string name="topology_title">Mesh Topology</string>

@@ -175,14 +175,21 @@ fun DashboardScreen(
                 }
             }
 
-            // Relays / Infrastructure section
+            // Shared Nodes section (always-on connectivity assistants)
             if (infrastructureRelays.isNotEmpty()) {
                 item(key = "relays-header") {
-                    Text(
-                        text = stringResource(R.string.dashboard_section_relays),
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(top = 8.dp)
-                    )
+                    Column {
+                        Text(
+                            text = stringResource(R.string.dashboard_section_relays),
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                        Text(
+                            text = stringResource(R.string.shared_nodes_subtitle),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
                 items(infrastructureRelays, key = { "relay-${it.peerId}" }) { peer ->
                     PeerItem(peer, isInfrastructure = true)

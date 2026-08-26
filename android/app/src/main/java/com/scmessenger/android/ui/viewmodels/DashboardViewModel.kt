@@ -346,7 +346,7 @@ class DashboardViewModel @Inject constructor(
      */
     private fun determineTransport(multiaddr: String): String {
         return when {
-            "/p2p-circuit/" in multiaddr -> "Relay-circuit"
+            "/p2p-circuit/" in multiaddr -> MeshRepository.TRANSPORT_RELAY_CIRCUIT
             "/ble/" in multiaddr -> "BLE"
             "/wifi-aware/" in multiaddr -> "WiFi Aware"
             "/wifi-direct/" in multiaddr -> "WiFi Direct"

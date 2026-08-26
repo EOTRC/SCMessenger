@@ -16,6 +16,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.scmessenger.android.R
+import com.scmessenger.android.data.MeshRepository
 import com.scmessenger.android.ui.components.ErrorBanner
 import com.scmessenger.android.ui.components.IdenticonFromPeerId
 import com.scmessenger.android.service.ConnectionQuality
@@ -152,12 +153,19 @@ fun PeerListScreen(
 
                             if (infrastructureRelays.isNotEmpty()) {
                                 item(key = "section-relays") {
-                                    Text(
-                                        text = stringResource(R.string.peer_list_section_relays),
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.tertiary
-                                    )
+                                    Column {
+                                        Text(
+                                            text = stringResource(R.string.peer_list_section_relays),
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.tertiary
+                                        )
+                                        Text(
+                                            text = stringResource(R.string.shared_nodes_subtitle),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
                                 }
                                 items(infrastructureRelays, key = { "relay-${it.peerId}" }) { peer ->
                                     PeerCard(peer = peer, isInfrastructure = true)
@@ -272,7 +280,7 @@ private fun TransportBadge(
         "WiFi Direct" -> TransportWiFiDirect
         "Internet" -> TransportInternet
         "TCP/LAN", "TCP/mDNS" -> TransportTcpLan
-        "Relay-circuit" -> TransportRelayCircuit
+        MeshRepository.TRANSPORT_RELAY_CIRCUIT -> TransportRelayCircuit
         else -> MaterialTheme.colorScheme.surfaceVariant
     }
 
