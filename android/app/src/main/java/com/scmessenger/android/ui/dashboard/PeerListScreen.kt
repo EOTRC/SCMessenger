@@ -264,9 +264,19 @@ private fun PeerCard(
     }
 }
 
+private fun isSyntheticFallbackNickname(value: String?): Boolean {
+    val n = value?.trim()?.takeIf { it.isNotEmpty() }?.lowercase() ?: return false
+    return n.startsWith("peer-")
+}
+
 private fun com.scmessenger.android.ui.viewmodels.PeerInfo.displayName(): String {
-    val name = localNickname ?: nickname
-    return if (!name.isNullOrEmpty()) name else peerId.take(16) + "..."
+    val primary = localNickname?.trim()?.takeIf { it.isNotEmpty() }?.takeUnless { isSyntheticFallbackNickname(it) }
+    val secondary = nickname?.trim()?.takeIf { it.isNotEmpty() }?.takeUnless { isSyntheticFallbackNickname(it) }
+    val authoritative = primary ?: secondary
+    if (!authoritative.isNullOrEmpty()) return authoritative
+    // Fallback to synthetic only when truly unknown (no authoritative name)
+    val fallback = localNickname?.trim()?.takeIf { it.isNotEmpty() } ?: nickname?.trim()?.takeIf { it.isNotEmpty() }
+    return if (!fallback.isNullOrEmpty()) fallback else peerId.take(16) + "..."
 }
 
 @Composable

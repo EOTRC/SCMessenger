@@ -113,12 +113,19 @@ class DashboardViewModel @Inject constructor(
 
     /**
      * Load active peers from discovery map and ledger.
+     * FIX: persist offline nodes (seed + recently dead) and use authoritative nickname.
      */
     private fun loadPeers() {
         try {
             val discoveredSnapshot = meshRepository.discoveredPeers.value
             val discovered = deduplicateDiscoveredPeers(discoveredSnapshot)
-            val ledgerEntries = meshRepository.getDialableAddresses()
+            // FIX: include offline nodes so peer list persists "last seen Xm ago" even when dialable==0.
+            // 75439a40 intent: nodes persist via contacts + ledger seeding, not just proven dialable.
+            val dialable = meshRepository.getDialableAddresses()
+            val seed = meshRepository.getSeedAddresses(16u)
+            val deadRecent = meshRepository.getRecentlyDeadAddresses(7)
+            val ledgerEntries = (dialable + seed + deadRecent).distinctBy { it.multiaddr }
+            val relayHops = meshRepository.getRelayHopPeerIds()
             val routeAliasToCanonical = discoveredSnapshot
                 .mapNotNull { (routeKey, info) ->
                     val alias = routeKey.trim()
@@ -157,11 +164,11 @@ class DashboardViewModel @Inject constructor(
                     transports = (info.transports + primaryTransport).toList().sorted(),
                     isOnline = isRecent(info.lastSeen),
                     isFull = info.isFull,
-                    isRelay = meshRepository.isKnownRelay(info.peerId)
+                    isRelay = meshRepository.isKnownRelay(info.peerId) || relayHops.contains(info.peerId) || (info.libp2pPeerId != null && relayHops.contains(info.libp2pPeerId))
                 )
             }.toMutableMap()
 
-            // Enrich/Add with ledger entries (dialable peers)
+            // Enrich/Add with ledger entries (dialable + seed + dead peers) - authoritative nickname wins over synthetic
             ledgerEntries.forEach { entry ->
                 val rawPeerId = entry.peerId ?: return@forEach
                 val peerId = routeAliasToCanonical[rawPeerId]
@@ -171,21 +178,27 @@ class DashboardViewModel @Inject constructor(
                 if (existing != null) {
                     val entryLastSeen = entry.lastSeen
                     val existingLastSeen = existing.lastSeen
+                    val authoritativeNick = selectAuthoritativeNickname(existing.nickname, entry.nickname)
+                        ?: selectAuthoritativeNickname(entry.nickname, existing.nickname)
+                        ?: existing.nickname
+                    val authoritativeLocal = existing.localNickname
                     peerMap[peerId] = existing.copy(
-                        nickname = existing.nickname ?: entry.nickname,
-                        multiaddr = entry.multiaddr,
+                        nickname = authoritativeNick,
+                        localNickname = authoritativeLocal,
+                        multiaddr = if (entry.multiaddr.contains("/p2p-circuit/") || existing.multiaddr.isEmpty()) entry.multiaddr else existing.multiaddr,
                         lastSeen = when {
                             entryLastSeen == null -> existingLastSeen
                             existingLastSeen == null || entryLastSeen > existingLastSeen -> entryLastSeen
                             else -> existingLastSeen
                         },
                         isOnline = isRecent(entry.lastSeen) || existing.isOnline,
-                        isRelay = existing.isRelay || meshRepository.isKnownRelay(peerId),
+                        isRelay = existing.isRelay || meshRepository.isKnownRelay(peerId) || relayHops.contains(peerId) || entry.multiaddr.contains("/p2p-circuit/"),
                         transports = (existing.transports +
                             MeshRepository.parseTransportsFromMultiaddrs(listOf(entry.multiaddr)))
                             .distinct()
                     )
                 } else {
+                    val isRelayPeer = meshRepository.isKnownRelay(peerId) || relayHops.contains(peerId) || entry.multiaddr.contains("/p2p-circuit/")
                     peerMap[peerId] = PeerInfo(
                         peerId = peerId,
                         nickname = entry.nickname,
@@ -196,7 +209,36 @@ class DashboardViewModel @Inject constructor(
                             .toList().sorted(),
                         isOnline = isRecent(entry.lastSeen),
                         isFull = false,
-                        isRelay = meshRepository.isKnownRelay(peerId)
+                        isRelay = isRelayPeer
+                    )
+                }
+            }
+
+            // Synthesize Shared Node entries for relay hops that appear only as circuit middle-hops
+            // (e.g. 12D3KooWJoW... has zero direct ledger entries but appears in 149 p2p-circuit multiaddrs).
+            for (hopId in relayHops) {
+                if (peerMap.containsKey(hopId)) {
+                    val cur = peerMap[hopId]!!
+                    if (!cur.isRelay) {
+                        peerMap[hopId] = cur.copy(isRelay = true)
+                    }
+                } else {
+                    val hopLastSeen = ledgerEntries.filter { it.multiaddr.contains("/p2p/$hopId/p2p-circuit/") }
+                        .mapNotNull { it.lastSeen }.maxOrNull()
+                    val hopTransports = MeshRepository.parseTransportsFromMultiaddrs(
+                        ledgerEntries.filter { it.multiaddr.contains("/p2p/$hopId/p2p-circuit/") }.map { it.multiaddr }
+                    ) + setOf(MeshRepository.TRANSPORT_RELAY_CIRCUIT)
+                    peerMap[hopId] = PeerInfo(
+                        peerId = hopId,
+                        nickname = null,
+                        localNickname = null,
+                        multiaddr = ledgerEntries.firstOrNull { it.multiaddr.contains("/p2p/$hopId/p2p-circuit/") }?.multiaddr ?: "",
+                        lastSeen = hopLastSeen,
+                        transport = MeshRepository.TRANSPORT_RELAY_CIRCUIT,
+                        transports = hopTransports.toList().sorted(),
+                        isOnline = hopLastSeen != null && isRecent(hopLastSeen),
+                        isFull = false,
+                        isRelay = true
                     )
                 }
             }
@@ -204,7 +246,7 @@ class DashboardViewModel @Inject constructor(
             val peerList = peerMap.values.toList()
             _peers.value = peerList
 
-            Timber.d("Loaded ${peerList.size} discovered peers (${peerList.count { it.isFull }} full)")
+            Timber.d("Loaded ${peerList.size} discovered peers (${peerList.count { it.isFull }} full, ${peerList.count { it.isRelay }} relays)")
         } catch (e: Exception) {
             Timber.e(e, "Failed to load peers")
         }
@@ -221,10 +263,15 @@ class DashboardViewModel @Inject constructor(
             if (existing == null) {
                 merged[canonicalPeerId] = info.copy(peerId = canonicalPeerId)
             } else {
+                val authoritativeNick = selectAuthoritativeNickname(existing.nickname, info.nickname)
+                    ?: selectAuthoritativeNickname(info.nickname, existing.nickname)
+                    ?: existing.nickname
+                val authoritativeLocal = selectAuthoritativeNickname(existing.localNickname, info.localNickname)
+                    ?: existing.localNickname ?: info.localNickname
                 merged[canonicalPeerId] = existing.copy(
                     publicKey = existing.publicKey ?: info.publicKey,
-                    nickname = existing.nickname ?: info.nickname,
-                    localNickname = existing.localNickname ?: info.localNickname,
+                    nickname = authoritativeNick,
+                    localNickname = authoritativeLocal,
                     transport = if (
                         existing.transport == com.scmessenger.android.service.TransportType.INTERNET ||
                             info.transport == com.scmessenger.android.service.TransportType.INTERNET
@@ -234,7 +281,9 @@ class DashboardViewModel @Inject constructor(
                         existing.transport
                     },
                     isFull = existing.isFull || info.isFull,
-                    lastSeen = maxOf(existing.lastSeen, info.lastSeen)
+                    isRelay = existing.isRelay || info.isRelay,
+                    lastSeen = maxOf(existing.lastSeen, info.lastSeen),
+                    transports = existing.transports + info.transports
                 )
             }
         }
@@ -364,6 +413,29 @@ class DashboardViewModel @Inject constructor(
         val seenAt = timestamp.toEpochSeconds()
         val fiveMinutes = 300L
         return seenAt <= now && (now - seenAt) < fiveMinutes
+    }
+
+    private fun normalizeNickname(value: String?): String? = value?.trim()?.takeIf { it.isNotEmpty() }
+
+    private fun isSyntheticFallbackNickname(value: String?): Boolean {
+        val n = normalizeNickname(value)?.lowercase() ?: return false
+        return n.startsWith("peer-")
+    }
+
+    private fun selectAuthoritativeNickname(incoming: String?, existing: String?): String? {
+        val incomingNormalized = normalizeNickname(incoming)
+        val existingNormalized = normalizeNickname(existing)
+        val incomingSynthetic = isSyntheticFallbackNickname(incomingNormalized)
+        val existingSynthetic = isSyntheticFallbackNickname(existingNormalized)
+        return when {
+            incomingNormalized == null && existingSynthetic -> null
+            incomingNormalized == null -> existingNormalized
+            incomingSynthetic && existingNormalized == null -> null
+            incomingSynthetic && existingSynthetic -> null
+            incomingSynthetic -> existingNormalized
+            existingSynthetic -> incomingNormalized
+            else -> incomingNormalized
+        }
     }
 
     /**

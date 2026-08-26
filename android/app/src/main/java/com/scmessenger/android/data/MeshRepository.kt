@@ -2084,6 +2084,17 @@ open class MeshRepository(
                                 )
                                 try {
                                     contactManager?.add(updatedContact)
+                                    // FIX: propagate authoritative nickname to discoveredPeers so UI doesn't stay on synthetic "peer-30d0fa67"
+                                    refreshDiscoveredPeerForContact(existingContact.peerId)
+                                    _discoveredPeers.update { cur ->
+                                        cur.mapValues { (k, v) ->
+                                            val matches = k == existingContact.peerId || v.peerId == existingContact.peerId ||
+                                                (normalizedSenderKey != null && normalizePublicKey(v.publicKey) == normalizedSenderKey)
+                                            if (matches) {
+                                                v.copy(nickname = selectAuthoritativeNickname(knownNickname, v.nickname) ?: knownNickname)
+                                            } else v
+                                        }
+                                    }
                                 } catch (e: Exception) {
                                     Timber.d("Failed to persist nickname hint for ${existingContact.peerId}: ${e.message}")
                                 }
@@ -3447,7 +3458,7 @@ open class MeshRepository(
                         peerId = selectCanonicalPeerId(info.peerId, existing.peerId),
                         publicKey = info.publicKey ?: existing.publicKey,
                         nickname = selectAuthoritativeNickname(info.nickname, existing.nickname),
-                        localNickname = normalizeNickname(info.localNickname) ?: normalizeNickname(existing.localNickname),
+                        localNickname = selectAuthoritativeNickname(info.localNickname, existing.localNickname) ?: normalizeNickname(info.localNickname) ?: normalizeNickname(existing.localNickname),
                         libp2pPeerId = info.libp2pPeerId ?: existing.libp2pPeerId,
                         transport = if (
                             info.transport == com.scmessenger.android.service.TransportType.INTERNET ||
@@ -3458,6 +3469,7 @@ open class MeshRepository(
                             info.transport
                         },
                         isFull = info.isFull || existing.isFull,
+                        isRelay = info.isRelay || existing.isRelay || isRelayHop(info.peerId) || isRelayHop(existing.peerId),
                         lastSeen = maxOf(info.lastSeen, existing.lastSeen),
                         transports = info.transports + existing.transports
                     )
@@ -3469,6 +3481,95 @@ open class MeshRepository(
                     mapKey != canonicalPeerId && PeerIdValidator.isSame(mapKey, canonicalPeerId)
                 }
             }
+        }
+    }
+
+    /**
+     * Refresh discovered peer nicknames from authoritative sources (contacts + ledger).
+     * Called after a contact nickname is corrected from synthetic to authoritative (e.g. envelope path at 2065)
+     * so the UI does not stay stale on synthetic "peer-30d0fa67".
+     */
+    private fun refreshDiscoveredPeersNicknames() {
+        try {
+            val contacts = contactManager?.list().orEmpty()
+            _discoveredPeers.update { current ->
+                val updated = current.mapValues { (_, info) ->
+                    val normalizedKey = normalizePublicKey(info.publicKey)
+                    val matchingContact = contacts.firstOrNull {
+                        it.peerId == info.peerId ||
+                            (normalizedKey != null && normalizePublicKey(it.publicKey) == normalizedKey) ||
+                            (info.libp2pPeerId != null && it.peerId == info.libp2pPeerId) ||
+                            (info.libp2pPeerId != null && parseRoutingHints(it.notes).libp2pPeerId == info.libp2pPeerId)
+                    }
+                    val contactNick = matchingContact?.let {
+                        val primary = normalizeNickname(it.localNickname)?.takeUnless { v -> isSyntheticFallbackNickname(v) }
+                        val secondary = normalizeNickname(it.nickname)?.takeUnless { v -> isSyntheticFallbackNickname(v) }
+                        primary ?: secondary
+                    }
+                    val contactLocal = matchingContact?.localNickname?.trim()?.takeIf { it.isNotEmpty() }
+                    val ledgerNick = getAllLedgerEntries().asSequence()
+                        .filter { e ->
+                            e.peerId == info.peerId ||
+                                (normalizedKey != null && normalizePublicKey(e.publicKey) == normalizedKey) ||
+                                (info.libp2pPeerId != null && e.peerId == info.libp2pPeerId)
+                        }
+                        .mapNotNull { normalizeNickname(it.nickname)?.takeUnless { v -> isSyntheticFallbackNickname(v) } }
+                        .firstOrNull()
+                    val authoritative = selectAuthoritativeNickname(contactNick, ledgerNick)
+                        ?: selectAuthoritativeNickname(ledgerNick, contactNick)
+                        ?: contactNick
+                        ?: ledgerNick
+                    if (authoritative != null && !isSyntheticFallbackNickname(authoritative) && authoritative != info.nickname) {
+                        info.copy(
+                            nickname = authoritative,
+                            localNickname = contactLocal ?: info.localNickname,
+                            isRelay = info.isRelay || isRelayHop(info.peerId) || isKnownRelay(info.peerId)
+                        )
+                    } else if (contactLocal != null && contactLocal != info.localNickname) {
+                        info.copy(localNickname = contactLocal)
+                    } else {
+                        info
+                    }
+                }
+                updated
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "refreshDiscoveredPeersNicknames failed")
+        }
+    }
+
+    private fun refreshDiscoveredPeerForContact(peerId: String) {
+        try {
+            val normalized = peerId.trim()
+            if (normalized.isEmpty()) return
+            val contact = try { contactManager?.get(normalized) } catch (_: Exception) { null }
+                ?: contactManager?.list()?.firstOrNull { it.peerId == normalized || normalizePublicKey(it.publicKey) == normalizePublicKey(peerId) }
+                ?: return
+            val authoritativeNick = run {
+                val primary = normalizeNickname(contact.localNickname)?.takeUnless { v -> isSyntheticFallbackNickname(v) }
+                val secondary = normalizeNickname(contact.nickname)?.takeUnless { v -> isSyntheticFallbackNickname(v) }
+                primary ?: secondary
+            } ?: return
+            if (isSyntheticFallbackNickname(authoritativeNick)) return
+            _discoveredPeers.update { current ->
+                var changed = false
+                val updated = current.mapValues { (key, info) ->
+                    val matches = key == normalized || info.peerId == normalized ||
+                        (contact.publicKey != null && normalizePublicKey(info.publicKey) == normalizePublicKey(contact.publicKey)) ||
+                        (info.libp2pPeerId != null && info.libp2pPeerId == normalized) ||
+                        (info.libp2pPeerId != null && parseRoutingHints(contact.notes).libp2pPeerId == info.libp2pPeerId)
+                    if (matches && info.nickname != authoritativeNick) {
+                        changed = true
+                        info.copy(
+                            nickname = selectAuthoritativeNickname(authoritativeNick, info.nickname) ?: authoritativeNick,
+                            localNickname = contact.localNickname ?: info.localNickname
+                        )
+                    } else info
+                }
+                if (changed) updated else current
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "refreshDiscoveredPeerForContact failed for $peerId")
         }
     }
 
@@ -4393,6 +4494,23 @@ open class MeshRepository(
     fun setContactNickname(peerId: String, nickname: String?) {
         contactManager?.setNickname(peerId, nickname)
         Timber.d("Contact nickname updated: $peerId -> $nickname")
+        try {
+            val normalized = nickname?.trim()?.takeIf { it.isNotEmpty() }
+            if (normalized != null && !isSyntheticFallbackNickname(normalized)) {
+                refreshDiscoveredPeerForContact(peerId)
+                _discoveredPeers.update { current ->
+                    current.mapValues { (k, v) ->
+                        val matches = k == peerId || v.peerId == peerId ||
+                            (v.libp2pPeerId != null && v.libp2pPeerId == peerId)
+                        if (matches) {
+                            v.copy(nickname = selectAuthoritativeNickname(normalized, v.nickname) ?: normalized)
+                        } else v
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "Failed to refresh discovered peer nickname for $peerId")
+        }
     }
 
     /** Mark a contact as verified after an out-of-band safety-number comparison. */
@@ -4889,15 +5007,31 @@ open class MeshRepository(
         try {
             contactManager?.setLocalNickname(peerId, nickname)
             Timber.i("Local nickname for $peerId set to: $nickname")
-            // Refresh discovery map if this peer is in it
-                _discoveredPeers.update { current ->
-                    val existing = current[peerId]
-                    if (existing != null) {
-                        current + (peerId to existing.copy(localNickname = nickname))
-                    } else {
-                        current
+            _discoveredPeers.update { current ->
+                val normalized = peerId.trim()
+                if (current.containsKey(normalized)) {
+                    val existing = current[normalized]!!
+                    current + (normalized to existing.copy(localNickname = nickname))
+                } else {
+                    var updated = current
+                    var changed = false
+                    for ((k, v) in current) {
+                        val matches = k == normalized || v.peerId == normalized ||
+                            (v.libp2pPeerId != null && v.libp2pPeerId == normalized) ||
+                            (normalizePublicKey(v.publicKey) != null && try {
+                                normalizePublicKey(contactManager?.get(normalized)?.publicKey) == normalizePublicKey(v.publicKey)
+                            } catch (_: Exception) { false })
+                        if (matches) {
+                            updated = updated + (k to v.copy(localNickname = nickname))
+                            changed = true
+                        }
                     }
+                    if (changed) updated else current
                 }
+            }
+            if (nickname != null && !isSyntheticFallbackNickname(nickname)) {
+                refreshDiscoveredPeerForContact(peerId)
+            }
         } catch (e: Exception) {
             Timber.e(e, "Failed to set local nickname for $peerId")
         }
@@ -5825,6 +5959,123 @@ open class MeshRepository(
     }
 
     /**
+     * Read the entire persisted ledger from disk, masking poisoned bindings.
+     *
+     * This is the offline-persistence accessor required by NODE-RETENTION-001:
+     * [getDialableAddresses] only returns proven entries (success>0 && failure<3),
+     * so a node that is currently unreachable (seed: success==0, dead: failure>=3)
+     * would vanish from the UI. The full accessor lets [seedKnownPeersFromPersistedData]
+     * and [DashboardViewModel.loadPeers] resurrect nodes as "offline · last seen Xm ago"
+     * with transport badges, and lets [isKnownRelay] classify relay hops even when
+     * no live discovery entry exists.
+     */
+    fun getAllLedgerEntries(): List<uniffi.api.LedgerEntry> {
+        return try {
+            val ledgerFile = File(storagePath, "ledger.json")
+            if (!ledgerFile.isFile) return emptyList()
+            val bytes = ledgerFile.readBytes()
+            if (bytes.isEmpty()) return emptyList()
+            val text = when {
+                bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte() ->
+                    bytes.toString(Charsets.UTF_16)
+                else -> {
+                    val utf8 = bytes.toString(Charsets.UTF_8).trim()
+                    if (utf8.startsWith("\uFEFF")) utf8.removePrefix("\uFEFF") else utf8
+                }
+            }.trim()
+            if (text.isEmpty() || text == "[]") return emptyList()
+            val arr = org.json.JSONArray(text)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val multiaddr = obj.optString("multiaddr", "").trim()
+                    if (multiaddr.isEmpty()) continue
+                    val peerId = obj.optString("peer_id", "").trim().takeIf { it.isNotEmpty() }
+                    val publicKeyRaw = if (obj.has("public_key") && !obj.isNull("public_key")) {
+                        obj.optString("public_key", "").trim().takeIf { it.isNotEmpty() }
+                    } else null
+                    val nicknameRaw = if (obj.has("nickname") && !obj.isNull("nickname")) {
+                        obj.optString("nickname", "").trim().takeIf { it.isNotEmpty() }
+                    } else null
+                    val successCount = obj.optInt("success_count", 0).toUInt()
+                    val failureCount = obj.optInt("failure_count", 0).toUInt()
+                    val lastSeenRaw = obj.optLong("last_seen", 0L)
+                    val lastSeen = if (lastSeenRaw > 0) lastSeenRaw.toULong() else null
+                    val topicsJson = obj.optJSONArray("topics")
+                    val topics = buildList {
+                        if (topicsJson != null) {
+                            for (j in 0 until topicsJson.length()) {
+                                val t = topicsJson.optString(j, "").trim()
+                                if (t.isNotEmpty()) add(t)
+                            }
+                        }
+                    }
+                    val entry = uniffi.api.LedgerEntry(
+                        multiaddr = multiaddr,
+                        peerId = peerId,
+                        publicKey = publicKeyRaw,
+                        nickname = nicknameRaw,
+                        successCount = successCount,
+                        failureCount = failureCount,
+                        lastSeen = lastSeen,
+                        topics = topics
+                    )
+                    val pid = entry.peerId?.trim().orEmpty()
+                    val key = entry.publicKey?.trim().orEmpty()
+                    if (pid.isNotEmpty() && key.isNotEmpty() && !isSelfCertifyingKeyBinding(pid, key)) {
+                        add(entry.copy(publicKey = null, nickname = null))
+                    } else {
+                        add(entry)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "getAllLedgerEntries: failed to read ledger.json")
+            emptyList()
+        }
+    }
+
+    fun getSeedAddresses(limit: UInt = 16u): List<uniffi.api.LedgerEntry> {
+        return getAllLedgerEntries()
+            .filter { it.successCount == 0u && it.failureCount < 3u }
+            .sortedByDescending { it.lastSeen ?: 0uL }
+            .take(limit.toInt())
+    }
+
+    fun getRecentlyDeadAddresses(withinDays: Long = 7): List<uniffi.api.LedgerEntry> {
+        val cutoffSec = (System.currentTimeMillis() / 1000) - withinDays * 24 * 3600
+        val cutoff = cutoffSec.coerceAtLeast(0).toULong()
+        return getAllLedgerEntries()
+            .filter { it.failureCount >= 3u && (it.lastSeen ?: 0uL) >= cutoff }
+            .sortedByDescending { it.lastSeen ?: 0uL }
+    }
+
+    fun getRelayHopPeerIds(): Set<String> {
+        val hops = mutableSetOf<String>()
+        for (entry in getAllLedgerEntries()) {
+            val ma = entry.multiaddr
+            if (!ma.contains("/p2p-circuit/")) continue
+            val circuitIdx = ma.indexOf("/p2p-circuit/")
+            if (circuitIdx == -1) continue
+            val beforeCircuit = ma.substring(0, circuitIdx)
+            val relayIdx = beforeCircuit.lastIndexOf("/p2p/")
+            if (relayIdx != -1) {
+                val relayId = beforeCircuit.substring(relayIdx + "/p2p/".length).trim().split("/").firstOrNull()?.trim()
+                if (!relayId.isNullOrEmpty() && PeerIdValidator.isLibp2pPeerId(relayId)) {
+                    hops.add(relayId)
+                }
+            }
+        }
+        return hops
+    }
+
+    fun isRelayHop(peerId: String): Boolean {
+        val normalized = peerId.trim()
+        if (normalized.isEmpty()) return false
+        return normalized in getRelayHopPeerIds()
+    }
+
+    /**
      * Bootstrap nodes for the Settings screen, sourced from the local ledger.
      *
      * v0.4.0: there are no dedicated relays and no hardcoded node addresses --
@@ -5949,13 +6200,22 @@ open class MeshRepository(
             // Guarded accessor: poisoned relay-hop bindings are masked before
             // they can seed the discovery map (NODE-RETENTION-001 must not
             // resurrect identity poison across WiFi/BLE cycles).
-            getDialableAddresses().forEach { entry ->
+            // FIX: include offline nodes (seed + recent dead) so the peer list persists
+            // "last seen Xm ago" with transport badges even when dialable==0.
+            val allLedgerForSeeding = (getDialableAddresses() + getSeedAddresses(16u) + getRecentlyDeadAddresses()).distinctBy { it.multiaddr }
+            allLedgerForSeeding.forEach { entry ->
                 val rawPeerId = entry.peerId?.trim().takeIf { !it.isNullOrEmpty() } ?: return@forEach
                 val transports = parseTransportsFromMultiaddrs(listOf(entry.multiaddr))
                 val existing = seeded[rawPeerId]
                 if (existing != null) {
+                    val authoritativeNick = selectAuthoritativeNickname(existing.nickname, entry.nickname)
+                        ?: selectAuthoritativeNickname(entry.nickname, existing.nickname)
+                        ?: existing.nickname
+                        ?: entry.nickname
+                    // Prefer authoritative nickname (non-synthetic) and keep live transport union.
                     seeded[rawPeerId] = existing.copy(
-                        nickname = existing.nickname ?: entry.nickname,
+                        nickname = selectAuthoritativeNickname(authoritativeNick, existing.nickname) ?: authoritativeNick,
+                        localNickname = existing.localNickname,
                         lastSeen = maxOf(existing.lastSeen, entry.lastSeen ?: 0uL),
                         transports = existing.transports + transports
                     )
@@ -5970,9 +6230,42 @@ open class MeshRepository(
                         else
                             com.scmessenger.android.service.TransportType.INTERNET,
                         isFull = false,
-                        isRelay = isKnownRelay(rawPeerId),
+                        isRelay = isKnownRelay(rawPeerId) || isRelayHop(rawPeerId),
                         lastSeen = entry.lastSeen ?: 0uL,
                         transports = transports
+                    )
+                }
+            }
+
+            // Synthesize Shared Node entries for relay hops that appear only as circuit
+            // middle-hops (e.g. 12D3KooWJoW... which has zero direct ledger entries but
+            // appears in 149 p2p-circuit multiaddrs). Without this, Shared Nodes section stays empty.
+            val relayHops = getRelayHopPeerIds()
+            for (hopId in relayHops) {
+                if (seeded.containsKey(hopId)) {
+                    val cur = seeded[hopId]!!
+                    if (!cur.isRelay) {
+                        seeded[hopId] = cur.copy(isRelay = true, isFull = cur.isFull && !isRelayHop(hopId))
+                    }
+                } else {
+                    // Create offline placeholder for the hop itself; its own lastSeen is the most recent
+                    // circuit that mentions it, so the UI can render "last seen Xm ago".
+                    val hopLastSeen = allLedgerForSeeding.filter { it.multiaddr.contains("/p2p/$hopId/p2p-circuit/") }
+                        .mapNotNull { it.lastSeen }.maxOrNull() ?: 0uL
+                    val hopTransports = parseTransportsFromMultiaddrs(
+                        allLedgerForSeeding.filter { it.multiaddr.contains("/p2p/$hopId/p2p-circuit/") }.map { it.multiaddr }
+                    ) + setOf(TRANSPORT_RELAY_CIRCUIT)
+                    seeded[hopId] = PeerDiscoveryInfo(
+                        peerId = hopId,
+                        publicKey = null,
+                        nickname = null,
+                        localNickname = null,
+                        libp2pPeerId = hopId,
+                        transport = com.scmessenger.android.service.TransportType.INTERNET,
+                        isFull = false,
+                        isRelay = true,
+                        lastSeen = hopLastSeen,
+                        transports = hopTransports
                     )
                 }
             }
@@ -5985,12 +6278,24 @@ open class MeshRepository(
                     val live = merged[key]
                     merged[key] = when {
                         live == null -> info.copy(lastSeen = minOf(info.lastSeen, now))
-                        else -> live.copy(transports = live.transports + info.transports)
+                        else -> {
+                            val mergedNick = selectAuthoritativeNickname(live.nickname, info.nickname)
+                                ?: selectAuthoritativeNickname(info.nickname, live.nickname)
+                                ?: live.nickname
+                            val mergedLocal = live.localNickname ?: info.localNickname
+                            live.copy(
+                                nickname = mergedNick,
+                                localNickname = mergedLocal,
+                                transports = live.transports + info.transports,
+                                isRelay = live.isRelay || info.isRelay || isRelayHop(key),
+                                lastSeen = maxOf(live.lastSeen, info.lastSeen)
+                            )
+                        }
                     }
                 }
                 merged
             }
-            Timber.i("NODE-RETENTION-001: seeded ${seeded.size} known node(s) from contacts + ledger")
+            Timber.i("NODE-RETENTION-001: seeded ${seeded.size} known node(s) from contacts + ledger (incl. ${relayHops.size} relay hops)")
         } catch (e: Exception) {
             Timber.w(e, "NODE-RETENTION-001: failed to seed known peers from persisted data")
         }
@@ -8151,24 +8456,52 @@ open class MeshRepository(
             emptyList()
         }
 
-        val fromContact = contacts.firstOrNull {
+        val contact = contacts.firstOrNull {
             it.peerId == peerId ||
                 (
                     normalizedKey != null &&
                         normalizePublicKey(it.publicKey) == normalizedKey
                     )
-        }?.nickname
+        }
+        val fromContact = contact?.let {
+            val primary = normalizeNickname(it.localNickname)?.takeUnless { v -> isSyntheticFallbackNickname(v) }
+            val secondary = normalizeNickname(it.nickname)?.takeUnless { v -> isSyntheticFallbackNickname(v) }
+            primary ?: secondary ?: selectAuthoritativeNickname(it.localNickname, it.nickname)
+        }
 
-        val resolved = selectAuthoritativeNickname(incomingNickname, fromContact)
+        val fromLedger = getAllLedgerEntries().asSequence()
+            .filter { entry ->
+                entry.peerId == peerId ||
+                    (normalizedKey != null && normalizePublicKey(entry.publicKey) == normalizedKey) ||
+                    entry.peerId == normalizedKey
+            }
+            .mapNotNull { normalizeNickname(it.nickname)?.takeUnless { v -> isSyntheticFallbackNickname(v) } }
+            .firstOrNull()
+            ?: getAllLedgerEntries().asSequence()
+                .filter { entry ->
+                    entry.peerId == peerId ||
+                        (normalizedKey != null && normalizePublicKey(entry.publicKey) == normalizedKey)
+                }
+                .mapNotNull { normalizeNickname(it.nickname) }
+                .firstOrNull { !isSyntheticFallbackNickname(it) }
+
+        val contactOrLedger = selectAuthoritativeNickname(fromContact, fromLedger)
+        val resolved = selectAuthoritativeNickname(incomingNickname, contactOrLedger)
+        if (!resolved.isNullOrBlank() && !isSyntheticFallbackNickname(resolved)) {
+            return resolved
+        }
+        if (!contactOrLedger.isNullOrBlank() && !isSyntheticFallbackNickname(contactOrLedger)) {
+            return contactOrLedger
+        }
         if (!resolved.isNullOrBlank()) {
             return resolved
         }
 
-        // Auto-generate nickname if none found
-        val shortId = if (peerId.startsWith("12D3KooW")) {
-            peerId.takeLast(8)
-        } else {
-            peerId.take(8)
+        // Auto-generate nickname if none found - use public key prefix when available (matches evidence peer-30d0fa67)
+        val shortId = when {
+            normalizedKey != null -> normalizedKey.take(8)
+            peerId.startsWith("12D3KooW") -> peerId.takeLast(8)
+            else -> peerId.take(8)
         }
         val generated = "peer-$shortId"
         Timber.d("Generated default nickname '$generated' for peer $peerId")
@@ -8193,24 +8526,41 @@ open class MeshRepository(
                             normalizePublicKey(info.publicKey) == normalizedKey
                         )
             }
-            .mapNotNull { normalizeNickname(it.nickname) }
+            .mapNotNull {
+                val nick = normalizeNickname(it.localNickname) ?: normalizeNickname(it.nickname)
+                nick?.takeUnless { v -> isSyntheticFallbackNickname(v) }
+            }
             .firstOrNull()
+            ?: _discoveredPeers.value.values.asSequence()
+                .filter { info ->
+                    info.peerId == canonicalPeerId ||
+                        (!routeCandidate.isNullOrBlank() && info.peerId == routeCandidate) ||
+                        (normalizedKey != null && normalizePublicKey(info.publicKey) == normalizedKey)
+                }
+                .mapNotNull { normalizeNickname(it.nickname) }
+                .firstOrNull { !isSyntheticFallbackNickname(it) }
 
         // Precedence (b)/(c): ledger nicknames are the LOWEST-trust tier and
         // only count when the entry's key binding survives the self-certifying
         // gate; contact records (a) outrank them via selectAuthoritativeNickname.
-        val fromLedger = getDialableAddresses()
-            .asSequence()
+        // FIX: use all ledger entries (including seed/offline) and prefer non-synthetic.
+        val allLedger = getAllLedgerEntries()
+        val fromLedger = allLedger.asSequence()
             .filter { entry ->
                 entry.peerId == canonicalPeerId ||
                     (!routeCandidate.isNullOrBlank() && entry.peerId == routeCandidate) ||
-                    (
-                        normalizedKey != null &&
-                            normalizePublicKey(entry.publicKey) == normalizedKey
-                        )
+                    (normalizedKey != null && normalizePublicKey(entry.publicKey) == normalizedKey)
             }
-            .mapNotNull { normalizeNickname(it.nickname) }
+            .mapNotNull { normalizeNickname(it.nickname)?.takeUnless { v -> isSyntheticFallbackNickname(v) } }
             .firstOrNull()
+            ?: allLedger.asSequence()
+                .filter { entry ->
+                    entry.peerId == canonicalPeerId ||
+                        (!routeCandidate.isNullOrBlank() && entry.peerId == routeCandidate) ||
+                        (normalizedKey != null && normalizePublicKey(entry.publicKey) == normalizedKey)
+                }
+                .mapNotNull { normalizeNickname(it.nickname) }
+                .firstOrNull { !isSyntheticFallbackNickname(it) }
 
         val fromContact = try {
             contactManager?.list()
@@ -8218,13 +8568,22 @@ open class MeshRepository(
                 ?.filter { contact ->
                     contact.peerId == canonicalPeerId ||
                         (!routeCandidate.isNullOrBlank() && contact.peerId == routeCandidate) ||
-                        (
-                            normalizedKey != null &&
-                                normalizePublicKey(contact.publicKey) == normalizedKey
-                            )
+                        (normalizedKey != null && normalizePublicKey(contact.publicKey) == normalizedKey)
                 }
-                ?.mapNotNull { normalizeNickname(it.nickname) }
+                ?.mapNotNull {
+                    val primary = normalizeNickname(it.localNickname)?.takeUnless { v -> isSyntheticFallbackNickname(v) }
+                    val secondary = normalizeNickname(it.nickname)?.takeUnless { v -> isSyntheticFallbackNickname(v) }
+                    primary ?: secondary
+                }
                 ?.firstOrNull()
+                ?: contactManager?.list()?.asSequence()
+                    ?.filter { contact ->
+                        contact.peerId == canonicalPeerId ||
+                            (!routeCandidate.isNullOrBlank() && contact.peerId == routeCandidate) ||
+                            (normalizedKey != null && normalizePublicKey(contact.publicKey) == normalizedKey)
+                    }
+                    ?.mapNotNull { normalizeNickname(it.nickname) }
+                    ?.firstOrNull { !isSyntheticFallbackNickname(it) }
         } catch (_: Exception) {
             null
         }
@@ -8317,14 +8676,30 @@ open class MeshRepository(
         } else {
             normalizedKey
         }
-        val normalizedNickname = nickname?.trim()?.takeIf { it.isNotEmpty() }
+        // NICKNAME-STALE-001 FIX: synthetic "peer-xxxx" must never overwrite an
+        // authoritative ledger nickname (e.g. "Claude-Windows-Driver"). Only a
+        // non-synthetic, non-blank nickname is allowed to ride into the ledger.
+        val normalizedNickname = normalizeNickname(nickname)?.takeUnless { isSyntheticFallbackNickname(it) }
+        // If the incoming nickname is synthetic but the ledger already has a
+        // synthetic, we still don't want to churn the file with another synthetic.
+        // A null here means "routing metadata only, no identity claim".
         dialHints.forEach { multiaddr ->
             kotlin.runCatching {
+                // Double-check: if we are about to write a synthetic over an existing
+                // authoritative ledger entry, skip. Read current ledger entry for this
+                // multiaddr/peer to ensure we don't clobber Claude with peer-30...
+                val shouldWriteNick = if (normalizedNickname == null) {
+                    // Synthetic or null -> only write if ledger has no authoritative nick
+                    val existingNick = getAllLedgerEntries().firstOrNull {
+                        it.multiaddr == multiaddr && it.peerId == normalizedRoute
+                    }?.nickname?.trim()?.takeIf { it.isNotEmpty() }
+                    existingNick == null || isSyntheticFallbackNickname(existingNick)
+                } else true
                 ledgerManager?.annotateIdentity(
                     multiaddr,
                     normalizedRoute,
                     trustedKey,
-                    normalizedNickname
+                    if (shouldWriteNick) normalizedNickname else null
                 )
             }.onFailure {
                 Timber.d("Failed to annotate identity for ledger entry $multiaddr: ${it.message}")
@@ -8657,6 +9032,19 @@ open class MeshRepository(
 
             try {
                 contactManager?.add(updated)
+                if (resolvedNickname != null && !isSyntheticFallbackNickname(resolvedNickname) && resolvedNickname != existing?.nickname) {
+                    refreshDiscoveredPeerForContact(resolvedPeerId)
+                    _discoveredPeers.update { cur ->
+                        cur.mapValues { (k, v) ->
+                            val matches = k == resolvedPeerId || v.peerId == resolvedPeerId ||
+                                (normalizePublicKey(v.publicKey) == normalizePublicKey(resolvedPublicKey)) ||
+                                (routePeer != null && v.libp2pPeerId == routePeer)
+                            if (matches) {
+                                v.copy(nickname = selectAuthoritativeNickname(resolvedNickname, v.nickname) ?: resolvedNickname)
+                            } else v
+                        }
+                    }
+                }
             } catch (e: Exception) {
                 Timber.d("Failed to upsert federated contact for $resolvedPeerId: ${e.message}")
             }
@@ -9173,11 +9561,19 @@ open class MeshRepository(
 
     fun isKnownRelay(peerId: String): Boolean {
         val normalized = peerId.trim()
+        if (normalized.isEmpty()) return false
         if (isBootstrapRelayPeer(normalized)) return true
+        if (isRelayHop(normalized)) return true
         val info = _discoveredPeers.value.entries.firstOrNull {
             it.key.equals(normalized, ignoreCase = true)
-        }?.value ?: return false
-        return info.isRelay && !info.isFull
+        }?.value
+        if (info != null) {
+            if (info.isRelay && !info.isFull) return true
+            if (isRelayHop(info.peerId)) return true
+            val libp2p = info.libp2pPeerId?.trim().orEmpty()
+            if (libp2p.isNotEmpty() && isRelayHop(libp2p)) return true
+        }
+        return false
     }
 
     private fun relayCircuitAddressesForPeer(targetPeerId: String): List<String> {
