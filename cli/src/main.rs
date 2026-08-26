@@ -2208,6 +2208,61 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>, auto_reply: boo
         }
     });
 
+    // EXTERNAL-ADDRESS AWARENESS: on daemon start and every 10 minutes,
+    // determine this node's externally observed address(es) (the same source
+    // the GET /api/external-address endpoint reports), log the refresh, and
+    // register them in the local route tables (hint store + ledger) so peers
+    // can dial us and our outbound identity envelopes always carry fresh
+    // external reachables.
+    {
+        let ext_swarm = swarm_handle.clone();
+        let ext_local_peer = local_peer_id;
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(600));
+            ticker.tick().await; // first tick is immediate (daemon start)
+            loop {
+                ticker.tick().await;
+                match ext_swarm.get_external_addresses().await {
+                    Ok(sockets) => {
+                        let mut addrs: Vec<String> = Vec::new();
+                        for socket in sockets {
+                            if socket.ip().is_unspecified() || socket.port() == 0 {
+                                continue;
+                            }
+                            let host = match socket.ip() {
+                                std::net::IpAddr::V4(ip) => format!("/ip4/{ip}"),
+                                std::net::IpAddr::V6(ip) => format!("/ip6/{ip}"),
+                            };
+                            let value = format!("{host}/tcp/{}", socket.port());
+                            if !addrs.contains(&value) {
+                                addrs.push(value);
+                            }
+                        }
+                        if addrs.is_empty() {
+                            tracing::debug!(
+                                "EXTERNAL_ADDRESS_REFRESH: no externally observed addresses yet for {}",
+                                ext_local_peer
+                            );
+                            continue;
+                        }
+                        tracing::info!(
+                            "EXTERNAL_ADDRESS_REFRESH peer={} addrs={:?}",
+                            ext_local_peer,
+                            addrs
+                        );
+                        scmessenger_core::transport::hint_store::annotate_peer_hints(
+                            ext_local_peer,
+                            &addrs,
+                        );
+                    }
+                    Err(e) => {
+                        tracing::debug!("EXTERNAL_ADDRESS_REFRESH failed: {}", e);
+                    }
+                }
+            }
+        });
+    }
+
     // Start control API server
     let api_ctx = api::ApiContext {
         core: core.clone(),
@@ -3047,6 +3102,27 @@ fn learn_sender_identity_from_envelope(
     peer_id: &str,
     decoded: &scmessenger_core::message::identity_envelope::DecodedIdentityEnvelope,
 ) {
+    // Route hints first: envelope-sourced reachables feed the hint store so
+    // outbound sends can dial them when local candidates are stale.
+    if let Ok(sender_peer) = peer_id.parse::<libp2p::PeerId>() {
+        let mut hints = decoded.connection_hints.clone();
+        for extra in decoded
+            .external_addresses
+            .iter()
+            .chain(decoded.listeners.iter())
+        {
+            hints.push(extra.clone());
+        }
+        scmessenger_core::transport::hint_store::annotate_peer_hints(sender_peer, &hints);
+        if !hints.is_empty() {
+            tracing::debug!(
+                "Learned {} route hint(s) from identity envelope of {}",
+                hints.len(),
+                peer_id
+            );
+        }
+    }
+
     let valid_key = decoded
         .public_key
         .as_deref()

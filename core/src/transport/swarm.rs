@@ -1378,6 +1378,73 @@ fn dispatch_ranked_route(
     }
 }
 
+/// Fire a hint-driven dial toward `peer_id` using envelope-sourced addresses.
+///
+/// Candidates come from the hint store (fresh `connection_hints` /
+/// `external_addresses` / `listeners` learned from the recipient's identity
+/// envelopes), are deduped against known-dead addresses (dial-policy backoff
+/// entries), and every considered port is logged at DEBUG so open-port
+/// determination stays visible. Returns how many candidates were dialed.
+#[cfg(not(target_arch = "wasm32"))]
+fn try_envelope_hint_dial(
+    swarm: &mut libp2p::Swarm<IronCoreBehaviour>,
+    dial_policy_manager: &DialPolicyManager,
+    peer_id: PeerId,
+) -> usize {
+    let hinted = super::hint_store::peer_hint_dial_candidates(peer_id);
+    if hinted.is_empty() {
+        return 0;
+    }
+
+    let mut candidates: Vec<Multiaddr> = Vec::new();
+    for addr in hinted {
+        let addr_key = multiaddr_to_key(&addr);
+        // Dedupe against known-dead: an address sitting in backoff (worse,
+        // marked dead for the session after 3 failures) is skipped so stale
+        // hints cannot consume the concurrent-dial budget.
+        if let Some(state) = dial_policy_manager.get_backoff_state(&addr_key) {
+            if !state.is_eligible() {
+                tracing::debug!(
+                    "[HINT-DIAL] Skipping backed-off hint candidate {} for {} (attempt_count={}, dead={})",
+                    addr_key,
+                    peer_id,
+                    state.attempt_count,
+                    state.is_dead
+                );
+                continue;
+            }
+        }
+        candidates.push(addr);
+    }
+    if candidates.is_empty() {
+        return 0;
+    }
+
+    // Port-probing knowledge surface: which candidate ports we are about to
+    // probe per peer, so logs directly show open-port determination at dial
+    // time and PORT_REACHABLE (on ConnectionEstablished) closes the loop.
+    tracing::debug!(
+        "[HINT-DIAL] Envelope-hint candidates for {}: {:?}",
+        peer_id,
+        candidates.iter().map(|a| a.to_string()).collect::<Vec<_>>()
+    );
+
+    let opts = libp2p::swarm::dial_opts::DialOpts::peer_id(peer_id)
+        .addresses(candidates)
+        .condition(libp2p::swarm::dial_opts::PeerCondition::DisconnectedAndNotDialing)
+        .build();
+    match swarm.dial(opts) {
+        Ok(_) => {
+            tracing::info!("[HINT-DIAL] Queued envelope-hint dial to {}", peer_id);
+            1
+        }
+        Err(e) => {
+            tracing::debug!("[HINT-DIAL] Hint dial to {} not queued: {}", peer_id, e);
+            0
+        }
+    }
+}
+
 /// Convert libp2p Kademlia protocol mode to routing transport type.
 /// Maps the Kademlia query mode to the appropriate transport classification.
 #[cfg(not(target_arch = "wasm32"))]
@@ -3124,6 +3191,17 @@ pub async fn start_swarm_with_config(
                             if let Some(mut pending) = pending_messages.remove(&msg_id) {
                                 let routes = multi_path_delivery.ranked_routes(&pending.target_peer, 3);
                                 if routes.is_empty() {
+                                    // Last-resort candidate refresh before keeping the message
+                                    // in the retry cycle: dial any fresh envelope hints so a
+                                    // later pass has a live path instead of an empty ladder.
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    if !swarm.is_connected(&pending.target_peer) {
+                                        try_envelope_hint_dial(
+                                            &mut swarm,
+                                            &dial_policy_manager,
+                                            pending.target_peer,
+                                        );
+                                    }
                                     tracing::warn!(
                                         "No route candidates available for message {}; keeping in retry cycle",
                                         msg_id
@@ -5202,7 +5280,17 @@ pub async fn start_swarm_with_config(
                                             }
                                         }
                                         if port > 0 {
-                                            let _ = c_arc.transport_memory.read().record_success(&peer_id, &fp, transport, port, 0);
+                                            let _ = c_arc.transport_memory.read().record_success(&peer_id, &fp, transport.clone(), port, 0);
+                                            // Port-probing knowledge surface (companion to
+                                            // [HINT-DIAL] candidate logging): which port
+                                            // actually proved reachable per peer.
+                                            tracing::debug!(
+                                                "[PORT-REACHABLE] peer={} transport={} port={} via={}",
+                                                peer_id,
+                                                transport,
+                                                port,
+                                                remote_addr
+                                            );
                                         }
 
                                         // Review F11: `record_connection` had ZERO callers in
@@ -5755,6 +5843,22 @@ pub async fn start_swarm_with_config(
                         match command {
                             #[cfg(not(target_arch = "wasm32"))]
                             SwarmCommand::SendMessage { peer_id, envelope_data, recipient_identity_id, intended_device_id, reply } => {
+                                // ENVELOPE-HINT DIALING: when the routing table only knows
+                                // stale candidates (live-cell failure 2026-08-25:
+                                // `route=direct relay=- candidate=1/1` against a peer that
+                                // had long left the LAN), the recipient's identity envelope
+                                // carries its CURRENT reachables. Dial those hints now so
+                                // the direct route below has a live connection to ride on,
+                                // instead of burning retries and drifting into store-and-
+                                // forward for something one dial could have delivered.
+                                if !swarm.is_connected(&peer_id) {
+                                    try_envelope_hint_dial(
+                                        &mut swarm,
+                                        &dial_policy_manager,
+                                        peer_id,
+                                    );
+                                }
+
                                 // PHASE 6: Multi-path delivery with routing engine integration
                                 let message_id = format!("{}-{}", peer_id, SystemTime::now().duration_since(UNIX_EPOCH).expect("system clock before UNIX_EPOCH").as_millis());
 
@@ -8067,8 +8171,9 @@ mod tests {
         is_ledger_exchange_path_failure, peer_is_blocked, rearm_ledger_exchange_after_failure,
         resolve_dial_target, select_drift_fallback_carrier,
         should_apply_delivery_convergence_marker, target_peer_id_from_multiaddr,
-        validate_delivery_convergence_marker_shape, verify_registration_message,
-        DeliveryConvergenceMarker, PendingCustodyDispatch, PendingMessage, RelayAbuseGuardrails,
+        try_envelope_hint_dial, validate_delivery_convergence_marker_shape,
+        verify_registration_message, wrap_in_drift_frame, DeliveryConvergenceMarker,
+        PendingCustodyDispatch, PendingMessage, RelayAbuseGuardrails, RelayRequest,
         RELAY_DUPLICATE_WINDOW_MS, RELAY_PEER_BUCKET_BURST_CAPACITY,
         RELAY_PEER_BUCKET_REFILL_PER_SEC,
     };
@@ -8158,6 +8263,87 @@ mod tests {
             )
             .expect("delivery marking must succeed");
         assert!(store
+            .pending_for_destination(&destination.to_string(), 64)
+            .is_empty());
+    }
+
+    /// Relay-as-bridge handoff with an AWS-shaped carrier: sender cannot reach
+    /// the destination, the AWS relay is the only connected peer, custody is
+    /// accepted on the carrier, held through the partition, then picked up and
+    /// finalized when the destination reconnects. Byte-exact envelope round
+    /// trip sender → carrier custody → destination pickup.
+    #[test]
+    fn drift_relay_bridge_aws_carrier_holds_envelope_until_destination_pickup() {
+        use crate::store::relay_custody::{CustodyState, RelayCustodyStore};
+
+        let sender = PeerId::random();
+        let destination = PeerId::random();
+        let aws_relay = PeerId::random();
+
+        // Carrier selection must land on the AWS relay (never the target or self).
+        assert_eq!(
+            select_drift_fallback_carrier([destination, sender, aws_relay], destination, sender),
+            Some(aws_relay)
+        );
+
+        // Sender commits custody to the AWS carrier (the exact RelayRequest
+        // payload shape dispatch uses).
+        let carrier_store = RelayCustodyStore::in_memory();
+        let envelope: Vec<u8> = (0..128u8).cycle().take(512).collect();
+        let relay_request = RelayRequest {
+            destination_peer: destination.to_bytes(),
+            envelope_data: wrap_in_drift_frame(&envelope),
+            message_id: "msg-aws-bridge".to_string(),
+            recipient_identity_id: None,
+            intended_device_id: None,
+        };
+
+        // Carrier side: unwrap the drift frame exactly as its inbound relay
+        // handler does before accept_custody.
+        let framed = relay_request.envelope_data;
+        let unwrapped = crate::drift::DriftFrame::from_bytes(&framed)
+            .expect("carrier must decode the DriftFrame it was handed")
+            .payload;
+        assert_eq!(unwrapped, envelope);
+
+        let custody = carrier_store
+            .accept_custody(
+                sender.to_string(),
+                destination.to_string(),
+                relay_request.message_id.clone(),
+                unwrapped,
+                relay_request.recipient_identity_id.clone(),
+                relay_request.intended_device_id.clone(),
+            )
+            .expect("AWS carrier must accept custody");
+        assert_eq!(custody.state, CustodyState::Accepted);
+
+        // Partition window: nothing pending anywhere else, envelope only in
+        // carrier custody, byte-exact.
+        {
+            let held = carrier_store.pending_for_destination(&destination.to_string(), 64);
+            assert_eq!(held.len(), 1);
+            assert_eq!(held[0].envelope_data, envelope);
+            assert_eq!(held[0].relay_message_id, "msg-aws-bridge");
+        }
+
+        // Destination reconnects; periodic pull marks dispatching and the
+        // recipient ACK finalizes custody.
+        carrier_store
+            .mark_dispatching(
+                &destination.to_string(),
+                &custody.custody_id,
+                "periodic_pull",
+            )
+            .expect("dispatch marking must succeed after reconnect");
+        carrier_store
+            .mark_delivered(
+                &destination.to_string(),
+                &custody.custody_id,
+                "recipient_ack",
+            )
+            .expect("delivery marking must succeed");
+        assert!(carrier_store
             .pending_for_destination(&destination.to_string(), 64)
             .is_empty());
     }
