@@ -158,6 +158,7 @@ class DashboardViewModel @Inject constructor(
                     com.scmessenger.android.service.TransportType.INTERNET -> "Internet"
                     com.scmessenger.android.service.TransportType.TCP_MDNS -> "TCP/LAN"
                 }
+                // UNIFICATION_V2: All nodes are relays — isRelay no longer distinguishes.
                 PeerInfo(
                     peerId = info.peerId,
                     nickname = info.nickname,
@@ -169,7 +170,7 @@ class DashboardViewModel @Inject constructor(
                     transports = (info.transports + primaryTransport).toList().sorted(),
                     isOnline = isRecent(info.lastSeen),
                     isFull = info.isFull,
-                    isRelay = meshRepository.isKnownRelay(info.peerId) || relayHops.contains(info.peerId) || (info.libp2pPeerId != null && relayHops.contains(info.libp2pPeerId))
+                    isRelay = false
                 )
             }.toMutableMap()
 
@@ -197,13 +198,12 @@ class DashboardViewModel @Inject constructor(
                             else -> existingLastSeen
                         },
                         isOnline = isRecent(entry.lastSeen) || existing.isOnline,
-                        isRelay = existing.isRelay || meshRepository.isKnownRelay(peerId) || relayHops.contains(peerId) || entry.multiaddr.contains("/p2p-circuit/"),
+                        isRelay = false,
                         transports = (existing.transports +
                             MeshRepository.parseTransportsFromMultiaddrs(listOf(entry.multiaddr)))
                             .distinct()
                     )
                 } else {
-                    val isRelayPeer = meshRepository.isKnownRelay(peerId) || relayHops.contains(peerId) || entry.multiaddr.contains("/p2p-circuit/")
                     peerMap[peerId] = PeerInfo(
                         peerId = peerId,
                         nickname = entry.nickname,
@@ -214,20 +214,14 @@ class DashboardViewModel @Inject constructor(
                             .toList().sorted(),
                         isOnline = isRecent(entry.lastSeen),
                         isFull = false,
-                        isRelay = isRelayPeer
+                        isRelay = false
                     )
                 }
             }
 
-            // Synthesize Shared Node entries for relay hops that appear only as circuit middle-hops
-            // (e.g. 12D3KooWJoW... has zero direct ledger entries but appears in 149 p2p-circuit multiaddrs).
+            // UNIFICATION_V2: All nodes are relays — synthesize hop entries as regular mesh peers (no isRelay distinction).
             for (hopId in relayHops) {
-                if (peerMap.containsKey(hopId)) {
-                    val cur = peerMap[hopId]!!
-                    if (!cur.isRelay) {
-                        peerMap[hopId] = cur.copy(isRelay = true)
-                    }
-                } else {
+                if (!peerMap.containsKey(hopId)) {
                     val hopLastSeen = ledgerEntries.filter { it.multiaddr.contains("/p2p/$hopId/p2p-circuit/") }
                         .mapNotNull { it.lastSeen }.maxOrNull()
                     val hopTransports = MeshRepository.parseTransportsFromMultiaddrs(
@@ -243,14 +237,16 @@ class DashboardViewModel @Inject constructor(
                         transports = hopTransports.toList().sorted(),
                         isOnline = hopLastSeen != null && isRecent(hopLastSeen),
                         isFull = false,
-                        isRelay = true
+                        isRelay = false
                     )
                 }
             }
 
             val peerList = peerMap.values.toList()
             // UNIFICATION_V2: single unified sorted list — online user → online relay → offline by recency, then peerId
-            val sortedPeerList = sortPeersForUnifiedView(peerList)
+            // Crash guard: blank peerIds and duplicate keys cause Compose LazyColumn ArrayIndexOutOfBounds (MutableVector)
+            val deduped = peerList.filter { it.peerId.isNotBlank() }.distinctBy { it.peerId.trim() }
+            val sortedPeerList = sortPeersForUnifiedView(deduped)
             _peers.value = sortedPeerList
 
             Timber.d("Loaded ${sortedPeerList.size} discovered peers (${sortedPeerList.count { it.isFull }} full, ${sortedPeerList.count { it.isRelay }} relays)")
@@ -297,16 +293,12 @@ class DashboardViewModel @Inject constructor(
         return merged
     }
 
-    // UNIFICATION_V2: default sort — online user nodes first, then online relays/infra, then offline by recency (lastSeen desc, nulls last), tie-breaker peerId
+    // UNIFICATION_V2: All nodes are relays — sort is simply online first, then offline by recency.
+    // Formerly tiered online-user vs online-relay vs offline; now two tiers (all relays are equal).
     private fun sortPeersForUnifiedView(peers: List<PeerInfo>): List<PeerInfo> {
         return peers.sortedWith(
-            compareBy<PeerInfo> {
-                when {
-                    it.isOnline && !it.isRelay -> 0
-                    it.isOnline && it.isRelay -> 1
-                    else -> 2
-                }
-            }.thenByDescending { it.lastSeen ?: 0uL }.thenBy { it.peerId }
+            compareBy<PeerInfo> { if (it.isOnline) 0 else 1 }
+                .thenByDescending { it.lastSeen ?: 0uL }.thenBy { it.peerId }
         )
     }
 

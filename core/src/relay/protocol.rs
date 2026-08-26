@@ -27,11 +27,12 @@ impl RelayCapability {
         }
     }
 
-    /// Create capabilities for a mobile node (limited store/relay)
+    /// Create capabilities for a mobile node — UNIFICATION_V2: all nodes are relays.
+    /// Formerly mobile had can_relay=false; now every node is a full relay per "a node is a node" philosophy.
     pub fn mobile() -> Self {
         Self {
-            can_relay: false,
-            can_store: false,
+            can_relay: true,
+            can_store: true,
             has_internet: true,
             full_node: false,
         }

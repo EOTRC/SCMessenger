@@ -618,6 +618,8 @@ open class MeshRepository(
     private val _discoveredPeers = MutableStateFlow<Map<String, PeerDiscoveryInfo>>(emptyMap())
     open val discoveredPeers: StateFlow<Map<String, PeerDiscoveryInfo>> = _discoveredPeers.asStateFlow()
 
+    // UNIFICATION_V2: All nodes are relays — isRelay retained for backward compat but no longer distinguishes.
+    // Every node is a full relay; the field is now always false in UI terms (no "infrastructure" category).
     data class PeerDiscoveryInfo(
         val peerId: String,          // Key (libp2p or canonical)
         val publicKey: String?,      // Extracted from PeerId or from identity beacon
@@ -625,7 +627,7 @@ open class MeshRepository(
         val localNickname: String? = null,
         val libp2pPeerId: String? = null, // Libp2p peer ID for routing
         val transport: com.scmessenger.android.service.TransportType,
-        val isFull: Boolean,         // True if peer identity is authenticated (non-relay)
+        val isFull: Boolean,         // True if peer identity is authenticated
         val isRelay: Boolean = false,
         val lastSeen: ULong = System.currentTimeMillis().toULong() / 1000u,
         // NODE-TRANSPORT-VIS-001: every transport this node is known to speak,
@@ -9418,7 +9420,7 @@ open class MeshRepository(
     ): Boolean {
         val normalizedRoute = routePeerId.trim()
         if (normalizedRoute.isEmpty() || !PeerIdValidator.isLibp2pPeerId(normalizedRoute)) return false
-        if (isKnownRelay(normalizedRoute)) return false
+        // UNIFICATION_V2: All nodes are relays — no isKnownRelay gate (former filter removed).
 
         val normalizedRecipientKey = normalizePublicKey(recipientPublicKey) ?: return true
         val extractedKey = try {
@@ -9651,20 +9653,10 @@ open class MeshRepository(
         return false
     }
 
+    // UNIFICATION_V2: All nodes are relays — per "a node is a node" philosophy.
+    // Formerly distinguished bootstrap/infra relays; now every node is a full relay.
+    // isKnownRelay retained for API compat but always returns false (no special relay category).
     fun isKnownRelay(peerId: String): Boolean {
-        val normalized = peerId.trim()
-        if (normalized.isEmpty()) return false
-        if (isBootstrapRelayPeer(normalized)) return true
-        if (isRelayHop(normalized)) return true
-        val info = _discoveredPeers.value.entries.firstOrNull {
-            it.key.equals(normalized, ignoreCase = true)
-        }?.value
-        if (info != null) {
-            if (info.isRelay && !info.isFull) return true
-            if (isRelayHop(info.peerId)) return true
-            val libp2p = info.libp2pPeerId?.trim().orEmpty()
-            if (libp2p.isNotEmpty() && isRelayHop(libp2p)) return true
-        }
         return false
     }
 
@@ -9693,17 +9685,15 @@ open class MeshRepository(
             }
         }
 
-        // 2. Dynamic Discovered Relays
+        // 2. Dynamic Mesh Peers as Relays — UNIFICATION_V2: all nodes are relays
         _discoveredPeers.value.entries.filter {
-            it.value.isRelay && !it.value.isFull && it.key != targetPeerId
+            it.key != targetPeerId && PeerIdValidator.isLibp2pPeerId(it.key)
         }.forEach { entry ->
             val relayPeerId = entry.key
-            if (PeerIdValidator.isLibp2pPeerId(relayPeerId)) {
-                val directAddrs = getDialHintsForRoutePeer(relayPeerId)
-                directAddrs.forEach { addr ->
-                    val circuit = "$addr/p2p/$relayPeerId/p2p-circuit/p2p/$targetPeerId"
-                    if (!circuits.contains(circuit)) circuits.add(circuit)
-                }
+            val directAddrs = getDialHintsForRoutePeer(relayPeerId)
+            directAddrs.forEach { addr ->
+                val circuit = "$addr/p2p/$relayPeerId/p2p-circuit/p2p/$targetPeerId"
+                if (!circuits.contains(circuit)) circuits.add(circuit)
             }
         }
 
@@ -9746,13 +9736,8 @@ open class MeshRepository(
         return ids
     }
 
+    // UNIFICATION_V2: All nodes are relays — no bootstrap relay distinction.
     fun isBootstrapRelayPeer(peerId: String): Boolean {
-        if (peerId.isBlank()) return false
-        val knownRelays = collectKnownRelayPeerIds()
-        if (peerId in knownRelays) return true
-        // Also check with /p2p/ prefix in case callers include it
-        val stripped = peerId.substringAfterLast("/p2p/")
-        if (stripped != peerId && stripped in knownRelays) return true
         return false
     }
 

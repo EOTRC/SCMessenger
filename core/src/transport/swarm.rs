@@ -5082,13 +5082,14 @@ pub async fn start_swarm_with_config(
                                     }
                                 }
 
-                                // Check if peer advertises relay capability
-                                let is_relay = info.agent_version.contains("relay");
-                                if is_relay {
-                                    tracing::info!("Peer {} is identified as a RELAY node (agent: {})", peer_id, info.agent_version);
+                                // UNIFICATION_V2: All nodes are relays — per repo philosophy "A node is a node. All nodes are mandatory relays."
+                                // Former gate `info.agent_version.contains("relay")` incorrectly distinguished infrastructure vs user nodes.
+                                // Now every identified peer is registered as mesh relay-capable.
+                                {
+                                    tracing::debug!("Peer {} registered as mesh relay peer (agent: {})", peer_id, info.agent_version);
                                     bootstrap_capability.add_peer(peer_id);
                                     multi_path_delivery.add_relay(peer_id);
-                                    // Mycorrhizal routing: mark relay-capable peer as gateway
+                                    // Mycorrhizal routing: mark peer as gateway
                                     let gw_bytes = extract_peer_id_bytes(&peer_id.to_bytes());
                                     {
                                         let mut guard = routing_engine_handle.write();
@@ -5097,9 +5098,9 @@ pub async fn start_swarm_with_config(
                                         }
                                     }
 
-                                    // Keep only the relay's own direct Identify addresses for
+                                    // Keep only the peer's own direct Identify addresses for
                                     // future circuit construction. Never use this node's
-                                    // external addresses as if they belonged to the relay:
+                                    // external addresses as if they belonged to the peer:
                                     // that creates self-returning and nested circuits as the
                                     // mesh grows.
                                     let local_transport_addrs: Vec<String> = bound_addresses

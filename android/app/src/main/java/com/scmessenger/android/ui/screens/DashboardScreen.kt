@@ -20,6 +20,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -152,7 +153,8 @@ fun DashboardScreen(
             }
 
             // UNIFICATION_V2: single unified sorted list — classification via badge, not section
-            val sortedPeers = peers // already sorted from ViewModel
+            // Crash guard: ensure distinct keys for Compose stability
+            val sortedPeers = remember(peers) { peers.filter { it.peerId.isNotBlank() }.distinctBy { it.peerId } }
             if (sortedPeers.isEmpty()) {
                 item {
                     Text(
@@ -247,14 +249,7 @@ fun PeerItem(peer: com.scmessenger.android.ui.viewmodels.PeerInfo, isInfrastruct
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (isInfrastructure) {
-                Text(
-                    text = stringResource(R.string.peer_label_infrastructure_relay),
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.tertiary
-                )
-            }
+            // UNIFICATION_V2: All nodes are relays — no infrastructure label (former isInfrastructure badge removed).
             // NODE-TRANSPORT-VIS-001: show every known transport distinctly.
             Text(
                 text = buildString {

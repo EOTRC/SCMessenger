@@ -130,16 +130,17 @@ fun PeerListScreen(
                         }
 
                         // UNIFICATION_V2: single unified sorted list — classification via badge, not section
-                        // Peer list
+                        // Crash guard: distinct keys for Compose stability; header key must not collide with peerId
+                        val displayPeers = remember(peers) { peers.filter { it.peerId.isNotBlank() }.distinctBy { it.peerId } }
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(16.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            item(key = "section-nodes") {
+                            item(key = "section-nodes-header") {
                                 Column {
                                     Text(
-                                        text = "Nodes (${peers.size})",
+                                        text = "Nodes (${displayPeers.size})",
                                         style = MaterialTheme.typography.titleMedium,
                                         fontWeight = FontWeight.Bold
                                     )
@@ -150,7 +151,7 @@ fun PeerListScreen(
                                     )
                                 }
                             }
-                            items(peers, key = { it.peerId }) { peer ->
+                            items(displayPeers, key = { it.peerId }) { peer ->
                                 PeerCard(peer = peer, isInfrastructure = peer.isRelay)
                             }
                         }
@@ -196,14 +197,7 @@ private fun PeerCard(
                     fontWeight = FontWeight.Medium
                 )
 
-                if (isInfrastructure) {
-                    Text(
-                        text = stringResource(R.string.peer_label_infrastructure_relay),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.tertiary
-                    )
-                }
+                // UNIFICATION_V2: All nodes are relays — infrastructure label removed.
 
                 // NODE-TRANSPORT-VIS-001: one badge per known transport.
                 Row(
