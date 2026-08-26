@@ -225,14 +225,11 @@ impl ContactManager {
             .map_err(|_| IronCoreError::StorageError)?;
 
         // STEP 2: Maintain identity_id -> public_key index for backward compatibility.
-        // Extract identity_id (blake3 hash of raw public_key bytes) and create the
-        // reverse-lookup index so that even if we receive an identity_id hash,
-        // we can resolve it to the canonical public_key for crypto operations.
-        if let Ok(pk_bytes) = hex::decode(&contact.public_key) {
-            if pk_bytes.len() == 32 {
-                let identity_id = hex::encode(blake3::hash(&pk_bytes).as_bytes());
-                let _ = self.save_identity_id_index(&identity_id, &contact.public_key);
-            }
+        // UNIFICATION_V2_IDENTITY: Use single source of truth for identity_id derivation.
+        if let Some(identity_id) =
+            crate::identity::identity_id_from_public_key_hex(&contact.public_key)
+        {
+            let _ = self.save_identity_id_index(&identity_id, &contact.public_key);
         }
 
         Ok(())
@@ -517,14 +514,14 @@ impl ContactManager {
         let mut migrated = 0u32;
         if let Ok(contacts) = self.list() {
             for contact in contacts {
-                if let Ok(pk_bytes) = hex::decode(&contact.public_key) {
-                    if pk_bytes.len() == 32 {
-                        let identity_id = hex::encode(blake3::hash(&pk_bytes).as_bytes());
-                        // Only save if not already indexed
-                        if let Ok(None) = self.resolve_identity_id(&identity_id) {
-                            let _ = self.save_identity_id_index(&identity_id, &contact.public_key);
-                            migrated += 1;
-                        }
+                // UNIFICATION_V2_IDENTITY: Use single source of truth for identity_id derivation.
+                if let Some(identity_id) =
+                    crate::identity::identity_id_from_public_key_hex(&contact.public_key)
+                {
+                    // Only save if not already indexed
+                    if let Ok(None) = self.resolve_identity_id(&identity_id) {
+                        let _ = self.save_identity_id_index(&identity_id, &contact.public_key);
+                        migrated += 1;
                     }
                 }
             }

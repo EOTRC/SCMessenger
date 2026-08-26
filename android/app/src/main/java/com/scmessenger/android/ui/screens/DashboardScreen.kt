@@ -59,9 +59,9 @@ fun DashboardScreen(
 
     val fullPeers by dashboardViewModel.fullPeersCount.collectAsState()
     val headlessPeers by dashboardViewModel.headlessPeersCount.collectAsState()
-    val totalPeers by dashboardViewModel.totalPeersCount.collectAsState()
 
     val meshSettings by settingsViewModel.settings.collectAsState()
+    val nearbyCount by dashboardViewModel.nearbyPeersCount.collectAsState()
 
     Scaffold(
         topBar = {
@@ -72,6 +72,7 @@ fun DashboardScreen(
     ) { paddingValues ->
         val peers by dashboardViewModel.peers.collectAsState()
         // UNIFICATION_V2 crash guard: ensure distinct keys for Compose stability (outside LazyColumn scope)
+        // TRANSPORT_UNIFICATION: filtered display list excludes very stale non-contacts; nearbyCount is isOnline only.
         val sortedPeers = remember(peers) { peers.filter { it.peerId.isNotBlank() }.distinctBy { it.peerId } }
 
         LazyColumn(
@@ -102,8 +103,8 @@ fun DashboardScreen(
                             append(stringResource(R.string.dashboard_stat_nodes_format, fullPeers))
                             if (headlessPeers > 0) append(stringResource(R.string.dashboard_stat_headless_format, headlessPeers))
                         },
-                        // UNIFICATION_V2: nearby accuracy — show online count, not total stale
-                        value = remember(sortedPeers) { sortedPeers.count { it.isOnline }.toString() } + " / ${sortedPeers.size}",
+                        // UNIFICATION_V2: nearby accuracy — online/recent only, not all ledger entries
+                        value = "$nearbyCount / ${sortedPeers.size}",
                         icon = Icons.Filled.People,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -169,7 +170,7 @@ fun DashboardScreen(
                 }
             } else {
                 items(sortedPeers, key = { it.peerId }) { peer ->
-                    PeerItem(peer, isInfrastructure = false, onClick = { onPeerClick(peer) })
+                    PeerItem(peer, onClick = { onPeerClick(peer) })
                     HorizontalDivider(
                         modifier = Modifier.padding(vertical = 4.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant
@@ -207,7 +208,7 @@ fun DashboardScreen(
 }
 
 @Composable
-fun PeerItem(peer: com.scmessenger.android.ui.viewmodels.PeerInfo, isInfrastructure: Boolean = false, onClick: (() -> Unit)? = null) {
+fun PeerItem(peer: com.scmessenger.android.ui.viewmodels.PeerInfo, onClick: (() -> Unit)? = null) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -255,11 +256,15 @@ fun PeerItem(peer: com.scmessenger.android.ui.viewmodels.PeerInfo, isInfrastruct
                 )
             }
             // UNIFICATION_V2: All nodes are relays — no infrastructure label (former isInfrastructure badge removed).
+            // UNIFICATION_V2_IDENTITY: peerId is canonical public_key_hex (64 hex), not libp2p 12D3.
+            // Explicit PK:/P2P: prefix avoids identity hash confusion; 12D3 shown only for legacy transport IDs.
             // NODE-TRANSPORT-VIS-001: show every known transport distinctly.
             Text(
                 text = buildString {
-                    append("ID: ")
-                    append(peer.peerId.take(12))
+                    val idPrefix = if (peer.peerId.startsWith("12D3")) "P2P:" else "PK:"
+                    val idTrunc = if (peer.peerId.startsWith("12D3")) peer.peerId.take(12) else peer.peerId.take(8)
+                    append(idPrefix)
+                    append(idTrunc)
                     append(" • ")
                     append(peer.transports.ifEmpty { listOf(peer.transport) }.joinToString(" / "))
                     append(" • ")

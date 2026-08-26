@@ -512,7 +512,14 @@ fn is_direct_dial_addr(addr: &Multiaddr) -> bool {
 /// wants to pin the handshake to that discovered identity.  Keep this helper
 /// deliberately strict: mDNS is a LAN discovery mechanism, so circuit,
 /// websocket, DNS and self-targeted addresses must not become automatic dials.
+// UNIFICATION_V2_IDENTITY: retained for LAN direct-dial parity; not currently wired
+// into the mDNS observer path (NsdManager on Android handles discovery) — keep
+// available for native loopback tests rather than deleting.
+// TRANSPORT_UNIFICATION dead_code is intentional: suppress warning until mDNS
+// parity path is wired. Removing this helper would silently drop LAN direct-dial
+// coverage; the allow + comment keeps `cargo check -D warnings` clean.
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
 fn build_mdns_dial_addr(
     local_peer_id: PeerId,
     peer_id: PeerId,
@@ -5320,6 +5327,12 @@ pub async fn start_swarm_with_config(
                                 if let Some(c) = &core_handle {
                                     if let Some(c_arc) = c.upgrade() {
                                         let fp = crate::store::transport_memory::get_network_fingerprint();
+                                        // TRANSPORT_UNIFICATION: placeholder means cache is per-device not per-network.
+                                        // Callers handle this by treating missing last_good as "no preference" and
+                                        // probing the full ladder; recording still uses the placeholder key (global).
+                                        if crate::store::transport_memory::is_placeholder_fingerprint(&fp) {
+                                            tracing::debug!("[TRANSPORT-MEMORY] placeholder fingerprint in use — cache is per-device (not per-network) until BSSID bridge is wired");
+                                        }
                                         let mut transport = String::new();
                                         let mut port = 0;
                                         for p in remote_addr.iter() {
@@ -6212,6 +6225,12 @@ pub async fn start_swarm_with_config(
                                         Some(pid) => {
                                             let mut candidates = vec![addr.clone()];
                                             let fp = crate::store::transport_memory::get_network_fingerprint();
+                                            // TRANSPORT_UNIFICATION: placeholder is handled by falling back to full
+                                            // port ladder when get_last_good returns None. Using the placeholder
+                                            // key is safe — it just means the cache is global, not per-network.
+                                            if crate::store::transport_memory::is_placeholder_fingerprint(&fp) {
+                                                tracing::debug!("[TRANSPORT-MEMORY] placeholder fingerprint — per-device cache, probing full ladder for {}", pid);
+                                            }
 
                                             if let Some(c) = &core_handle {
                                                 if let Some(c_arc) = c.upgrade() {

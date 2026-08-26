@@ -154,7 +154,7 @@ fun PeerListScreen(
                                 }
                             }
                             items(displayPeers, key = { it.peerId }) { peer ->
-                                PeerCard(peer = peer, isInfrastructure = false, onClick = { onPeerClick(peer) })
+                                PeerCard(peer = peer, onClick = { onPeerClick(peer) })
                             }
                         }
                     }
@@ -168,7 +168,6 @@ fun PeerListScreen(
 private fun PeerCard(
     peer: com.scmessenger.android.ui.viewmodels.PeerInfo,
     modifier: Modifier = Modifier,
-    isInfrastructure: Boolean = false,
     onClick: (() -> Unit)? = null
 ) {
     Card(
@@ -255,7 +254,14 @@ private fun com.scmessenger.android.ui.viewmodels.PeerInfo.displayName(): String
     if (!authoritative.isNullOrEmpty()) return authoritative
     // Fallback to synthetic only when truly unknown (no authoritative name)
     val fallback = localNickname?.trim()?.takeIf { it.isNotEmpty() } ?: nickname?.trim()?.takeIf { it.isNotEmpty() }
-    return if (!fallback.isNullOrEmpty()) fallback else peerId.take(16) + "..."
+    if (!fallback.isNullOrEmpty()) return fallback
+    // UNIFICATION_V2_IDENTITY: peerId is canonical public_key_hex (64 hex), not libp2p 12D3 hash.
+    // Use explicit PK:/P2P: prefix with truncated display to avoid identity hash confusion.
+    return when {
+        peerId.startsWith("12D3") -> "P2P:${peerId.take(12)}..."
+        peerId.length >= 8 -> "PK:${peerId.take(8)}..."
+        else -> peerId.take(16) + "..."
+    }
 }
 
 @Composable

@@ -6,7 +6,6 @@ import android.content.Context
 import com.scmessenger.android.R
 import com.scmessenger.android.data.MeshRepository
 import com.scmessenger.android.service.MeshEventBus
-import com.scmessenger.android.service.PeerEvent
 import com.scmessenger.android.service.StatusEvent
 import com.scmessenger.android.utils.toEpochSeconds
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -71,6 +70,10 @@ class DashboardViewModel @Inject constructor(
     // UNIFICATION_V2: _peers.size is authoritative total; totalPeersCount is discovered-only legacy
     // unifiedTotalPeersCount reflects the single-list unified view (sorted peers).
     val unifiedTotalPeersCount: StateFlow<Int> = _peers.map { it.size }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    // FIX: "nearby" must be online/recent only — not all ledger entries (up to 23). Exposes accurate online count for DashboardScreen.
+    val nearbyPeersCount: StateFlow<Int> = _peers.map { list -> list.count { it.isOnline } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
     // Loading state
@@ -246,13 +249,31 @@ class DashboardViewModel @Inject constructor(
 
             val peerList = peerMap.values.toList()
             // UNIFICATION_V2: single unified sorted list — online first then offline by recency.
-            // Stale filter: keep all for history, but "nearby" accuracy requires online/recent only for counts.
+            // Stale filter: "nearby" must be online/recent only for accurate counts. Very stale ledger
+            // entries (lastSeen >7 days) are excluded from the display list unless they are saved
+            // contacts — preserves offline contacts with "last seen Xm ago" while preventing the
+            // "9 nearby" inflation where 23 ledger entries all counted as nearby.
             // Crash guard: blank peerIds and duplicate keys cause Compose LazyColumn ArrayIndexOutOfBounds (MutableVector)
             val deduped = peerList.filter { it.peerId.isNotBlank() }.distinctBy { it.peerId.trim() }
-            val sortedPeerList = sortPeersForUnifiedView(deduped)
+            val contactIds = try {
+                meshRepository.listContacts().map { it.peerId.trim() }.toSet()
+            } catch (e: Exception) {
+                emptySet()
+            }
+            val nowSec = System.currentTimeMillis() / 1000
+            val sevenDaysAgoSec = nowSec - 7L * 24 * 3600
+            val filtered = deduped.filter { peer ->
+                if (peer.isOnline) return@filter true
+                if (peer.peerId.trim() in contactIds) return@filter true
+                val lastSeenSec = peer.lastSeen?.toEpochSeconds() ?: 0L
+                // Keep if lastSeen within 7-day retention window, drop very stale non-contacts.
+                // Future timestamps (clock skew) are kept rather than dropped — treat as recent.
+                lastSeenSec >= sevenDaysAgoSec
+            }
+            val sortedPeerList = sortPeersForUnifiedView(filtered)
             _peers.value = sortedPeerList
 
-            Timber.d("Loaded ${sortedPeerList.size} discovered peers (${sortedPeerList.count { it.isFull }} full, ${sortedPeerList.count { it.isRelay }} relays)")
+            Timber.d("Loaded ${sortedPeerList.size} discovered peers (${sortedPeerList.count { it.isFull }} full, ${sortedPeerList.count { it.isRelay }} relays) — nearby(online)=${sortedPeerList.count { it.isOnline }}")
         } catch (e: Exception) {
             Timber.e(e, "Failed to load peers")
         }

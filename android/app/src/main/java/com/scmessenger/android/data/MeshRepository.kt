@@ -390,6 +390,14 @@ open class MeshRepository(
     @Volatile private var settingsManager: uniffi.api.MeshSettingsManager? = null
     @Volatile private var autoAdjustEngine: uniffi.api.AutoAdjustEngine? = null
 
+    // LEDGER-CACHE-001: cache parsed ledger.json to avoid triple re-parse per DashboardViewModel.loadPeers()
+    // (getSeedAddresses + getRecentlyDeadAddresses + getRelayHopPeerIds each called getAllLedgerEntries()).
+    // File mtime+size key is sufficient: ledger.json is atomically replaced on save, so either changes.
+    private val ledgerCacheLock = Any()
+    @Volatile private var cachedLedgerEntries: List<uniffi.api.LedgerEntry>? = null
+    @Volatile private var cachedLedgerMtime: Long = -1L
+    @Volatile private var cachedLedgerSize: Long = -1L
+
     // P0_NETWORK_001: Circuit breaker for relay failure tracking
     private val relayCircuitBreaker = CircuitBreaker()
     // P0_NETWORK_001: Network detector for cellular-aware transport selection
@@ -544,11 +552,15 @@ open class MeshRepository(
     private val dialThrottleLogCache = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val dialThrottleLogIntervalMs = 300_000L
 
-    // AND-SEND-BTN-001: In-memory cache for identity ID resolution.
-    // canonicalContactId() calls ironCore?.resolveIdentity() via synchronous FFI on every
-    // recomposition when invoked from Composable code. This cache eliminates repeated FFI calls
-    // for the same peer ID, preventing UI thread freezes.
-    private val identityIdCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+    // AND-SEND-BTN-001: In-memory cache for canonical ID resolution.
+    // UNIFICATION_V2_IDENTITY: This caches canonical public_key_hex (not identity_id blake3 hash).
+    // Naming was identityIdCache historically but stores resolved canonical public_key_hex to avoid
+    // 12D3 vs 64-hex confusion. canonicalContactId() calls ironCore?.resolveIdentity() via
+    // synchronous FFI on every recomposition when invoked from Composable code. This cache
+    // eliminates repeated FFI calls for the same peer ID, preventing UI thread freezes.
+    private val canonicalIdCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+    @Deprecated("Use canonicalIdCache; kept for binary compat during migration")
+    private val identityIdCache: java.util.concurrent.ConcurrentHashMap<String, String> get() = canonicalIdCache
 
     // TCP/mDNS transport parity: Track peers discovered on LAN via libp2p mDNS.
     // Key = libp2p PeerId, Value = set of LAN multiaddresses for direct TCP delivery.
@@ -4240,8 +4252,9 @@ open class MeshRepository(
         if (trimmed.isEmpty()) return trimmed
 
         // AND-SEND-BTN-001: Check in-memory cache first to avoid synchronous FFI on UI thread.
+        // UNIFICATION_V2_IDENTITY: Cache stores canonical public_key_hex, not identity_id hash.
         // Identity resolution is deterministic — once resolved, the mapping never changes.
-        identityIdCache[trimmed]?.let { return it }
+        canonicalIdCache[trimmed]?.let { return it }
 
         // ID-STANDARDIZATION-001: Comprehensive ID resolution with sanity checks
         Timber.d("ID_RESOLUTION: Input ID '$trimmed' (length=${trimmed.length})")
@@ -4256,7 +4269,7 @@ open class MeshRepository(
             val resolvedPk = ironCore?.resolveIdentity(trimmed)
             if (resolvedPk != null) {
                 val normalized = PeerIdValidator.normalize(resolvedPk)
-                identityIdCache[trimmed] = normalized
+                canonicalIdCache[trimmed] = normalized
                 Timber.d("ID_RESOLUTION: Resolved '$trimmed' -> public_key_hex: ${normalized.take(8)}...")
                 return normalized
             } else {
@@ -4268,7 +4281,7 @@ open class MeshRepository(
 
         // Fallback: Normalize the input ID (libp2p peer ID or other format)
         val normalizedFallback = PeerIdValidator.normalize(trimmed)
-        identityIdCache[trimmed] = normalizedFallback
+        canonicalIdCache[trimmed] = normalizedFallback
         Timber.d("ID_RESOLUTION: Fallback to normalized input: ${normalizedFallback.take(16)}...")
         return normalizedFallback
     }
@@ -4439,7 +4452,7 @@ open class MeshRepository(
                 val hintPeerId = parseRoutingHints(contact.notes).libp2pPeerId
                 (hintPeerId != null && PeerIdValidator.isSame(hintPeerId, trimmed)) ||
                     contact.publicKey?.trim()?.equals(trimmed, ignoreCase = true) == true
-            }?.also { identityIdCache[trimmed] = it.peerId }
+            }?.also { canonicalIdCache[trimmed] = it.peerId }
         } catch (e: Exception) {
             Timber.d("Failed routing-hint contact lookup for $trimmed: ${e.message}")
             null
@@ -5978,8 +5991,35 @@ open class MeshRepository(
      * no live discovery entry exists.
      */
     fun getAllLedgerEntries(): List<uniffi.api.LedgerEntry> {
+        synchronized(ledgerCacheLock) {
+            try {
+                val ledgerFile = File(storagePath, "ledger.json")
+                if (!ledgerFile.isFile) {
+                    cachedLedgerEntries = emptyList()
+                    cachedLedgerMtime = -1L
+                    cachedLedgerSize = -1L
+                    return emptyList()
+                }
+                val mtime = ledgerFile.lastModified()
+                val size = ledgerFile.length()
+                val cached = cachedLedgerEntries
+                if (cached != null && mtime == cachedLedgerMtime && size == cachedLedgerSize) {
+                    return cached
+                }
+                val parsed = readLedgerEntriesFromDiskUncached(ledgerFile)
+                cachedLedgerEntries = parsed
+                cachedLedgerMtime = mtime
+                cachedLedgerSize = size
+                return parsed
+            } catch (e: Exception) {
+                Timber.w(e, "getAllLedgerEntries: cache check failed, falling back to direct parse")
+                return readLedgerEntriesFromDiskUncached(File(storagePath, "ledger.json"))
+            }
+        }
+    }
+
+    private fun readLedgerEntriesFromDiskUncached(ledgerFile: File): List<uniffi.api.LedgerEntry> {
         return try {
-            val ledgerFile = File(storagePath, "ledger.json")
             if (!ledgerFile.isFile) return emptyList()
             val bytes = ledgerFile.readBytes()
             if (bytes.isEmpty()) return emptyList()
@@ -6044,6 +6084,24 @@ open class MeshRepository(
     }
 
     fun getSeedAddresses(limit: UInt = 16u): List<uniffi.api.LedgerEntry> {
+        // Delegate to Rust's in-memory ledger when available (preferred: no disk re-parse, consistent with dialableAddresses).
+        // Falls back to cached file parse when ledgerManager not yet initialized (cold start).
+        ledgerManager?.let { lm ->
+            try {
+                val rust = lm.seedAddresses(limit)
+                // Apply same poison-mask as getDialableAddresses/getAllLedgerEntries for consistency.
+                return rust.map { entry ->
+                    val pid = entry.peerId?.trim().orEmpty()
+                    val key = entry.publicKey?.trim().orEmpty()
+                    if (pid.isNotEmpty() && key.isNotEmpty() && !isSelfCertifyingKeyBinding(pid, key)) {
+                        entry.copy(publicKey = null, nickname = null)
+                    } else entry
+                }
+            } catch (e: Exception) {
+                Timber.w(e, "getSeedAddresses: Rust delegate failed, falling back to cached file parse")
+            }
+        }
+        // LEDGER-CACHE-001: getAllLedgerEntries() is now mtime+size cached, so triple re-parse collapses to one.
         return getAllLedgerEntries()
             .filter { it.successCount == 0u && it.failureCount < 3u }
             .sortedByDescending { it.lastSeen ?: 0uL }
@@ -6053,6 +6111,7 @@ open class MeshRepository(
     fun getRecentlyDeadAddresses(withinDays: Long = 7): List<uniffi.api.LedgerEntry> {
         val cutoffSec = (System.currentTimeMillis() / 1000) - withinDays * 24 * 3600
         val cutoff = cutoffSec.coerceAtLeast(0).toULong()
+        // LEDGER-CACHE-001: single cached fetch, not three disk parses.
         return getAllLedgerEntries()
             .filter { it.failureCount >= 3u && (it.lastSeen ?: 0uL) >= cutoff }
             .sortedByDescending { it.lastSeen ?: 0uL }
@@ -6060,6 +6119,7 @@ open class MeshRepository(
 
     fun getRelayHopPeerIds(): Set<String> {
         val hops = mutableSetOf<String>()
+        // LEDGER-CACHE-001: single cached fetch.
         for (entry in getAllLedgerEntries()) {
             val ma = entry.multiaddr
             if (!ma.contains("/p2p-circuit/")) continue
