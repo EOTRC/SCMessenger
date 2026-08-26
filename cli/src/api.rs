@@ -574,6 +574,60 @@ pub struct ApiContext {
     pub swarm_handle: Arc<scmessenger_core::transport::SwarmHandle>,
 }
 
+/// Wrap outbound chat text in the `scm.message.identity.v1` envelope so
+/// receivers (Android/iOS/CLI) auto-learn our nickname and route hints.
+///
+/// Mirrors Android's `MeshRepository.encodeMeshMessagePayload`: on any
+/// failure the bare text is returned unchanged — wrapping must be additive
+/// and can never lose a message. Honors the `identity_envelope` config flag
+/// (default on).
+pub async fn build_identity_wrapped_text(
+    core: &scmessenger_core::IronCore,
+    swarm_handle: &scmessenger_core::transport::SwarmHandle,
+    text: &str,
+) -> String {
+    let enabled = crate::config::Config::load()
+        .map(|config| config.identity_envelope)
+        .unwrap_or(true);
+    if !enabled {
+        return text.to_string();
+    }
+
+    let info = core.get_identity_info();
+    if !info.initialized {
+        return text.to_string();
+    }
+
+    let listeners: Vec<String> = swarm_handle
+        .get_listeners()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|addr| addr.to_string())
+        .collect();
+    let external_addresses: Vec<String> = swarm_handle
+        .get_external_addresses()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|addr| addr.to_string())
+        .collect();
+
+    scmessenger_core::message::identity_envelope::build_identity_envelope(
+        "text",
+        text,
+        &scmessenger_core::message::identity_envelope::EnvelopeSenderHints {
+            identity_id: info.identity_id.unwrap_or_default(),
+            public_key: info.public_key_hex.unwrap_or_default(),
+            device_id: info.device_id.unwrap_or_default(),
+            nickname: info.nickname.unwrap_or_default(),
+            libp2p_peer_id: info.libp2p_peer_id.unwrap_or_default(),
+            listeners,
+            external_addresses,
+        },
+    )
+}
+
 #[derive(Debug)]
 struct ApiRecipient {
     public_key: String,
@@ -759,10 +813,15 @@ async fn handle_send_message(
     let core = &ctx.core;
     let recipient = resolve_api_recipient(core, &request.recipient)?;
 
+    // Identity-envelope parity with Android/iOS: wrap the chat text so the
+    // receiver learns our nickname + route hints. Local history keeps the
+    // bare text; only the wire payload carries the envelope.
+    let wire_text = build_identity_wrapped_text(core, &ctx.swarm_handle, &request.message).await;
+
     let prepared = core
         .prepare_message_with_id(
             recipient.public_key.clone(),
-            request.message.clone(),
+            wire_text,
             scmessenger_core::MessageType::Text,
             None,
         )

@@ -258,10 +258,16 @@ async fn handle_send_message(
         .parse::<libp2p::PeerId>()
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid peer ID: {}", e)))?;
 
+    // Identity-envelope parity with Android/iOS (see api.rs
+    // build_identity_wrapped_text): wrap chat text so receivers learn our
+    // nickname + route hints.
+    let wire_text =
+        crate::api::build_identity_wrapped_text(core, &ctx.swarm_handle, &request.message).await;
+
     let prepared = core
         .prepare_message_with_id(
             contact.public_key.clone(),
-            request.message.clone(),
+            wire_text,
             scmessenger_core::MessageType::Text,
             None,
         )

@@ -2518,7 +2518,25 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>, auto_reply: boo
                                             }
                                         }
                                         MessageType::Text => {
-                                            let text = msg.text_content().unwrap_or_else(|| "<binary>".into());
+                                            // Identity-envelope parity with Android/iOS:
+                                            // inbound chat text may be wrapped in a
+                                            // scm.message.identity.v1 envelope. Decode it
+                                            // for display/history and learn the sender's
+                                            // nickname + route hints.
+                                            let raw_text =
+                                                msg.text_content().unwrap_or_else(|| "<binary>".into());
+                                            let decoded_envelope = scmessenger_core::message::identity_envelope::parse_identity_envelope(&raw_text);
+                                            if let Some(decoded) = decoded_envelope.as_ref() {
+                                                learn_sender_identity_from_envelope(
+                                                    &contacts_rx,
+                                                    &peer_id.to_string(),
+                                                    decoded,
+                                                );
+                                            }
+                                            let text = decoded_envelope
+                                                .as_ref()
+                                                .map(|d| d.text.clone())
+                                                .unwrap_or(raw_text);
                                             let sender_name = contacts_rx.get(peer_id.to_string())
                                                 .ok().flatten()
                                                 .map(|c| c.display_name().to_string())
@@ -2571,8 +2589,12 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>, auto_reply: boo
                                             // evidence; this acknowledgement exists only
                                             // for the explicit CLI test-harness mode.
                                             if auto_reply {
-                                                let incoming =
-                                                    msg.text_content().unwrap_or_default();
+                                                let incoming = decoded_envelope
+                                                    .as_ref()
+                                                    .map(|d| d.text.clone())
+                                                    .unwrap_or_else(|| {
+                                                        msg.text_content().unwrap_or_default()
+                                                    });
                                                 if !should_send_auto_reply(
                                                     &msg.id,
                                                     &incoming,
@@ -2731,7 +2753,10 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>, auto_reply: boo
 
                                      if let Some(pk) = pk_opt {
                                          // prepare_message_with_id automatically saves outgoing history
-                                         if let Ok(prep) = core_rx.prepare_message_with_id(pk.clone(), message.clone(), scmessenger_core::MessageType::Text, None) {
+                                         // Identity-envelope parity: wrap chat text so the
+                                         // receiver learns our nickname + route hints.
+                                         let wire_message = crate::api::build_identity_wrapped_text(&core_rx, &swarm_handle, &message).await;
+                                         if let Ok(prep) = core_rx.prepare_message_with_id(pk.clone(), wire_message, scmessenger_core::MessageType::Text, None) {
                                               let sent = ble_mesh::send_ble_message(&target.to_string(), &prep.envelope_data).await.is_ok()
                                                   || swarm_handle.send_message(target, prep.envelope_data, None, None).await.is_ok();
 
@@ -2922,7 +2947,8 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>, auto_reply: boo
                                             push_err(-32002, "No public key for recipient".into());
                                             continue;
                                         };
-        match core_rx.prepare_message_with_id(pk.clone(), message.clone(), scmessenger_core::MessageType::Text, None) {
+                                        let wire_message = crate::api::build_identity_wrapped_text(&core_rx, &swarm_handle, &message).await;
+        match core_rx.prepare_message_with_id(pk.clone(), wire_message, scmessenger_core::MessageType::Text, None) {
                                             Ok(prep) => {
                                                 if swarm_handle
                                                     .send_message(target, prep.envelope_data, None, None)
@@ -3009,6 +3035,79 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>, auto_reply: boo
     }
 
     Ok(())
+}
+
+/// Learn sender identity from an inbound `scm.message.identity.v1` envelope:
+/// upsert the sender's nickname into contacts (fill blanks / replace synthetic
+/// placeholders, never a user-set local nickname — mirrors Android's
+/// `selectAuthoritativeNickname`) and backfill the public key for unknown
+/// peers so replies can be encrypted.
+fn learn_sender_identity_from_envelope(
+    contacts: &ContactManager,
+    peer_id: &str,
+    decoded: &scmessenger_core::message::identity_envelope::DecodedIdentityEnvelope,
+) {
+    let valid_key = decoded
+        .public_key
+        .as_deref()
+        .filter(|pk| pk.len() == 64 && pk.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(|pk| pk.to_lowercase());
+
+    match contacts.get(peer_id.to_string()) {
+        Ok(Some(mut contact)) => {
+            let authoritative =
+                scmessenger_core::message::identity_envelope::select_authoritative_nickname(
+                    decoded.nickname.as_deref(),
+                    contact.nickname.as_deref(),
+                );
+            if authoritative.as_deref() != contact.nickname.as_deref() {
+                let changed = authoritative.clone();
+                if let Err(e) = contacts.set_nickname(peer_id.to_string(), changed) {
+                    tracing::debug!(
+                        "Failed to learn nickname from identity envelope for {}: {:?}",
+                        peer_id,
+                        e
+                    );
+                } else if let Some(ref name) = authoritative {
+                    tracing::info!("Learned nickname '{}' for {}", name, peer_id);
+                }
+            }
+            // Backfill a missing/placeholder public key from the envelope.
+            let key_is_placeholder = contact.public_key.is_empty()
+                || contact.public_key.eq_ignore_ascii_case(&contact.peer_id);
+            if key_is_placeholder {
+                if let Some(pk) = valid_key {
+                    contact.public_key = pk;
+                    let _ = contacts.add(contact);
+                }
+            }
+        }
+        _ => {
+            // Unknown sender: create a minimal contact so the nickname and
+            // encryption key survive restarts.
+            if let Some(name) = decoded.nickname.as_deref() {
+                let mut contact = Contact::new(
+                    peer_id.to_string(),
+                    valid_key.unwrap_or_else(|| peer_id.to_string()),
+                )
+                .with_nickname(name.to_string());
+                contact.local_nickname = None;
+                if let Err(e) = contacts.add(contact) {
+                    tracing::debug!(
+                        "Failed to upsert contact {} from identity envelope: {:?}",
+                        peer_id,
+                        e
+                    );
+                } else {
+                    tracing::info!(
+                        "Learned new contact '{}' ({}) from identity envelope",
+                        name,
+                        peer_id
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Shared outbox flush logic used across CLI event loops (`cmd_relay` and `cmd_start`).
@@ -3673,10 +3772,14 @@ async fn cmd_send_offline(recipient: String, message: String) -> Result<()> {
     };
 
     // Prepare the message envelope
+    // Identity-envelope parity: wrap chat text so the receiver learns our
+    // nickname + route hints.
+    let wire_message =
+        crate::api::build_identity_wrapped_text(&core, &swarm_handle, &message).await;
     let envelope_bytes = core
         .prepare_message(
             contact.public_key.clone(),
-            message.clone(),
+            wire_message,
             scmessenger_core::MessageType::Text,
             None,
         )
