@@ -8,9 +8,9 @@ Supersedes for UI taxonomy: two-section `discovered vs Shared` introduced late 2
 
 ---
 
-## 0. Verdicts confirmed this session
+## 0. Verdicts confirmed this session (updated 2026-08-26 — relay parity)
 
-1. **Mesh tab sort:** one list, classified — default order `online user nodes → online relays/infra → offline by recency`. Infra/relay rows are dimmed/badge-distinguished, not sectioned.
+1. **Mesh tab sort:** one list, **no relay vs non-relay distinction** — default order `online → offline by recency` (all nodes are relays). Former `online user → online relay/infra` tier removed; all nodes are equal relays per "a node is a node" philosophy. Classification is via transport badges only.
 2. **Identity fail-closed:** `IronCore::with_storage` / `with_storage_and_logs` must surface storage failure as `Err(IronCoreError)` or explicit `storage_degraded` flag the consumer must act on. Silent `IdentityManager::new()` fallback that mints a fresh identity while old one lingers on disk is **deprecated**. Operator approved hard error.
 3. **Scope:** `SCMessenger/*` primary. `OxAlphaAPI` harness de-duplication (dup_index / repo_map overlap) low priority, opportunistic only.
 
@@ -42,13 +42,13 @@ They decode identically (64 hex → 32 bytes) so a `hex::decode` success does no
 
 **Intention:** the mesh tab shows the *truth* of who the node has ever seen, ordered for at-a-glance triage.
 
-*Invariant: there is ONE `PeerInfo` list.* (`DashboardViewModel.kt:452-465`)
+*Invariant: there is ONE `PeerInfo` list.* (`DashboardViewModel.kt:452-465`) — all nodes are relays, no `role` tier.
 
 ```
 PeerInfo :: peerId + publicKeyHex + { attributes }
 attributes = {
   transport: Set<String>   // BLE, TCP/LAN, WiFi-Aware/Direct, Internet, Via shared node
-  role:       "user" | "relay" | "infra"     // isRelay/isFull derived, never hand-curated
+  // No role: isRelay/isFull are legacy, no longer distinguish. All nodes are mandatory relays.
   liveness:  "online" | "offline"            // isRecent(lastSeen) 5-min window
   lastSeen:  ULong? ; reachability: direct | circuit | seed
   trust:     verified | unverified
@@ -58,8 +58,7 @@ attributes = {
 **Intention of each view choice (not implementation):**
 
 * `transport` badges: explain *how* we know this peer exists — prevents “ghost peer” confusion (`PeerListScreen.kt:226-234` one badge per transport).
-* `role` dimming, not sectioning: relays/infra remain visible but de-emphasized so contacts are primary without hiding infrastructure.
-* Default sort `online user → online relay/infra → offline by recency`: preserves the user’s “who can I talk to now?” scan without destroying offline retention (contacts + ledger seeding `DashboardViewModel.kt:124-128`).
+* Default sort `online → offline by recency` (all relays equal): preserves the user’s “who can I talk to now?” scan without destroying offline retention (contacts + ledger seeding `DashboardViewModel.kt:124-128`). Former `online user → online relay/infra` tier removed — was the source of "identified as RELAY node" log and cross-platform parity break.
 * One count, one dedup (`deduplicateDiscoveredPeers` `DashboardViewModel.kt:255-291` canonical peerId, authoritative nickname wins). Count must equal `peerMap.size` after merge.
 
 **Anti-regression:** no second LazyColumn section whose `key = "section-relays"` is conditionally inserted; no `totalPeersCount = discovered.size` that diverges from `peers.size`.
