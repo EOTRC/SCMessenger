@@ -69,8 +69,8 @@ fun DashboardScreen(
         }
     ) { paddingValues ->
         val peers by dashboardViewModel.peers.collectAsState()
-
-        LazyColumn(
+        // UNIFICATION_V2 crash guard: ensure distinct keys for Compose stability (outside LazyColumn scope)
+        val sortedPeers = remember(peers) { peers.filter { it.peerId.isNotBlank() }.distinctBy { it.peerId } }
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues),
@@ -153,8 +153,6 @@ fun DashboardScreen(
             }
 
             // UNIFICATION_V2: single unified sorted list — classification via badge, not section
-            // Crash guard: ensure distinct keys for Compose stability
-            val sortedPeers = remember(peers) { peers.filter { it.peerId.isNotBlank() }.distinctBy { it.peerId } }
             if (sortedPeers.isEmpty()) {
                 item {
                     Text(

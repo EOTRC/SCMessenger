@@ -102,6 +102,8 @@ fun PeerListScreen(
                 }
 
                 else -> {
+                    // UNIFICATION_V2 crash guard outside LazyColumn scope
+                    val displayPeers = remember(peers) { peers.filter { it.peerId.isNotBlank() }.distinctBy { it.peerId } }
                     Column(modifier = Modifier.fillMaxSize()) {
                         // Error banner
                         error?.let {
@@ -116,10 +118,10 @@ fun PeerListScreen(
                             modifier = Modifier.fillMaxWidth(),
                             tonalElevation = 1.dp
                         ) {
-                            val countText = if (peers.size == 1) {
-                                stringResource(R.string.peer_list_count_format_singular, peers.size)
+                            val countText = if (displayPeers.size == 1) {
+                                stringResource(R.string.peer_list_count_format_singular, displayPeers.size)
                             } else {
-                                stringResource(R.string.peer_list_count_format_plural, peers.size)
+                                stringResource(R.string.peer_list_count_format_plural, displayPeers.size)
                             }
                             Text(
                                 text = countText,
@@ -130,8 +132,6 @@ fun PeerListScreen(
                         }
 
                         // UNIFICATION_V2: single unified sorted list — classification via badge, not section
-                        // Crash guard: distinct keys for Compose stability; header key must not collide with peerId
-                        val displayPeers = remember(peers) { peers.filter { it.peerId.isNotBlank() }.distinctBy { it.peerId } }
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(16.dp),
