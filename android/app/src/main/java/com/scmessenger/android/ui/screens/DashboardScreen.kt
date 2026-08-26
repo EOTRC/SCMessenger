@@ -1,6 +1,7 @@
 package com.scmessenger.android.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -48,7 +49,8 @@ fun DashboardScreen(
     settingsViewModel: SettingsViewModel = hiltViewModel(),
     onNavigateToPeerList: () -> Unit = {},
     onNavigateToTopology: () -> Unit = {},
-    onNavigateToJoinMesh: () -> Unit = {}
+    onNavigateToJoinMesh: () -> Unit = {},
+    onPeerClick: (com.scmessenger.android.ui.viewmodels.PeerInfo) -> Unit = {}
 ) {
     val serviceState by serviceViewModel.serviceState.collectAsState()
     val isRunning by serviceViewModel.isRunning.collectAsState()
@@ -100,7 +102,8 @@ fun DashboardScreen(
                             append(stringResource(R.string.dashboard_stat_nodes_format, fullPeers))
                             if (headlessPeers > 0) append(stringResource(R.string.dashboard_stat_headless_format, headlessPeers))
                         },
-                        value = totalPeers.toString(),
+                        // UNIFICATION_V2: nearby accuracy — show online count, not total stale
+                        value = remember(sortedPeers) { sortedPeers.count { it.isOnline }.toString() } + " / ${sortedPeers.size}",
                         icon = Icons.Filled.People,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -155,6 +158,7 @@ fun DashboardScreen(
             }
 
             // UNIFICATION_V2: single unified sorted list — classification via badge, not section
+            // Clickable: mesh nodes open peer detail / conversation
             if (sortedPeers.isEmpty()) {
                 item {
                     Text(
@@ -165,7 +169,7 @@ fun DashboardScreen(
                 }
             } else {
                 items(sortedPeers, key = { it.peerId }) { peer ->
-                    PeerItem(peer, isInfrastructure = peer.isRelay)
+                    PeerItem(peer, isInfrastructure = false, onClick = { onPeerClick(peer) })
                     HorizontalDivider(
                         modifier = Modifier.padding(vertical = 4.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant
@@ -203,10 +207,11 @@ fun DashboardScreen(
 }
 
 @Composable
-fun PeerItem(peer: com.scmessenger.android.ui.viewmodels.PeerInfo, isInfrastructure: Boolean = false) {
+fun PeerItem(peer: com.scmessenger.android.ui.viewmodels.PeerInfo, isInfrastructure: Boolean = false, onClick: (() -> Unit)? = null) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(enabled = onClick != null) { onClick?.invoke() }
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

@@ -40,7 +40,8 @@ import java.util.*
 @Composable
 fun PeerListScreen(
     onNavigateBack: () -> Unit,
-    viewModel: DashboardViewModel = hiltViewModel()
+    viewModel: DashboardViewModel = hiltViewModel(),
+    onPeerClick: (com.scmessenger.android.ui.viewmodels.PeerInfo) -> Unit = {}
 ) {
     val peers by viewModel.peers.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
@@ -152,7 +153,7 @@ fun PeerListScreen(
                                 }
                             }
                             items(displayPeers, key = { it.peerId }) { peer ->
-                                PeerCard(peer = peer, isInfrastructure = peer.isRelay)
+                                PeerCard(peer = peer, isInfrastructure = false, onClick = { onPeerClick(peer) })
                             }
                         }
                     }
@@ -166,10 +167,11 @@ fun PeerListScreen(
 private fun PeerCard(
     peer: com.scmessenger.android.ui.viewmodels.PeerInfo,
     modifier: Modifier = Modifier,
-    isInfrastructure: Boolean = false
+    isInfrastructure: Boolean = false,
+    onClick: (() -> Unit)? = null
 ) {
     Card(
-        modifier = modifier.fillMaxWidth()
+        modifier = modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
     ) {
         Row(
             modifier = Modifier

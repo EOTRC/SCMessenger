@@ -204,9 +204,11 @@ class DashboardViewModel @Inject constructor(
                             .distinct()
                     )
                 } else {
+                    // Preserve authoritative nickname: filter synthetic ledger nicknames
+                    val ledgerNick = selectAuthoritativeNickname(entry.nickname, null)
                     peerMap[peerId] = PeerInfo(
                         peerId = peerId,
-                        nickname = entry.nickname,
+                        nickname = ledgerNick,
                         multiaddr = entry.multiaddr,
                         lastSeen = entry.lastSeen,
                         transport = determineTransport(entry.multiaddr),
@@ -243,7 +245,8 @@ class DashboardViewModel @Inject constructor(
             }
 
             val peerList = peerMap.values.toList()
-            // UNIFICATION_V2: single unified sorted list — online user → online relay → offline by recency, then peerId
+            // UNIFICATION_V2: single unified sorted list — online first then offline by recency.
+            // Stale filter: keep all for history, but "nearby" accuracy requires online/recent only for counts.
             // Crash guard: blank peerIds and duplicate keys cause Compose LazyColumn ArrayIndexOutOfBounds (MutableVector)
             val deduped = peerList.filter { it.peerId.isNotBlank() }.distinctBy { it.peerId.trim() }
             val sortedPeerList = sortPeersForUnifiedView(deduped)

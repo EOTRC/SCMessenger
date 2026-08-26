@@ -313,6 +313,9 @@ fun MeshNavHost(
                     },
                     onNavigateToJoinMesh = {
                         navController.navigate(Screen.JoinMesh.route)
+                    },
+                    onPeerClick = { peer ->
+                        navController.navigate("chat/${peer.peerId}")
                     }
                 )
             }
@@ -322,7 +325,10 @@ fun MeshNavHost(
             route = "peer_list"
         ) {
             PeerListScreen(
-                onNavigateBack = { navController.popBackStack() }
+                onNavigateBack = { navController.popBackStack() },
+                onPeerClick = { peer ->
+                    navController.navigate("chat/${peer.peerId}")
+                }
             )
         }
 
