@@ -129,47 +129,29 @@ fun PeerListScreen(
                             )
                         }
 
-                        // NODE-RELAY-LABEL-002: infrastructure relays get their own
-                        // section, never mixed into the contacts/people list.
-                        val regularPeers = peers.filterNot { it.isRelay }
-                        val infrastructureRelays = peers.filter { it.isRelay }
-
+                        // UNIFICATION_V2: single unified sorted list — classification via badge, not section
                         // Peer list
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(16.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            item(key = "section-peers") {
-                                Text(
-                                    text = stringResource(R.string.peer_list_section_peers),
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                            items(regularPeers, key = { it.peerId }) { peer ->
-                                PeerCard(peer = peer)
-                            }
-
-                            if (infrastructureRelays.isNotEmpty()) {
-                                item(key = "section-relays") {
-                                    Column {
-                                        Text(
-                                            text = stringResource(R.string.peer_list_section_relays),
-                                            style = MaterialTheme.typography.titleMedium,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.tertiary
-                                        )
-                                        Text(
-                                            text = stringResource(R.string.shared_nodes_subtitle),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
+                            item(key = "section-nodes") {
+                                Column {
+                                    Text(
+                                        text = "Nodes (${peers.size})",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = stringResource(R.string.shared_nodes_subtitle),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
                                 }
-                                items(infrastructureRelays, key = { "relay-${it.peerId}" }) { peer ->
-                                    PeerCard(peer = peer, isInfrastructure = true)
-                                }
+                            }
+                            items(peers, key = { it.peerId }) { peer ->
+                                PeerCard(peer = peer, isInfrastructure = peer.isRelay)
                             }
                         }
                     }

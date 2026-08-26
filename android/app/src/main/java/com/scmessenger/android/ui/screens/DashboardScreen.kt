@@ -151,13 +151,9 @@ fun DashboardScreen(
                 )
             }
 
-            // NODE-RELAY-LABEL-002: infrastructure relay nodes are sectioned
-            // separately from user-visible peer nodes.
-            val regularPeers = peers.filterNot { it.isRelay }
-            val infrastructureRelays = peers.filter { it.isRelay }
-
-            // Discovered Nodes List (user-visible peer nodes only)
-            if (regularPeers.isEmpty()) {
+            // UNIFICATION_V2: single unified sorted list — classification via badge, not section
+            val sortedPeers = peers // already sorted from ViewModel
+            if (sortedPeers.isEmpty()) {
                 item {
                     Text(
                         text = stringResource(R.string.dashboard_empty_state_discovered),
@@ -166,33 +162,8 @@ fun DashboardScreen(
                     )
                 }
             } else {
-                items(regularPeers, key = { "peer-${it.peerId}" }) { peer ->
-                    PeerItem(peer)
-                    HorizontalDivider(
-                        modifier = Modifier.padding(vertical = 4.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant
-                    )
-                }
-            }
-
-            // Shared Nodes section (always-on connectivity assistants)
-            if (infrastructureRelays.isNotEmpty()) {
-                item(key = "relays-header") {
-                    Column {
-                        Text(
-                            text = stringResource(R.string.dashboard_section_relays),
-                            style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier.padding(top = 8.dp)
-                        )
-                        Text(
-                            text = stringResource(R.string.shared_nodes_subtitle),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                items(infrastructureRelays, key = { "relay-${it.peerId}" }) { peer ->
-                    PeerItem(peer, isInfrastructure = true)
+                items(sortedPeers, key = { it.peerId }) { peer ->
+                    PeerItem(peer, isInfrastructure = peer.isRelay)
                     HorizontalDivider(
                         modifier = Modifier.padding(vertical = 4.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant

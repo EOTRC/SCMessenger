@@ -68,6 +68,11 @@ class DashboardViewModel @Inject constructor(
     }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
+    // UNIFICATION_V2: _peers.size is authoritative total; totalPeersCount is discovered-only legacy
+    // unifiedTotalPeersCount reflects the single-list unified view (sorted peers).
+    val unifiedTotalPeersCount: StateFlow<Int> = _peers.map { it.size }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
     // Loading state
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -244,9 +249,11 @@ class DashboardViewModel @Inject constructor(
             }
 
             val peerList = peerMap.values.toList()
-            _peers.value = peerList
+            // UNIFICATION_V2: single unified sorted list — online user → online relay → offline by recency, then peerId
+            val sortedPeerList = sortPeersForUnifiedView(peerList)
+            _peers.value = sortedPeerList
 
-            Timber.d("Loaded ${peerList.size} discovered peers (${peerList.count { it.isFull }} full, ${peerList.count { it.isRelay }} relays)")
+            Timber.d("Loaded ${sortedPeerList.size} discovered peers (${sortedPeerList.count { it.isFull }} full, ${sortedPeerList.count { it.isRelay }} relays)")
         } catch (e: Exception) {
             Timber.e(e, "Failed to load peers")
         }
@@ -288,6 +295,19 @@ class DashboardViewModel @Inject constructor(
             }
         }
         return merged
+    }
+
+    // UNIFICATION_V2: default sort — online user nodes first, then online relays/infra, then offline by recency (lastSeen desc, nulls last), tie-breaker peerId
+    private fun sortPeersForUnifiedView(peers: List<PeerInfo>): List<PeerInfo> {
+        return peers.sortedWith(
+            compareBy<PeerInfo> {
+                when {
+                    it.isOnline && !it.isRelay -> 0
+                    it.isOnline && it.isRelay -> 1
+                    else -> 2
+                }
+            }.thenByDescending { it.lastSeen ?: 0uL }.thenBy { it.peerId }
+        )
     }
 
     private fun normalizePublicKey(value: String?): String? {
