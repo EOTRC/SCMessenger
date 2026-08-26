@@ -293,9 +293,13 @@ impl ContactManager {
 
         for msg in messages {
             if self.get(msg.peer_id.clone())?.is_none() {
-                // We need a public key to create a Contact.
-                // In a real scenario, we'd use the libp2p peer_id to derive the key.
-                let contact = Contact::new(msg.peer_id.clone(), msg.peer_id.clone());
+                // SELF-CERTIFYING KEY BINDING: only bind a public key when it
+                // re-derives from the peer id itself (identity multihash).
+                // Never store the peer_id AS the public key -- an unverified
+                // placeholder poisons identity resolution and receipt
+                // encryption. Without a derivable key, keep a clearly-marked
+                // placeholder record (empty key + notes annotation).
+                let contact = placeholder_or_derived_contact(&msg.peer_id);
                 self.add(contact)?;
                 recovered += 1;
             }
@@ -386,10 +390,11 @@ impl ContactManager {
 
         for msg in messages {
             if self.get(msg.peer_id.clone())?.is_none() {
-                // We need a public key to create a Contact.
-                // In a real scenario, we'd use the libp2p peer_id to derive the key.
-                // For emergency recovery, we use the peer_id as the public key placeholder.
-                let contact = Contact::new(msg.peer_id.clone(), msg.peer_id.clone());
+                // SELF-CERTIFYING KEY BINDING: see reconcile_from_history.
+                // The peer_id is never stored AS the public key; without a
+                // derivable key the record keeps an empty key plus a notes
+                // annotation so later verified material can backfill it.
+                let contact = placeholder_or_derived_contact(&msg.peer_id);
                 self.add(contact)?;
                 recovered += 1;
             }
@@ -403,6 +408,32 @@ fn current_timestamp() -> u64 {
         .duration_since(web_time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// Notes annotation marking a contact whose public key could not be derived
+/// from its peer id. The empty `public_key` + this marker is the placeholder
+/// contract: later verified material (signed envelope, user add) backfills
+/// the key; the peer_id itself must never be stored as the key.
+const PLACEHOLDER_KEY_NOTE: &str =
+    "public_key unavailable: not self-certifying from peer id; awaiting verified key";
+
+/// Build a recovery contact for a history-known peer without an existing
+/// record. Binds a public key ONLY when it self-certifies (re-derives the
+/// peer id); otherwise stores a clearly-marked placeholder with an empty key.
+fn placeholder_or_derived_contact(peer_id: &str) -> Contact {
+    match crate::store::ledger_entry::public_key_hex_from_libp2p_peer_id(peer_id) {
+        Some(key) => Contact::new(peer_id.to_string(), key),
+        None => {
+            let mut contact = Contact::new(peer_id.to_string(), String::new());
+            contact.notes = Some(PLACEHOLDER_KEY_NOTE.to_string());
+            tracing::warn!(
+                "Contact recovery: peer ..{} has no self-certifying key binding -- \
+                 storing placeholder record without a public key",
+                peer_id
+            );
+            contact
+        }
+    }
 }
 
 #[cfg(test)]
@@ -470,6 +501,94 @@ mod tests {
         assert_eq!(contact.nickname.as_deref(), Some("FederatedName"));
         assert_eq!(contact.local_nickname.as_deref(), Some("LocalAlias"));
         assert_eq!(reloaded.count(), 1);
+        Ok(())
+    }
+
+    /// Build a genuine self-certifying (peer id, key hex) pair for tests.
+    fn self_certifying_peer() -> (String, String) {
+        let mut seed = [0u8; 32];
+        seed[..16].copy_from_slice(b"scm-recover-test");
+        let signing = libp2p::identity::ed25519::SecretKey::try_from_bytes(&mut seed).unwrap();
+        let kp = libp2p::identity::ed25519::Keypair::from(signing);
+        let peer_id = libp2p::identity::PublicKey::from(kp.public())
+            .to_peer_id()
+            .to_string();
+        let key_hex = hex::encode(kp.public().to_bytes());
+        (peer_id, key_hex)
+    }
+
+    #[test]
+    fn recovery_binds_only_self_certifying_keys() {
+        let (peer_id, key_hex) = self_certifying_peer();
+
+        // Self-certifying: the derived contact carries the real key.
+        let derived = placeholder_or_derived_contact(&peer_id);
+        assert_eq!(derived.peer_id, peer_id);
+        assert_eq!(derived.public_key, key_hex);
+        assert!(crate::store::ledger_entry::is_self_certifying_binding(
+            &derived.peer_id,
+            &derived.public_key
+        ));
+
+        // Non-derivable id: placeholder record, never peer_id-as-key.
+        for bad in [
+            "not-a-peer-id",
+            "12D3KooWEfZ2fJ8AcGvVfEUi2wFQPo6z8kZVr5TsgP7JQF2B9kS1",
+        ] {
+            let placeholder = placeholder_or_derived_contact(bad);
+            assert_eq!(placeholder.peer_id, bad);
+            assert!(
+                placeholder.public_key.is_empty(),
+                "placeholder must not carry a fabricated key"
+            );
+            assert_ne!(placeholder.public_key, bad);
+            assert_eq!(placeholder.notes.as_deref(), Some(PLACEHOLDER_KEY_NOTE));
+        }
+    }
+
+    #[test]
+    fn reconcile_from_history_never_poisons_public_key() -> Result<(), crate::IronCoreError> {
+        use crate::mobile_bridge::HistoryManager;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage_path = temp_dir.path().to_str().unwrap_or_default().to_string();
+
+        let manager = ContactManager::new(storage_path.clone())?;
+        let history = HistoryManager::new(storage_path)?;
+
+        let (self_certifying_id, key_hex) = self_certifying_peer();
+        for peer in [
+            self_certifying_id.clone(),
+            "12D3KooWEfZ2fJ8AcGvVfEUi2wFQPo6z8kZVr5TsgP7JQF2B9kS1".to_string(),
+        ] {
+            history
+                .add(crate::mobile_bridge::MessageRecord {
+                    id: format!("msg-{}", &peer[..12]),
+                    direction: crate::mobile_bridge::MessageDirection::Received,
+                    peer_id: peer,
+                    content: "hello".to_string(),
+                    timestamp: 1,
+                    sender_timestamp: 1,
+                    delivered: false,
+                    status: crate::mobile_bridge::MessageStatus::default(),
+                    hidden: false,
+                })
+                .map_err(|_| crate::IronCoreError::StorageError)?;
+        }
+
+        manager.reconcile_from_history(&history)?;
+
+        let good = manager.get(self_certifying_id)?.expect("derived contact");
+        assert_eq!(good.public_key, key_hex);
+
+        let placeholder = manager
+            .get("12D3KooWEfZ2fJ8AcGvVfEUi2wFQPo6z8kZVr5TsgP7JQF2B9kS1".to_string())?
+            .expect("placeholder contact");
+        assert!(placeholder.public_key.is_empty());
+        assert_ne!(
+            placeholder.public_key,
+            "12D3KooWEfZ2fJ8AcGvVfEUi2wFQPo6z8kZVr5TsgP7JQF2B9kS1"
+        );
         Ok(())
     }
 }

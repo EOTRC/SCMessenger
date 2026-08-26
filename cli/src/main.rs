@@ -722,6 +722,75 @@ mod dial_scheduler_tests {
         ));
         assert!(seen_ids.is_empty());
     }
+
+    /// SELF-CERTIFYING KEY BINDING: an identity envelope without a usable
+    /// public key must create a placeholder contact with an EMPTY key (plus a
+    /// notes annotation), never peer_id-as-public_key.
+    #[test]
+    fn envelope_learning_without_key_stores_placeholder_not_peer_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = IronCore::with_storage(path_to_string(&dir.path().join("storage")).unwrap());
+        let contacts = core.contacts_store_manager();
+
+        let unknown_peer = "12D3KooWEfZ2fJ8AcGvVfEUi2wFQPo6z8kZVr5TsgP7JQF2B9kS1";
+        let decoded = scmessenger_core::message::identity_envelope::DecodedIdentityEnvelope {
+            nickname: Some("Alice".to_string()),
+            public_key: Some("zz-not-hex".to_string()),
+            ..Default::default()
+        };
+
+        learn_sender_identity_from_envelope(&contacts, unknown_peer, &decoded);
+
+        let stored = contacts
+            .get(unknown_peer.to_string())
+            .unwrap()
+            .expect("contact");
+        assert_eq!(stored.nickname.as_deref(), Some("Alice"));
+        assert!(
+            stored.public_key.is_empty(),
+            "placeholder key must be empty, not poisoned"
+        );
+        assert_ne!(stored.public_key, unknown_peer);
+        assert!(stored
+            .notes
+            .as_deref()
+            .unwrap_or_default()
+            .contains("awaiting verified key"));
+    }
+
+    /// A signed envelope carrying a valid Ed25519 key backfills the contact
+    /// (signed-source corroboration); the binding must survive restarts.
+    #[test]
+    fn envelope_learning_with_valid_key_backfills_contact() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = IronCore::with_storage(path_to_string(&dir.path().join("storage")).unwrap());
+        let contacts = core.contacts_store_manager();
+
+        let mut seed = [0u8; 32];
+        seed[..10].copy_from_slice(b"cli-env-kp");
+        let signing = libp2p::identity::ed25519::SecretKey::try_from_bytes(&mut seed).unwrap();
+        let kp = libp2p::identity::ed25519::Keypair::from(signing);
+        let key_hex = hex::encode(kp.public().to_bytes());
+        let peer_id = libp2p::identity::PublicKey::from(kp.public())
+            .to_peer_id()
+            .to_string();
+
+        // Pre-existing placeholder record (legacy poison shape) gets repaired.
+        contacts
+            .add(Contact::new(peer_id.clone(), peer_id.clone()))
+            .unwrap();
+
+        let decoded = scmessenger_core::message::identity_envelope::DecodedIdentityEnvelope {
+            nickname: Some("Bob".to_string()),
+            public_key: Some(key_hex.clone()),
+            ..Default::default()
+        };
+        learn_sender_identity_from_envelope(&contacts, &peer_id, &decoded);
+
+        let stored = contacts.get(peer_id.clone()).unwrap().expect("contact");
+        assert_eq!(stored.public_key.to_lowercase(), key_hex);
+        assert_ne!(stored.public_key.to_lowercase(), peer_id);
+    }
 }
 
 #[tokio::main]
@@ -3160,13 +3229,20 @@ fn learn_sender_identity_from_envelope(
         }
         _ => {
             // Unknown sender: create a minimal contact so the nickname and
-            // encryption key survive restarts.
+            // encryption key survive restarts. The envelope key is signed
+            // material so binding it is corroborated; without one, keep an
+            // empty-key placeholder (never peer_id-as-public_key -- that
+            // poisons identity resolution and receipt encryption).
             if let Some(name) = decoded.nickname.as_deref() {
-                let mut contact = Contact::new(
-                    peer_id.to_string(),
-                    valid_key.unwrap_or_else(|| peer_id.to_string()),
-                )
-                .with_nickname(name.to_string());
+                let has_verified_key = valid_key.is_some();
+                let mut contact = Contact::new(peer_id.to_string(), valid_key.unwrap_or_default())
+                    .with_nickname(name.to_string());
+                if !has_verified_key {
+                    contact.notes = Some(
+                        "public_key unavailable: awaiting verified key from signed source"
+                            .to_string(),
+                    );
+                }
                 contact.local_nickname = None;
                 if let Err(e) = contacts.add(contact) {
                     tracing::debug!(

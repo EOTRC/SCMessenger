@@ -268,13 +268,43 @@ fn evict_one_locked(entries: &mut Vec<LedgerEntry>) {
 ///
 /// Ed25519 libp2p peer ids are identity multihashes of the protobuf-encoded
 /// public key, so a genuine (key, peer_id) binding ALWAYS re-derives exactly.
-fn peer_id_from_public_key_hex(public_key_hex: &str) -> Option<String> {
+pub fn peer_id_from_public_key_hex(public_key_hex: &str) -> Option<String> {
     let bytes = hex::decode(public_key_hex).ok()?;
     let arr: [u8; 32] = bytes.as_slice().try_into().ok()?;
     let ed25519_pk = libp2p::identity::ed25519::PublicKey::try_from_bytes(&arr).ok()?;
-    Some(libp2p::identity::PublicKey::from(ed25519_pk)
-        .to_peer_id()
-        .to_string())
+    Some(
+        libp2p::identity::PublicKey::from(ed25519_pk)
+            .to_peer_id()
+            .to_string(),
+    )
+}
+
+/// Derive the hex-encoded Ed25519 public key that a libp2p peer id
+/// self-certifies, or `None` when the peer id does not embed a key.
+///
+/// Only strict identity multihashes are accepted (`0x00 0x24 0x08 0x01
+/// 0x12 0x20 <32-byte Ed25519 key>`, 38 decoded bytes). Non-embedding peer
+/// ids (e.g. SHA-256 hashed) have no recoverable key and MUST yield `None`
+/// so callers store a placeholder record instead of poisoning identity
+/// resolution with a fabricated key.
+pub fn public_key_hex_from_libp2p_peer_id(peer_id: &str) -> Option<String> {
+    let bytes = bs58::decode(peer_id.trim()).into_vec().ok()?;
+    if bytes.len() != 38
+        || bytes[0] != 0x00
+        || bytes[1] != 0x24
+        || bytes[2] != 0x08
+        || bytes[3] != 0x01
+        || bytes[4] != 0x12
+        || bytes[5] != 0x20
+    {
+        return None;
+    }
+    let key_hex = hex::encode(&bytes[6..38]);
+    // Defense in depth: the extracted key must re-derive exactly this peer id.
+    if peer_id_from_public_key_hex(&key_hex).as_deref() != Some(peer_id.trim()) {
+        return None;
+    }
+    Some(key_hex)
 }
 
 /// A ledger `public_key` may only be bound to a transport `peer_id` when the
@@ -285,9 +315,8 @@ fn peer_id_from_public_key_hex(public_key_hex: &str) -> Option<String> {
 /// identity-sync hints -- are rejected so they can never poison identity
 /// resolution or receipt encryption on the platform clients. Mirrors the Kotlin
 /// `isSelfCertifyingKeyBinding` gate in MeshRepository.
-fn is_self_certifying_binding(peer_id: &str, public_key_hex: &str) -> bool {
-    peer_id_from_public_key_hex(public_key_hex)
-        .is_some_and(|derived| derived == peer_id)
+pub fn is_self_certifying_binding(peer_id: &str, public_key_hex: &str) -> bool {
+    peer_id_from_public_key_hex(public_key_hex).is_some_and(|derived| derived == peer_id)
 }
 
 fn truncate_tail_for_log(value: &str) -> &str {
@@ -2250,12 +2279,7 @@ mod tests {
         let addr = "/ip4/198.51.100.7/tcp/9001";
         let (self_peer, self_key) = self_certifying_pair();
 
-        mgr.annotate_identities_batch(vec![(
-            addr.to_string(),
-            self_peer,
-            Some(self_key),
-            None,
-        )]);
+        mgr.annotate_identities_batch(vec![(addr.to_string(), self_peer, Some(self_key), None)]);
 
         let unproven = mgr.seed_addresses(64);
         assert!(

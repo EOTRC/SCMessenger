@@ -10311,11 +10311,18 @@ open class MeshRepository(
                             null
                         }
 
-                        val publicKey = if (!extractedKey.isNullOrEmpty()) {
-                            extractedKey
+                        // SELF-CERTIFYING KEY BINDING: only bind a key derived
+                        // from the peer id itself. Never store the peer_id AS
+                        // the public key -- an unverified placeholder poisons
+                        // identity resolution and receipt encryption. Keep an
+                        // empty-key record with a notes annotation instead.
+                        val publicKey = extractedKey?.trim().orEmpty()
+                        val notes = if (publicKey.isEmpty()) {
+                            "Emergency contact recovered from message history; " +
+                                "public_key unavailable: not self-certifying from peer id; " +
+                                "awaiting verified key"
                         } else {
-                            // Fallback: use peer ID as placeholder (will be updated later via federation)
-                            peerId
+                            "Emergency contact recovered from message history"
                         }
 
                         val contact = uniffi.api.Contact(
@@ -10325,14 +10332,14 @@ open class MeshRepository(
                             publicKey = publicKey,
                             addedAt = System.currentTimeMillis().toULong(),
                             lastSeen = null,
-                            notes = "Emergency contact recovered from message history",
+                            notes = notes,
                             lastKnownDeviceId = null,
                             verifiedAt = null,
                             isTombstone = false
                         )
                         contacts.add(contact)
                         recoveredCount++
-                        Timber.d("Emergency recovery: Created contact for ${peerId.take(8)}... with key: ${publicKey.take(8)}...")
+                        Timber.d("Emergency recovery: Created contact for ${peerId.take(8)}... with key: ${publicKey.take(8).ifEmpty { "<none>" }}...")
                     } catch (e: Exception) {
                         Timber.w("Emergency recovery: Failed to create contact for $peerId: ${e.message}")
                     }
