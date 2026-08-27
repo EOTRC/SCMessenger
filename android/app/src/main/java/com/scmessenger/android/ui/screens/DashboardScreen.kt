@@ -21,6 +21,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -159,13 +160,18 @@ fun DashboardScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
+                // FIX(Compose-crash): stable key per peerId prevents SlotTable MutableVector corruption
+                // on rapid discoveredPeers updates. Dashboard list is small (<50), Column eliminates
+                // LazyColumn prefetch race; key() ensures SwipeToDismissBox/state not reused across peerIds.
                 sortedPeers.forEach { peer ->
-                    Column {
-                        PeerItem(peer, onClick = { onPeerClick(peer) })
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 4.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        )
+                    key(peer.peerId) {
+                        Column {
+                            PeerItem(peer, onClick = { onPeerClick(peer) })
+                            HorizontalDivider(
+                                modifier = Modifier.padding(vertical = 4.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant
+                            )
+                        }
                     }
                 }
             }

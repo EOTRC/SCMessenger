@@ -164,8 +164,13 @@ fun PeerListScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                            // FIX(Compose-crash): stable key per peerId prevents SlotTable corruption
+                            // on rapid peer churn; displayPeers already distinctBy peerId, key() ensures
+                            // Compose retains correct slot identity without LazyColumn keys/contentType.
                             displayPeers.forEach { peer ->
-                                PeerCard(peer = peer, onClick = { onPeerClick(peer) })
+                                key(peer.peerId) {
+                                    PeerCard(peer = peer, onClick = { onPeerClick(peer) })
+                                }
                             }
                         }
                     }
