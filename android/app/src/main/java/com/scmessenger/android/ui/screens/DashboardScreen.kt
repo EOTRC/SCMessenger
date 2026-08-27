@@ -169,13 +169,14 @@ fun DashboardScreen(
                     )
                 }
             } else {
-                // Fix Compose crash: use stable key with lastSeen to handle rapid updates, or no key
-                items(sortedPeers, key = { "${it.peerId}:${it.lastSeen}" }) { peer ->
-                    PeerItem(peer, onClick = { onPeerClick(peer) })
-                    HorizontalDivider(
-                        modifier = Modifier.padding(vertical = 4.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant
-                    )
+                items(sortedPeers, key = { it.peerId }, contentType = { "peer" }) { peer ->
+                    Column {
+                        PeerItem(peer, onClick = { onPeerClick(peer) })
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 4.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    }
                 }
             }
 
