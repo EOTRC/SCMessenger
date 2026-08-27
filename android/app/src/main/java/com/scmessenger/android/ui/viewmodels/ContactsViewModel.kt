@@ -10,9 +10,10 @@ import com.scmessenger.android.utils.PeerIdValidator
 import com.scmessenger.android.utils.parseContactImportPayload
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -266,6 +267,7 @@ class ContactsViewModel @Inject constructor(
     private fun observeNearbyPeers() {
         viewModelScope.launch {
             MeshEventBus.peerEvents.collect { event ->
+                if (!viewModelScope.isActive) return@collect
                 when (event) {
                     is PeerEvent.IdentityDiscovered -> {
                         // Never surface bootstrap relay/headless nodes in the Contacts nearby list.
@@ -453,14 +455,21 @@ class ContactsViewModel @Inject constructor(
     /**
      * Load all contacts from repository.
      * UNIFICATION verbose logging for nickname load — diagnose ledger overwrite of ChristyLove.
+     * FIX(Compose-crash): isActive guard to prevent SlotTable crash on destroy.
      */
     fun loadContacts() {
+        if (!viewModelScope.isActive) {
+            Timber.d("loadContacts skipped — ViewModelScope not active")
+            return
+        }
         viewModelScope.launch {
             try {
+                if (!viewModelScope.isActive) return@launch
                 _isLoading.value = true
                 _error.value = null
 
                 val contactList = meshRepository.listContacts()
+                if (!viewModelScope.isActive) return@launch
                 _contacts.value = contactList
                 // UNIFICATION verbose: log nickname state on each load to catch synthetic revert
                 if (contactList.isNotEmpty()) {
@@ -480,10 +489,11 @@ class ContactsViewModel @Inject constructor(
 
                 Timber.d("Loaded ${contactList.size} contacts, filtered nearby peers to ${_nearbyPeers.value.size}")
             } catch (e: Exception) {
+                if (!viewModelScope.isActive) return@launch
                 _error.value = "Failed to load contacts: ${e.message}"
                 Timber.e(e, "Failed to load contacts")
             } finally {
-                _isLoading.value = false
+                if (viewModelScope.isActive) _isLoading.value = false
             }
         }
     }
@@ -533,19 +543,23 @@ class ContactsViewModel @Inject constructor(
                 // UNIFIED ID FIX: the contact key is always the public-key
                 // identity. The libp2p peer ID remains in notes as routing
                 // metadata and must never become the persisted contact ID.
-                // UNIFICATION: nickname is federated (peer's self-reported name), localNickname is user-defined (e.g. ChristyLove).
-                // Federated nickname must never overwrite localNickname via ledger sync; localNickname is primary display name.
-                // For manual adds, the provided nickname is treated as user-defined localNickname; for discovered peers,
-                // the nickname is federated. Store both authoritatively but prefer localNickname for user input.
+                // UNIFICATION FIX: contacts save correctly — user-provided nickname is ALWAYS saved as localNickname
+                // (user-defined, primary). Federated nickname (peer's self-reported) is populated via identity beacon
+                // / ledger sync (upsertFederatedContact) and must NEVER overwrite localNickname. Previous heuristic
+                // treated discovered peers' names as federated, causing ChristyLove to be stored as nickname and later
+                // overwritten by stale ledger synthetic peer-... . Now every manual add (manual, QR, nearby promote)
+                // stores the provided name as localNickname so ledger's selectAuthoritative never clobbers it.
+                // Verified: displayName shows localNickname first via ContactDisplayName.kt.
                 val canonicalPeerId = trimmedKey.lowercase()
                 val normalizedProvided = normalizeNickname(nickname)?.takeUnless { isSyntheticFallbackNickname(it) }
-                // Distinguish: if this peer was discovered (federated source), treat as nickname; otherwise as localNickname.
-                val isDiscoveredFederated = meshRepository.discoveredPeers.value.values.any {
-                    it.publicKey?.trim()?.equals(trimmedKey, ignoreCase = true) == true && normalizeNickname(it.nickname) == normalizedProvided
+                // FIX: Always treat user-provided nickname as localNickname (user-defined). Federated is null here;
+                // it will be populated separately when the peer's own identity beacon arrives via upsertFederatedContact.
+                val federatedNick: String? = null
+                val userLocalNick = normalizedProvided
+                Timber.i("UNIFICATION addContact save: canonical $canonicalPeerId pubKey ${trimmedKey.take(8)}... providedNick=${normalizedProvided?.take(16) ?: "null"} -> LOCAL=${userLocalNick?.take(16) ?: "null"} federated=${federatedNick?.take(16) ?: "null"} (FIX: user-defined saved as localNickname, ledger cannot overwrite)")
+                if (normalizedProvided == null && !nickname.isNullOrBlank()) {
+                    Timber.w("UNIFICATION addContact: provided nickname '${nickname.take(16)}' was synthetic/blank and filtered to null — contact will show PK:... until real name arrives")
                 }
-                val federatedNick = if (isDiscoveredFederated) normalizedProvided else null
-                val userLocalNick = if (!isDiscoveredFederated) normalizedProvided else null
-                Timber.i("UNIFICATION addContact save: canonical $canonicalPeerId pubKey ${trimmedKey.take(8)}... providedNick=${normalizedProvided?.take(16) ?: "null"} federated=${federatedNick?.take(16) ?: "null"} userLocal=${userLocalNick?.take(16) ?: "null"}")
                 val contact = uniffi.api.Contact(
                     peerId = canonicalPeerId,
                     nickname = federatedNick,

@@ -11,8 +11,9 @@ import com.scmessenger.android.ui.chat.PendingDeliverySnapshot
 import com.scmessenger.android.utils.PeerIdValidator
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import javax.inject.Inject
@@ -93,23 +94,34 @@ class ConversationsViewModel @Inject constructor(
 
     /**
      * Load recent messages.
+     * FIX(Compose-crash): guard StateFlow emits with viewModelScope.isActive to prevent
+     * SlotTable crash during onDestroy. Updating StateFlow after ViewModel is cleared
+     * triggers recomposition while LayoutNodeSubcompositionsState is releasing, causing
+     * ArrayIndexOutOfBounds via PrefetchHandleProvider.
      */
     fun loadMessages(limit: UInt = 100u) {
+        if (!viewModelScope.isActive) {
+            Timber.d("loadMessages skipped — ViewModelScope not active (destroyed)")
+            return
+        }
         viewModelScope.launch {
             try {
+                if (!viewModelScope.isActive) return@launch
                 _isLoading.value = true
                 _error.value = null
 
                 val messageList = meshRepository.getRecentMessages(limit = limit)
+                if (!viewModelScope.isActive) return@launch
                 _messages.value = messageList
                 _inboxCount.value = meshRepository.getInboxCount()
 
                 Timber.d("Loaded ${messageList.size} messages")
             } catch (e: Exception) {
+                if (!viewModelScope.isActive) return@launch
                 _error.value = "Failed to load messages: ${e.message}"
                 Timber.e(e, "Failed to load messages")
             } finally {
-                _isLoading.value = false
+                if (viewModelScope.isActive) _isLoading.value = false
             }
         }
     }
@@ -322,14 +334,22 @@ class ConversationsViewModel @Inject constructor(
 
     /**
      * Load blocked peers from repository.
+     * FIX: isActive guard to prevent SlotTable crash on destroy (see loadMessages).
      */
     fun loadBlockedPeers() {
+        if (!viewModelScope.isActive) {
+            Timber.d("loadBlockedPeers skipped — ViewModelScope not active")
+            return
+        }
         viewModelScope.launch {
             try {
+                if (!viewModelScope.isActive) return@launch
                 val blocked = meshRepository.listBlockedPeers()
+                if (!viewModelScope.isActive) return@launch
                 _blockedPeers.value = blocked
                 Timber.d("Loaded ${blocked.size} blocked peers")
             } catch (e: Exception) {
+                if (!viewModelScope.isActive) return@launch
                 Timber.e(e, "Failed to load blocked peers")
             }
         }

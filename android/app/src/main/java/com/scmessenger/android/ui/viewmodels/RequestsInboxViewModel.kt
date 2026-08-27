@@ -5,8 +5,9 @@ import androidx.lifecycle.viewModelScope
 import com.scmessenger.android.data.MeshRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import javax.inject.Inject
@@ -43,14 +44,21 @@ class RequestsInboxViewModel @Inject constructor(
      * Load pending message requests from repository.
      */
     // UNIFICATION: pairing iteration via verbose logs — every load logs peerId, isKnownContact, transport, pairing state
+    // FIX(Compose-crash): isActive guard to prevent SlotTable crash on destroy
     fun loadRequests() {
+        if (!viewModelScope.isActive) {
+            Timber.d("loadRequests skipped — ViewModelScope not active")
+            return
+        }
         viewModelScope.launch {
             try {
+                if (!viewModelScope.isActive) return@launch
                 _isLoading.value = true
                 _error.value = null
 
                 // Get pending requests from repository — promiscuous inbox (all nodes relay) but contact-gated inbox UI
                 val requests = meshRepository.getPendingMessageRequests()
+                if (!viewModelScope.isActive) return@launch
                 _requests.value = requests.map { req ->
                     RequestItem(
                         peerId = req.peerId,
@@ -67,10 +75,11 @@ class RequestsInboxViewModel @Inject constructor(
                 }
                 Timber.d("Loaded ${_requests.value.size} pending message requests")
             } catch (e: Exception) {
+                if (!viewModelScope.isActive) return@launch
                 _error.value = "Failed to load requests: ${e.message}"
                 Timber.e(e, "Failed to load message requests")
             } finally {
-                _isLoading.value = false
+                if (viewModelScope.isActive) _isLoading.value = false
             }
         }
     }

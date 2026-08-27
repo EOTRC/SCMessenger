@@ -13,6 +13,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -75,27 +76,36 @@ class DashboardViewModel @Inject constructor(
     val unifiedTotalPeersCount: StateFlow<Int> = _peers.map { it.size }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    // UNIFICATION FIX: nearby must be discovery-based, not ledger history. Previous _peers-based count inflated to 9 vs 2 actual BLE/mDNS.
-    // _peers includes dialable+seed+deadRecent ledger entries that were counted as nearby if isOnline+direct, even when not currently in BLE/mDNS range.
-    // Correct: nearby = deduplicated discoveredPeers that are isRecent (<5min) + direct transport (BLE, TCP/LAN, WiFi Aware/Direct) only. Ledger history excluded.
-    // Uses combine to log both nearby (discovery-based) vs total (unified _peers) for diagnosis.
+    // UNIFICATION FIX: nearby must be discovery-based (BLE/mDNS direct), not ledger history. Previous _peers-based count inflated to 9 vs 2 actual BLE/mDNS.
+    // _peers includes dialable+seed+deadRecent ledger entries (7-day retention) that were counted as nearby if isOnline+direct,
+    // even when not currently in BLE/mDNS range. deadRecent is explicitly NOT nearby — it is ledger history for "last seen Xm ago"
+    // offline display, never counted in nearby. Correct: nearby = deduplicated discoveredPeers that are isRecent (<5min) + direct transport
+    // (BLE, TCP/LAN, WiFi Aware/Direct) only. Ledger history (dialable/seed/deadRecent) excluded even if isOnline+direct.
+    // Uses combine to log both nearby (discovery-based) vs total (unified _peers) for diagnosis. Verbose logs prove 9 vs 2 fix.
     val nearbyPeersCount: StateFlow<Int> = combine(_peers, meshRepository.discoveredPeers) { peersList, discovered ->
         val deduped = deduplicateDiscoveredPeers(discovered)
         val onlineCount = deduped.values.count { isRecent(it.lastSeen) }
         val nearbyCount = deduped.values.count { isNearbyDiscovered(it) }
+        // UNIFICATION VERBOSE: ledger deadRecent (up to 7d) is in _peers for offline display but MUST NOT inflate nearby.
+        // If nearbyCount == totalPeers and total > deduped, that's the old bug (9 vs 2). Now nearby is discovery-only, so 2 nearby vs 9 total.
+        val deadRecentForLog = try { meshRepository.getRecentlyDeadAddresses(7).size } catch (_: Exception) { -1 }
+        val dialableForLog = try { meshRepository.getDialableAddresses().size } catch (_: Exception) { -1 }
         if (deduped.isNotEmpty() || peersList.isNotEmpty()) {
-            Timber.d("UNIFICATION nearbyPeersCount: ${deduped.size} discovered deduped, $onlineCount online, $nearbyCount nearby(direct) — discovered: ${deduped.values.joinToString { "${it.peerId.take(8)}:${it.transport}:${isRecent(it.lastSeen)}:${it.lastSeen}" }} | totalPeers=${peersList.size} onlinePeers=${peersList.count { it.isOnline }} nearbyDirectInList=${peersList.count { isNearby(it) }}")
+            Timber.d("UNIFICATION nearbyPeersCount: ${deduped.size} discovered deduped, $onlineCount online, $nearbyCount nearby(direct) — discovered: ${deduped.values.joinToString { "${it.peerId.take(8)}:${it.transport}:${isRecent(it.lastSeen)}:${it.lastSeen}" }} | totalPeers=${peersList.size} onlinePeers=${peersList.count { it.isOnline }} nearbyDirectInList=${peersList.count { isNearby(it) }} deadRecent=$deadRecentForLog dialable=$dialableForLog (deadRecent NOT counted)")
         }
         if (peersList.isNotEmpty() && deduped.isEmpty()) {
-            Timber.d("UNIFICATION nearbyPeersCount: 0 discovered but ${peersList.size} total ledger — nearby=0 (correct, not ledger history) — ledger peers: ${peersList.joinToString { "${it.peerId.take(8)}:${it.transport}:${it.isOnline}" }}")
+            Timber.d("UNIFICATION nearbyPeersCount: 0 discovered but ${peersList.size} total ledger — nearby=0 (correct, not ledger history) — ledger peers: ${peersList.joinToString { "${it.peerId.take(8)}:${it.transport}:${it.isOnline}" }} deadRecent=$deadRecentForLog")
         }
-        // Verbose per-peer nearby diagnosis — helps diagnose why 9 vs 2
+        // Verbose per-peer nearby diagnosis — helps diagnose why 9 vs 2 (ledger 9 includes deadRecent+seed, discovery 2 is direct)
         if (deduped.isNotEmpty()) {
             deduped.values.forEach { info ->
                 val recent = isRecent(info.lastSeen)
                 val nearby = isNearbyDiscovered(info)
-                Timber.v("UNIFICATION nearby diagnosis: ${info.peerId.take(8)} transport=${info.transport} transports=${info.transports} lastSeen=${info.lastSeen} recent=$recent nearby=$nearby")
+                Timber.v("UNIFICATION nearby diagnosis: ${info.peerId.take(8)} transport=${info.transport} transports=${info.transports} lastSeen=${info.lastSeen} recent=$recent nearby=$nearby (direct=${info.transport != com.scmessenger.android.service.TransportType.INTERNET})")
             }
+        }
+        if (nearbyCount != deduped.values.count { isRecent(it.lastSeen) && isNearbyDiscovered(it) }) {
+            Timber.w("UNIFICATION nearbyPeersCount inconsistency: nearbyCount $nearbyCount != isRecent+direct count")
         }
         nearbyCount
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
@@ -148,15 +158,20 @@ class DashboardViewModel @Inject constructor(
     /**
      * Load active peers from discovery map and ledger.
      * FIX: persist offline nodes (seed + recently dead) and use authoritative nickname.
-     * Holistic crash fix: mutex + distinct check to prevent Compose MutableVector crash from rapid updates.
+     * Holistic crash fix: mutex + distinct check + isActive to prevent Compose crash on destroy.
      */
     private fun loadPeers() {
+        if (!viewModelScope.isActive) {
+            Timber.d("loadPeers skipped — ViewModelScope not active (destroyed)")
+            return
+        }
         // Prevent concurrent loadPeers from racing and producing duplicate list sizes
         if (!loadPeersMutex.tryLock()) {
             Timber.d("loadPeers skipped — already in progress")
             return
         }
         try {
+            if (!viewModelScope.isActive) return
             val discoveredSnapshot = meshRepository.discoveredPeers.value
             val discovered = deduplicateDiscoveredPeers(discoveredSnapshot)
             // FIX: include offline nodes so peer list persists "last seen Xm ago" even when dialable==0.
@@ -207,7 +222,45 @@ class DashboardViewModel @Inject constructor(
                     isFull = info.isFull,
                     isRelay = false
                 )
-            }.toMutableMap()
+            }.toMutableMap().also { map ->
+                // FIX: enrich discovered peers with contact's authoritative localNickname (user-defined, primary)
+                // so Dashboard does not show synthetic peer-... when contact has ChristyLove but discovered is stale.
+                // Contacts are the source of truth for displayNames(); ledger/discovered may be stale.
+                try {
+                    val contacts = meshRepository.listContacts()
+                    for ((k, peer) in map.toList()) {
+                        val normalizedPeerKey = normalizePublicKey(peer.peerId) ?: peer.peerId.lowercase()
+                        val contact = contacts.firstOrNull {
+                            it.peerId.lowercase() == k.lowercase() ||
+                                it.peerId.lowercase() == peer.peerId.lowercase() ||
+                                normalizePublicKey(it.publicKey)?.lowercase() == normalizedPeerKey ||
+                                normalizePublicKey(it.publicKey)?.lowercase() == normalizePublicKey(peer.peerId)?.lowercase()
+                        }
+                        if (contact != null) {
+                            val contactLocal = normalizeNickname(contact.localNickname)?.takeUnless { isSyntheticFallbackNickname(it) }
+                            val contactNick = normalizeNickname(contact.nickname)?.takeUnless { isSyntheticFallbackNickname(it) }
+                            var enriched = peer
+                            var changed = false
+                            if (contactLocal != null && (peer.localNickname.isNullOrBlank() || isSyntheticFallbackNickname(peer.localNickname))) {
+                                Timber.d("UNIFICATION loadPeers discovered enrich $k: local ${peer.localNickname?.take(16)} -> $contactLocal from contact ${contact.peerId.take(8)}")
+                                enriched = enriched.copy(localNickname = contactLocal)
+                                changed = true
+                            }
+                            if (contactNick != null && (peer.nickname.isNullOrBlank() || isSyntheticFallbackNickname(peer.nickname))) {
+                                val newNick = selectAuthoritativeNickname(contactNick, peer.nickname) ?: contactNick
+                                if (newNick != peer.nickname) {
+                                    Timber.d("UNIFICATION loadPeers discovered enrich $k: nick ${peer.nickname?.take(16)} -> $newNick from contact")
+                                    enriched = enriched.copy(nickname = newNick)
+                                    changed = true
+                                }
+                            }
+                            if (changed) map[k] = enriched
+                        }
+                    }
+                } catch (e: Exception) {
+                    Timber.w(e, "UNIFICATION loadPeers discovered enrich failed")
+                }
+            }
 
             // UNIFICATION: Enrich/Add with ledger entries — canonicalize: 12D3 (libp2p) and 30d0fa (hex) for same identity must merge to ONE node.
             // Robust even when ironCore is null at cold start: canonicalHexForAnyId uses PeerKeyUtils protobuf fallback.
@@ -240,11 +293,29 @@ class DashboardViewModel @Inject constructor(
                     val authoritativeNick = selectAuthoritativeNickname(existing.nickname, entry.nickname)
                         ?: selectAuthoritativeNickname(entry.nickname, existing.nickname)
                         ?: existing.nickname
-                    val authoritativeLocal = existing.localNickname
+                    // FIX: enrich localNickname from contact if discovered's local is null/synthetic but contact has ChristyLove
+                    var authoritativeLocal = existing.localNickname?.takeUnless { isSyntheticFallbackNickname(it) }
+                    if (authoritativeLocal.isNullOrBlank()) {
+                        try {
+                            val contactByKey = normalizePublicKey(entry.publicKey)?.lowercase() ?: lookupKey
+                            val contact = meshRepository.listContacts().firstOrNull {
+                                it.peerId.lowercase() == lookupKey ||
+                                    normalizePublicKey(it.publicKey)?.lowercase() == contactByKey ||
+                                    normalizePublicKey(it.publicKey)?.lowercase() == existing.peerId.lowercase()
+                            }
+                            val contactLocal = contact?.localNickname?.trim()?.takeIf { it.isNotEmpty() }?.takeUnless { isSyntheticFallbackNickname(it) }
+                            if (contactLocal != null) {
+                                Timber.d("UNIFICATION loadPeers ledger MERGE enrich local from contact $lookupKey: ${contactLocal.take(16)} over existingLocal=${existing.localNickname?.take(16)}")
+                                authoritativeLocal = contactLocal
+                            }
+                        } catch (e: Exception) {
+                            Timber.w(e, "UNIFICATION loadPeers merge enrich failed for $lookupKey")
+                        }
+                    }
                     // UNIFICATION: Update via canonical lookupKey to avoid 12D3/30d0fa duplicate node
                     peerMap[lookupKey] = existing.copy(
                         nickname = authoritativeNick,
-                        localNickname = authoritativeLocal,
+                        localNickname = authoritativeLocal ?: existing.localNickname,
                         multiaddr = if (entry.multiaddr.contains("/p2p-circuit/") || existing.multiaddr.isEmpty()) entry.multiaddr else existing.multiaddr,
                         lastSeen = when {
                             entryLastSeen == null -> existingLastSeen
@@ -275,10 +346,33 @@ class DashboardViewModel @Inject constructor(
                 } else {
                     Timber.d("UNIFICATION loadPeers ledger NEW $rawPeerId -> $lookupKey (peerId $peerId)")
                     // Preserve authoritative nickname: filter synthetic ledger nicknames
+                    // FIX: enrich offline ledger peers with contact's localNickname (user-defined, primary) if available.
+                    // Previously ledger-only peers had localNickname=null, causing Dashboard to show synthetic peer-... or PK:...
+                    // instead of ChristyLove. Now contact's display name is preferred.
                     val ledgerNick = selectAuthoritativeNickname(entry.nickname, null)
+                    var contactLocalForLedger: String? = null
+                    var contactNickForLedger: String? = null
+                    try {
+                        val contactByKey = normalizePublicKey(entry.publicKey)?.lowercase()
+                        val contact = meshRepository.listContacts().firstOrNull {
+                            it.peerId.lowercase() == lookupKey ||
+                                normalizePublicKey(it.publicKey)?.lowercase() == contactByKey ||
+                                normalizePublicKey(it.publicKey)?.lowercase() == peerId.lowercase()
+                        }
+                        if (contact != null) {
+                            contactLocalForLedger = contact.localNickname?.trim()?.takeIf { it.isNotEmpty() }?.takeUnless { isSyntheticFallbackNickname(it) }
+                            contactNickForLedger = contact.nickname?.trim()?.takeIf { it.isNotEmpty() }?.takeUnless { isSyntheticFallbackNickname(it) }
+                            if (contactLocalForLedger != null || contactNickForLedger != null) {
+                                Timber.d("UNIFICATION loadPeers ledger NEW enrich from contact $lookupKey: local=${contactLocalForLedger?.take(16)} nick=${contactNickForLedger?.take(16)} over ledgerNick=${ledgerNick?.take(16)}")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Timber.w(e, "UNIFICATION loadPeers ledger enrich failed for $lookupKey")
+                    }
                     peerMap[lookupKey] = PeerInfo(
                         peerId = peerId.lowercase(),
-                        nickname = ledgerNick,
+                        nickname = contactNickForLedger ?: ledgerNick,
+                        localNickname = contactLocalForLedger,
                         multiaddr = entry.multiaddr,
                         lastSeen = entry.lastSeen,
                         transport = determineTransport(entry.multiaddr),
@@ -338,7 +432,11 @@ class DashboardViewModel @Inject constructor(
                 lastSeenSec >= sevenDaysAgoSec
             }
             val sortedPeerList = sortPeersForUnifiedView(filtered)
-            // Distinct check prevents Compose crash from emitting same list repeatedly
+            // Distinct check + isActive prevents Compose crash on destroy (SlotTable NPE at onChildRemoved)
+            if (!viewModelScope.isActive) {
+                Timber.d("loadPeers: ViewModelScope not active, skipping emit")
+                return
+            }
             if (_peers.value != sortedPeerList) {
                 _peers.value = sortedPeerList
             } else {

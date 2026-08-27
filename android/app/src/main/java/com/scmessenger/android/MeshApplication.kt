@@ -191,7 +191,13 @@ class MeshApplication : Application() {
                 combined.contains("PrefetchHandleProvider") ||
                 combined.contains("AndroidPrefetchScheduler") ||
                 combined.contains("ArrayIndexOutOfBoundsException") && combined.contains("MutableVector") ||
-                combined.contains("onChildRemoved")
+                combined.contains("onChildRemoved") ||
+                // 19:42 crash: SlotTableKt.dataAnchor ArrayIndexOutOfBoundsException length=10240 index=-3741
+                // during MainActivity destroy via LayoutNodeSubcompositionsState.onRelease
+                combined.contains("SlotTable") ||
+                combined.contains("dataAnchor") ||
+                combined.contains("LayoutNodeSubcompositionsState") ||
+                combined.contains("PrefetchHandle")
             ) {
                 return true
             }

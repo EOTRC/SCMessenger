@@ -220,9 +220,14 @@ fun PeerItem(peer: com.scmessenger.android.ui.viewmodels.PeerInfo, onClick: (() 
         Spacer(modifier = Modifier.width(12.dp))
 
         Column(modifier = Modifier.weight(1f)) {
+            // UNIFICATION FIX: displayName shows localNickname first, filters synthetic peer-... fallback.
+            // Previously showed synthetic peer-... as primary when local was null, even though contact has ChristyLove.
+            // Now synthetic is treated as blank, so PK:... fallback shows until real name arrives, and contact's local wins.
+            val primary = peer.localNickname?.trim()?.takeIf { it.isNotEmpty() }?.takeUnless { it.lowercase().startsWith("peer-") }
+            val secondary = peer.nickname?.trim()?.takeIf { it.isNotEmpty() }?.takeUnless { it.lowercase().startsWith("peer-") }
+            val display = primary ?: secondary
             Text(
-                text = peer.localNickname
-                    ?: peer.nickname
+                text = display
                     ?: when {
                         peer.isFull -> stringResource(R.string.dashboard_label_node)
                         else -> stringResource(R.string.dashboard_label_headless_node)
@@ -230,9 +235,9 @@ fun PeerItem(peer: com.scmessenger.android.ui.viewmodels.PeerInfo, onClick: (() 
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Bold
             )
-            if (peer.nickname != null && peer.localNickname != null) {
+            if (secondary != null && primary != null && secondary != primary) {
                 Text(
-                    text = "@${peer.nickname}",
+                    text = "@${secondary}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

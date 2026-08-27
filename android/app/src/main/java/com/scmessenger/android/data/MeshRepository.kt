@@ -4384,6 +4384,35 @@ open class MeshRepository(
         }
 
         contactManager?.add(finalContact)
+        // UNIFICATION FIX: immediately refresh _discoveredPeers so Dashboard/Contacts UI does not stay on synthetic peer-...
+        // Previously addContact did not update discovery map; a contact added with ChristyLove would still show
+        // peer-30d0fa67 until next BLE/identify cycle. Now we push the authoritative name into _discoveredPeers.
+        try {
+            val authoritativeDisplay = normalizeNickname(finalContact.localNickname)?.takeUnless { isSyntheticFallbackNickname(it) }
+                ?: normalizeNickname(finalContact.nickname)?.takeUnless { isSyntheticFallbackNickname(it) }
+            if (authoritativeDisplay != null) {
+                _discoveredPeers.update { current ->
+                    var updated = current
+                    var changed = false
+                    for ((k, v) in current) {
+                        val matches = k == canonicalContactId || v.peerId == canonicalContactId ||
+                            normalizePublicKey(v.publicKey) == normalizePublicKey(finalContact.publicKey) ||
+                            (v.libp2pPeerId != null && parseRoutingHints(finalContact.notes).libp2pPeerId == v.libp2pPeerId)
+                        if (matches) {
+                            val newNick = selectAuthoritativeNickname(authoritativeDisplay, v.nickname) ?: authoritativeDisplay
+                            val newLocal = finalContact.localNickname ?: v.localNickname
+                            updated = updated + (k to v.copy(nickname = newNick, localNickname = newLocal))
+                            changed = true
+                            Timber.d("UNIFICATION addContact discovery refresh: $k -> nick=${newNick.take(16)} local=${newLocal?.take(16)}")
+                        }
+                    }
+                    if (changed) updated else current
+                }
+                refreshDiscoveredPeerForContact(canonicalContactId)
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "UNIFICATION addContact discovery refresh failed for $canonicalContactId")
+        }
         val routing = parseRoutingHints(finalContact.notes)
         annotateIdentityInLedger(
             routePeerId = routing.libp2pPeerId,
@@ -4391,7 +4420,7 @@ open class MeshRepository(
             publicKey = finalContact.publicKey,
             nickname = finalContact.nickname
         )
-        Timber.i("UNIFICATION addContact saved: peerId $canonicalContactId nickname ${finalContact.nickname?.take(16) ?: "null"} localNickname ${finalContact.localNickname?.take(16) ?: "null"} pubKey ${finalContact.publicKey.take(8)}...")
+        Timber.i("UNIFICATION addContact saved: peerId $canonicalContactId nickname ${finalContact.nickname?.take(16) ?: "null"} localNickname ${finalContact.localNickname?.take(16) ?: "null"} pubKey ${finalContact.publicKey.take(8)}... display=${(finalContact.localNickname ?: finalContact.nickname)?.take(16) ?: "PK:${finalContact.publicKey.take(8)}"}")
     }
 
     /**
@@ -4404,13 +4433,18 @@ open class MeshRepository(
             val canonical = canonicalId(peerId)
 
             // Already a contact? Just update nickname if provided.
+            // UNIFICATION FIX: when adding by peerId with a nickname, treat it as localNickname (user-defined, primary)
+            // not federated. Previous code stored as nickname (federated) which could be overwritten by ledger synthetic
+            // via upsertFederatedContact. Now we preserve localNickname correctly.
             val existing = contactManager?.get(canonical)
             if (existing != null) {
                 if (nickname != null) {
+                    val normalizedNick = normalizeNickname(nickname)?.takeUnless { isSyntheticFallbackNickname(it) }
+                    Timber.i("UNIFICATION addContactByPeerId existing: $canonical nick=${normalizedNick?.take(16) ?: "null"} -> saving as localNickname (FIX)")
                     addContact(uniffi.api.Contact(
                         peerId = existing.peerId,
-                        nickname = nickname,
-                        localNickname = existing.localNickname,
+                        nickname = existing.nickname,
+                        localNickname = normalizedNick ?: existing.localNickname,
                         publicKey = existing.publicKey,
                         addedAt = existing.addedAt,
                         lastSeen = existing.lastSeen,
@@ -4433,10 +4467,15 @@ open class MeshRepository(
                 return false
             }
 
+            // UNIFICATION FIX: new contact via peerId — nickname param is user-provided -> localNickname (primary)
+            // Previously stored as nickname (federated) which ledger could overwrite with peer-... . Now local.
+            val normalizedAddNick = normalizeNickname(nickname)?.takeUnless { isSyntheticFallbackNickname(it) }
+                ?: normalizeNickname(discoveryInfo.nickname)?.takeUnless { isSyntheticFallbackNickname(it) }
+            Timber.i("UNIFICATION addContactByPeerId new: $canonical nick=${normalizedAddNick?.take(16) ?: "null"} -> localNickname (FIX: user-defined, not federated)")
             val contact = uniffi.api.Contact(
                 peerId = canonical,
-                nickname = nickname ?: discoveryInfo.nickname,
-                localNickname = null,
+                nickname = null,
+                localNickname = normalizedAddNick,
                 publicKey = publicKey,
                 addedAt = (System.currentTimeMillis() / 1000).toULong(),
                 lastSeen = null,

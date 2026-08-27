@@ -2,9 +2,8 @@ package com.scmessenger.android.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -85,14 +84,21 @@ fun ChatScreen(
 
     // Wire updateInputText/clearInput into ChatViewModel
     val inputText by chatViewModel.inputText.collectAsState()
-    val listState = rememberLazyListState()
+    // FIX(Compose-crash): Column+verticalScroll to eliminate LazyColumn prefetch crash
+    // (SlotTableKt.dataAnchor ArrayIndexOutOfBounds via PrefetchHandleProvider/
+    // LayoutNodeSubcompositionsState.onRelease during MainActivity destroy at 19:42).
+    // LazyColumn's AndroidPrefetchScheduler races with SlotTable disposal on rapid
+    // message updates (receipts) and during onDestroy, corrupting MutableVector.
+    // Column avoids prefetch/subcomposition entirely; chat history is bounded (200)
+    // so composing all items is acceptable and eliminates the crash.
+    val scrollState = rememberScrollState()
     val coroutineScope = rememberCoroutineScope()
 
-    // Wire loadMoreMessages into scroll-to-load-more
+    // Wire loadMoreMessages via scroll position — Column equivalent of LazyColumn prefetch
+    // Trigger when scrolled near top (older messages) to paginate.
     val shouldLoadMore by remember {
         derivedStateOf {
-            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            lastVisible <= 3 && chatMessages.size > 10
+            scrollState.value <= 200 && chatMessages.size > 10
         }
     }
     LaunchedEffect(shouldLoadMore) {
@@ -136,7 +142,13 @@ fun ChatScreen(
 
     LaunchedEffect(chatMessages.size) {
         if (chatMessages.isNotEmpty()) {
-            listState.animateScrollToItem(chatMessages.size - 1)
+            // FIX: use scrollState for Column+verticalScroll (was listState.animateScrollToItem)
+            // Animate to bottom (maxValue) after new message arrives; guard against composition dispose
+            try {
+                scrollState.animateScrollTo(scrollState.maxValue)
+            } catch (_: Exception) {
+                // Scroll may fail if composition is disposing (onDestroy) — ignore
+            }
         }
     }
 
@@ -267,33 +279,29 @@ fun ChatScreen(
                     }
                 }
                 else -> {
-                    // FIX(Compose-crash): Add stable key + contentType to prevent
-                    // LayoutNode.onChildRemoved NPE / MutableVector.add ArrayIndexOutOfBounds
-                    // during prefetch when chatMessages updates rapidly (receipt events,
-                    // messageEvents). Key is message.id (stable server-assigned); contentType
-                    // distinguishes sent vs received bubbles for correct prefetch slotting.
-                    // Use distinctBy to guard against duplicate ids that corrupt LazyColumn vector.
+                    // FIX(Compose-crash): Column+verticalScroll to eliminate LazyColumn prefetch crash
+                    // (SlotTableKt.dataAnchor ArrayIndexOutOfBounds via PrefetchHandleProvider/
+                    // LayoutNodeSubcompositionsState.onRelease during MainActivity destroy).
+                    // Also use distinctBy to guard against duplicate ids that corrupt composition,
+                    // and key() per MessageBubble to ensure stable identity without LazyColumn keys.
                     val stableMessages = remember(chatMessages) {
                         chatMessages.distinctBy { it.id }
                     }
-                    LazyColumn(
-                        state = listState,
+                    Column(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp),
-                        contentPadding = PaddingValues(vertical = 16.dp),
+                            .verticalScroll(scrollState)
+                            .padding(horizontal = 16.dp, vertical = 16.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(
-                            items = stableMessages,
-                            key = { it.id },
-                            contentType = { it.direction }
-                        ) { message ->
-                            MessageBubble(
-                                message = message,
-                                isMe = message.direction == uniffi.api.MessageDirection.SENT
-                            )
+                        stableMessages.forEach { message ->
+                            key(message.id) {
+                                MessageBubble(
+                                    message = message,
+                                    isMe = message.direction == uniffi.api.MessageDirection.SENT
+                                )
+                            }
                         }
                     }
                 }
@@ -359,9 +367,11 @@ fun ChatScreen(
                                     val success = viewModel.sendMessage(conversationId, messageToSend)
                                     Timber.d("SEND: Message sent, success=$success")
                                     if (success) {
-                                        // Scroll to bottom to show new message
+                                        // Scroll to bottom to show new message (Column+verticalScroll)
                                         if (chatMessages.isNotEmpty()) {
-                                            listState.animateScrollToItem(chatMessages.size)
+                                            try {
+                                                scrollState.animateScrollTo(scrollState.maxValue)
+                                            } catch (_: Exception) {}
                                         }
                                     }
                                 } catch (e: Exception) {
