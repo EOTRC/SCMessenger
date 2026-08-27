@@ -11,8 +11,11 @@ import com.scmessenger.android.utils.toEpochSeconds
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import javax.inject.Inject
@@ -84,6 +87,8 @@ class DashboardViewModel @Inject constructor(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    private val loadPeersMutex = Mutex()
+
     init {
         observeNetworkEvents()
         observeLiveNetworkStats()
@@ -122,8 +127,14 @@ class DashboardViewModel @Inject constructor(
     /**
      * Load active peers from discovery map and ledger.
      * FIX: persist offline nodes (seed + recently dead) and use authoritative nickname.
+     * Holistic crash fix: mutex + distinct check to prevent Compose MutableVector crash from rapid updates.
      */
     private fun loadPeers() {
+        // Prevent concurrent loadPeers from racing and producing duplicate list sizes
+        if (!loadPeersMutex.tryLock()) {
+            Timber.d("loadPeers skipped — already in progress")
+            return
+        }
         try {
             val discoveredSnapshot = meshRepository.discoveredPeers.value
             val discovered = deduplicateDiscoveredPeers(discoveredSnapshot)
@@ -286,11 +297,18 @@ class DashboardViewModel @Inject constructor(
                 lastSeenSec >= sevenDaysAgoSec
             }
             val sortedPeerList = sortPeersForUnifiedView(filtered)
-            _peers.value = sortedPeerList
+            // Distinct check prevents Compose crash from emitting same list repeatedly
+            if (_peers.value != sortedPeerList) {
+                _peers.value = sortedPeerList
+            } else {
+                Timber.d("loadPeers: no change, skipping emit to avoid recomposition")
+            }
 
             Timber.d("Loaded ${sortedPeerList.size} discovered peers (${sortedPeerList.count { it.isFull }} full, ${sortedPeerList.count { it.isRelay }} relays) — nearby(online)=${sortedPeerList.count { it.isOnline }}")
         } catch (e: Exception) {
             Timber.e(e, "Failed to load peers")
+        } finally {
+            loadPeersMutex.unlock()
         }
     }
 
@@ -438,15 +456,19 @@ class DashboardViewModel @Inject constructor(
     }
 
     /**
-     * Observe network events for real-time updates.
+     * Observe network events for real-time updates — debounced to prevent Compose crash from rapid updates.
      */
+    @OptIn(FlowPreview::class)
     private fun observeNetworkEvents() {
         viewModelScope.launch {
-            meshRepository.discoveredPeers.collect {
-                withContext(Dispatchers.IO) {
-                    refreshData()
+            meshRepository.discoveredPeers
+                .debounce(500)
+                .distinctUntilChanged()
+                .collect {
+                    withContext(Dispatchers.IO) {
+                        refreshData()
+                    }
                 }
-            }
         }
 
         viewModelScope.launch {

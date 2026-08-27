@@ -153,7 +153,7 @@ fun PeerListScreen(
                                     )
                                 }
                             }
-                            items(displayPeers, key = { it.peerId }) { peer ->
+                            items(displayPeers, key = { "${it.peerId}:${it.lastSeen}" }) { peer ->
                                 PeerCard(peer = peer, onClick = { onPeerClick(peer) })
                             }
                         }

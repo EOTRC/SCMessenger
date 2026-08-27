@@ -169,7 +169,8 @@ fun DashboardScreen(
                     )
                 }
             } else {
-                items(sortedPeers, key = { it.peerId }) { peer ->
+                // Fix Compose crash: use stable key with lastSeen to handle rapid updates, or no key
+                items(sortedPeers, key = { "${it.peerId}:${it.lastSeen}" }) { peer ->
                     PeerItem(peer, onClick = { onPeerClick(peer) })
                     HorizontalDivider(
                         modifier = Modifier.padding(vertical = 4.dp),
