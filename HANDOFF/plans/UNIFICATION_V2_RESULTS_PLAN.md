@@ -11,6 +11,8 @@ Supersedes for UI taxonomy: two-section `discovered vs Shared` introduced late 2
 ## 0. Verdicts confirmed this session (updated 2026-08-26 — relay parity)
 
 1. **Mesh tab sort:** one list, **no relay vs non-relay distinction** — default order `online → offline by recency` (all nodes are relays). Former `online user → online relay/infra` tier removed; all nodes are equal relays per "a node is a node" philosophy. Classification is via transport badges only.
+
+4. **Mesh shows exactly the 2 real others online (confirmed 2026-08-27, commit `fb2bb3f6`):** `DashboardViewModel.kt` now (a) **COALESCEs** relay-hop `12D3KooW…` aliases to canonical `public_key_hex` so every transport (BLE/TCP-LAN/Internet/via-shared-node circuit) merges into ONE identity node instead of splitting; (b) applies an **ONLINE-AUTHORITY** gate — a peer is genuinely online only if present in the discovery map (recent + directly observed) OR it holds a DIRECT non-`/p2p-circuit` ledger address with `failureCount==0` and recent `lastSeen` — which drops the phantom relay references (`c0a682ef` MacLane, `26206070` Lucaso, `6a05e70d`) that previously inflated the mesh to "5 online"; and (c) **removes the node's own identity** from its peer list so self never renders as a peer. Live result after coalesce + authority + self-removal: `30d0fa67`(Windows)=ONLINE, `8db1612a`(AWS)=ONLINE, `378d26f5`="Christy Loooove" (saved contact)=OFFLINE → exactly 2 online others; self `8580a133` excluded; phantoms gone.
 2. **Identity fail-closed:** `IronCore::with_storage` / `with_storage_and_logs` must surface storage failure as `Err(IronCoreError)` or explicit `storage_degraded` flag the consumer must act on. Silent `IdentityManager::new()` fallback that mints a fresh identity while old one lingers on disk is **deprecated**. Operator approved hard error.
 3. **Scope:** `SCMessenger/*` primary. `OxAlphaAPI` harness de-duplication (dup_index / repo_map overlap) low priority, opportunistic only.
 
@@ -157,6 +159,7 @@ Rule: one theme = one branch = one revert; `main` stays green (`SHIP_PLAN.md:2:S
 | Step | Status | Evidence pointer |
 |---|---|---|
 | Mint V2 plan (this file) | done 2026-08-26 | `git diff HANDOFF/plans/UNIFICATION_V2_RESULTS_PLAN.md` |
+| S2 coalesce + online-authority + self-exclusion | done 2026-08-27 | `fb2bb3f6` dashboard peers = 2 online others (Win+AWS); phantoms offline; `UNIFICATION` logs on-device |
 | Verifier-1: plan readiness | pending | subagent report |
 | Implement S2 de-split + P0 fail-closed | pending | branch + CI |
 | Verifier-2: post-impl re-audit | pending | `dup_index.json` + `cargo test` |
