@@ -5154,22 +5154,23 @@ open class MeshRepository(
             }
 
             // Fallback: Try contact manager
-            var contact = contactManager?.get(routingPeerId)
+            var contact: uniffi.api.Contact? = contactManager?.get(routingPeerId)
             if (publicKey == null && contact != null && !contact.publicKey.isNullOrEmpty()) {
-                publicKey = contact.publicKey.trim()
+                val contactSnapshot = contact
+                publicKey = contactSnapshot.publicKey.trim()
 
                 // CRITICAL: Validate public key length
                 if (publicKey.length != 64) {
                     Timber.e("SEND_MSG_BUG: Contact has invalid public key length: ${publicKey.length} (expected 64)")
-                    Timber.e("SEND_MSG_BUG: Contact peer_id: ${contact.peerId}")
+                    Timber.e("SEND_MSG_BUG: Contact peer_id: ${contactSnapshot.peerId}")
                     Timber.e("SEND_MSG_BUG: Routing peer_id: $routingPeerId")
                     Timber.e("SEND_MSG_BUG: Public key value: '$publicKey'")
 
                     // Try to recover from discovered peers
                     val discoveredPeer = _discoveredPeers.value.entries.find {
                         PeerIdValidator.isSame(it.key, routingPeerId) ||
-                        PeerIdValidator.isSame(it.key, contact.peerId) ||
-                        (it.value.publicKey == contact.publicKey)
+                        PeerIdValidator.isSame(it.key, contactSnapshot.peerId) ||
+                        (it.value.publicKey == contactSnapshot.publicKey)
                     }?.value
 
                     if (discoveredPeer != null && !discoveredPeer.publicKey.isNullOrEmpty() &&
@@ -5253,9 +5254,9 @@ open class MeshRepository(
                     }
                     if (autoPublicKey == null) {
                         val ledgerKey = getAllLedgerEntries().firstOrNull { entry ->
-                            PeerIdValidator.isSame(entry.peerId, routingPeerId) ||
-                                PeerIdValidator.isSame(entry.peerId, normalizedPeerId) ||
-                                (entry.publicKey != null && normalizePublicKey(entry.publicKey) != null && PeerIdValidator.isSame(entry.publicKey, routingPeerId))
+                            (entry.peerId?.let { PeerIdValidator.isSame(it, routingPeerId) } == true) ||
+                                (entry.peerId?.let { PeerIdValidator.isSame(it, normalizedPeerId) } == true) ||
+                                (entry.publicKey?.let { pk -> normalizePublicKey(pk)?.let { PeerIdValidator.isSame(pk, routingPeerId) } } == true)
                         }?.publicKey?.trim()?.takeIf { it.length == 64 }?.let { normalizePublicKey(it) }
                         if (ledgerKey != null) {
                             autoPublicKey = ledgerKey
@@ -5303,8 +5304,8 @@ open class MeshRepository(
                 if (autoNickname.isNullOrBlank() || isSyntheticFallbackNickname(autoNickname)) {
                     val ledgerNick = getAllLedgerEntries().asSequence()
                         .filter { e ->
-                            PeerIdValidator.isSame(e.peerId, routingPeerId) || PeerIdValidator.isSame(e.peerId, autoPeerId) ||
-                                (autoPublicKey != null && e.publicKey != null && normalizePublicKey(e.publicKey)?.equals(autoPublicKey, ignoreCase = true) == true)
+                            (e.peerId?.let { PeerIdValidator.isSame(it, routingPeerId) } == true) || (e.peerId?.let { PeerIdValidator.isSame(it, autoPeerId) } == true) ||
+                                (autoPublicKey != null && e.publicKey?.let { normalizePublicKey(it)?.equals(autoPublicKey, ignoreCase = true) } == true)
                         }
                         .mapNotNull { normalizeNickname(it.nickname)?.takeUnless { v -> isSyntheticFallbackNickname(v) } }
                         .firstOrNull()
