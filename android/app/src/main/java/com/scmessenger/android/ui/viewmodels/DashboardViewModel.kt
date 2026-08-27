@@ -421,18 +421,62 @@ class DashboardViewModel @Inject constructor(
             }
 
             // UNIFICATION_V2: All nodes are relays — synthesize hop entries as regular mesh peers (no isRelay distinction).
-            for (hopId in relayHops) {
-                if (!peerMap.containsKey(hopId)) {
-                    val hopLastSeen = ledgerEntries.filter { it.multiaddr.contains("/p2p/$hopId/p2p-circuit/") }
-                        .mapNotNull { it.lastSeen }.maxOrNull()
-                    val hopTransports = MeshRepository.parseTransportsFromMultiaddrs(
-                        ledgerEntries.filter { it.multiaddr.contains("/p2p/$hopId/p2p-circuit/") }.map { it.multiaddr }
-                    ) + setOf(MeshRepository.TRANSPORT_RELAY_CIRCUIT)
-                    peerMap[hopId] = PeerInfo(
-                        peerId = hopId,
+            // UNIFICATION COALESCE: A relay/seed hop is a TRANSPORT alias (via-shared-node) of an identity, NOT a distinct
+            // node. Canonicalize each hopId (libp2p 12D3KooW) to public_key_hex so it MERGES into the existing unified node
+            // (Windows 12D3KooWJoW9 -> 30d0fa, etc.) instead of creating a raw 12D3KooW duplicate that splits the peer list
+            // and conversation thread. Exclude our own identity entirely. This is what lets every transport (BLE, TCP/LAN,
+            // Internet, via-shared-node circuit) coalesce into the single unified node/thread per identity.
+            val selfHopKey = try {
+                meshRepository.getIdentityInfoSync()?.publicKeyHex?.trim()?.lowercase()
+            } catch (_: Exception) { null }
+            for (rawHopId in relayHops) {
+                val hopId = rawHopId.trim()
+                if (hopId.isEmpty()) continue
+                // Canonicalize 12D3KooW -> 64-hex public_key_hex so hop alias merges with the same identity across transports.
+                val hopCanonical = canonicalHexForAnyId(hopId, null)?.lowercase() ?: hopId.lowercase()
+                Timber.d("UNIFICATION coalesce hop: $hopId canonical-> ${hopCanonical.take(16)} (self=$selfHopKey)")
+                // Never show our own identity as a separate/hop node.
+                if (selfHopKey != null && hopCanonical == selfHopKey) {
+                    Timber.d("UNIFICATION coalesce hop SKIP self: $hopId ($hopCanonical.take(16))")
+                    continue
+                }
+                val hopMultiaddrs = ledgerEntries.filter { it.multiaddr.contains("/p2p/$hopId/p2p-circuit/") }.map { it.multiaddr }
+                val hopLastSeen = ledgerEntries
+                    .filter { it.multiaddr.contains("/p2p/$hopId/p2p-circuit/") }
+                    .mapNotNull { it.lastSeen }.maxOrNull()
+                val hopTransports = MeshRepository.parseTransportsFromMultiaddrs(hopMultiaddrs) + setOf(MeshRepository.TRANSPORT_RELAY_CIRCUIT)
+                // Merge into an existing unified node if one already exists for this identity (e.g. Windows discovered as
+                // 30d0fa via BLE/TCP-LAN, hop alias joins its transports) — do NOT create a duplicate raw hop node.
+                val existing = peerMap[hopCanonical] ?: peerMap[hopId]
+                if (existing != null) {
+                    val merged = existing.copy(
+                        multiaddr = if (existing.multiaddr.isEmpty() || existing.multiaddr.contains("/p2p-circuit/")) hopMultiaddrs.firstOrNull() ?: existing.multiaddr else existing.multiaddr,
+                        lastSeen = when {
+                            hopLastSeen == null -> existing.lastSeen
+                            existing.lastSeen == null || hopLastSeen > existing.lastSeen -> hopLastSeen
+                            else -> existing.lastSeen
+                        },
+                        isOnline = (hopLastSeen != null && isRecent(hopLastSeen)) || existing.isOnline,
+                        isFull = existing.isFull,
+                        isRelay = false,
+                        transports = (existing.transports + hopTransports).distinct().sorted()
+                    )
+                    peerMap[hopCanonical] = merged
+                    if (existing.peerId != hopCanonical) {
+                        Timber.d("UNIFICATION coalesce hop MERGE $hopId into ${existing.peerId.take(16)} (unified transports ${merged.transports})")
+                    }
+                    if (hopId != hopCanonical && peerMap.containsKey(hopId)) {
+                        Timber.d("UNIFICATION coalesce hop remove raw alias key $hopId -> $hopCanonical")
+                        peerMap.remove(hopId)
+                    }
+                } else {
+                    // Genuinely new identity seen only as a relay hop — key/advertise by canonical hex, NOT raw libp2p.
+                    Timber.d("UNIFICATION coalesce hop NEW $hopId -> $hopCanonical (transport-only identity)")
+                    peerMap[hopCanonical] = PeerInfo(
+                        peerId = hopCanonical,
                         nickname = null,
                         localNickname = null,
-                        multiaddr = ledgerEntries.firstOrNull { it.multiaddr.contains("/p2p/$hopId/p2p-circuit/") }?.multiaddr ?: "",
+                        multiaddr = hopMultiaddrs.firstOrNull() ?: "",
                         lastSeen = hopLastSeen,
                         transport = MeshRepository.TRANSPORT_RELAY_CIRCUIT,
                         transports = hopTransports.toList().sorted(),
@@ -443,7 +487,47 @@ class DashboardViewModel @Inject constructor(
                 }
             }
 
-            val peerList = peerMap.values.toList()
+            // Exclude our OWN identity from the peer list entirely (a node must not appear as a "peer" of itself).
+            if (selfHopKey != null) {
+                val hadSelf = peerMap.remove(selfHopKey) != null
+                if (hadSelf) {
+                    Timber.d("UNIFICATION remove-self from peer list: $selfHopKey")
+                }
+            }
+
+            // UNIFICATION ONLINE-AUTHORITY: A peer is genuinely ONLINE only if it was directly observed
+            // (present in the discovery map from an actual BLE/TCP-LAN/Internet session) OR it has a DIRECT
+            // (non /p2p-circuit) ledger address with a proven successful recent connection (failureCount==0).
+            // Relay/seed HOP aliases shared through another node's circuit (e.g. AWS relays MacLane/Lucaso/some
+            // other device) have only /p2p-circuit multiaddrs and success_count==0 — they are relayed references,
+            // NOT currently-connected devices, so they must be marked OFFLINE regardless of their relay-refreshed
+            // lastSeen. This is what prevents "5 online" phantom inflation vs the 2 real others (Windows + AWS).
+            val discoveredOnlineKeys = discovered.entries
+                .filter { (_, d) -> isRecent(d.lastSeen) && isNearbyDiscovered(d) }
+                .map { (k, _) -> canonicalHexForAnyId(k, null)?.lowercase() ?: k.lowercase() }
+                .toSet()
+            Timber.d("UNIFICATION online-authority discoveredOnlineKeys=${discoveredOnlineKeys.map { it.take(8) }} (discovered=${discovered.keys.map { it.take(8) }} contactIds=${discovered.values.count()})")
+            fun ledgerHasDirectRecent(key: String): Boolean {
+                val k = key.lowercase()
+                for (e in ledgerEntries) {
+                    val eRawId = e.peerId ?: ""
+                    val eKey = (canonicalHexForAnyId(eRawId, e.publicKey)?.lowercase() ?: eRawId.lowercase())
+                    if (eKey.isEmpty() || eKey != k) continue
+                    // Only DIRECT (non-circuit) addresses with a proven connection count as online; relayed alias = offline.
+                    if (e.multiaddr.contains("/p2p-circuit/")) continue
+                    if ((e.failureCount ?: 0u) > 0u) continue
+                    if (isRecent(e.lastSeen)) return true
+                }
+                return false
+            }
+            val correctedPeerList = peerMap.mapValues { (_, p) ->
+                val inDiscovered = p.peerId.lowercase() in discoveredOnlineKeys
+                val ledgerDirect = ledgerHasDirectRecent(p.peerId)
+                val genuineOnline = inDiscovered || ledgerDirect
+                Timber.d("UNIFICATION online-authority ${p.peerId.take(16)} discovered=${inDiscovered} ledgerDirect=$ledgerDirect online=$genuineOnline (was ${p.isOnline})")
+                if (genuineOnline) p else p.copy(isOnline = false)
+            }.values.toList()
+            val peerList = correctedPeerList
             // UNIFICATION_V2: single unified sorted list — online first then offline by recency.
             // Stale filter: "nearby" must be online/recent only for accurate counts. Very stale ledger
             // entries (lastSeen >7 days) are excluded from the display list unless they are saved
