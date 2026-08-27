@@ -3,8 +3,8 @@ package com.scmessenger.android.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -75,101 +75,90 @@ fun DashboardScreen(
         // TRANSPORT_UNIFICATION: filtered display list excludes very stale non-contacts; nearbyCount is isOnline only.
         val sortedPeers = remember(peers) { peers.filter { it.peerId.isNotBlank() }.distinctBy { it.peerId } }
 
-        LazyColumn(
+        // FIX: Use Column+verticalScroll instead of LazyColumn to avoid Compose MutableVector crash on rapid list updates
+        Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues),
-            contentPadding = PaddingValues(16.dp),
+                .padding(paddingValues)
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Service Status Card
-            item {
-                StatusCard(
-                    isRunning = isRunning,
-                    stateName = serviceState.name,
-                    isStorageDegraded = isStorageDegraded
-                )
-            }
+            StatusCard(
+                isRunning = isRunning,
+                stateName = serviceState.name,
+                isStorageDegraded = isStorageDegraded
+            )
 
             // Quick Stats Grid
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    StatCard(
-                        modifier = Modifier.weight(1.5f),
-                        title = buildString {
-                            append(stringResource(R.string.dashboard_stat_nodes_format, fullPeers))
-                            if (headlessPeers > 0) append(stringResource(R.string.dashboard_stat_headless_format, headlessPeers))
-                        },
-                        // UNIFICATION_V2: nearby accuracy — online/recent only, not all ledger entries
-                        value = "$nearbyCount / ${sortedPeers.size}",
-                        icon = Icons.Filled.People,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    StatCard(
-                        modifier = Modifier.weight(1f),
-                        title = stringResource(R.string.dashboard_label_relayed),
-                        value = stats?.messagesRelayed?.toString() ?: "0",
-                        icon = Icons.Filled.Router,
-                        color = MaterialTheme.colorScheme.tertiary
-                    )
-                }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                StatCard(
+                    modifier = Modifier.weight(1.5f),
+                    title = buildString {
+                        append(stringResource(R.string.dashboard_stat_nodes_format, fullPeers))
+                        if (headlessPeers > 0) append(stringResource(R.string.dashboard_stat_headless_format, headlessPeers))
+                    },
+                    // UNIFICATION_V2: nearby accuracy — online/recent only, not all ledger entries
+                    value = "$nearbyCount / ${sortedPeers.size}",
+                    icon = Icons.Filled.People,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                StatCard(
+                    modifier = Modifier.weight(1f),
+                    title = stringResource(R.string.dashboard_label_relayed),
+                    value = stats?.messagesRelayed?.toString() ?: "0",
+                    icon = Icons.Filled.Router,
+                    color = MaterialTheme.colorScheme.tertiary
+                )
             }
 
             // Connection Methods Status
-            item {
-                ConnectionStatusCard(
-                    bleEnabled = meshSettings?.bleEnabled ?: false,
-                    wifiAwareEnabled = meshSettings?.wifiAwareEnabled ?: false,
-                    wifiDirectEnabled = meshSettings?.wifiDirectEnabled ?: false,
-                    internetRelayEnabled = meshSettings?.relayEnabled == true && meshSettings?.internetEnabled == true
-                )
-            }
+            ConnectionStatusCard(
+                bleEnabled = meshSettings?.bleEnabled ?: false,
+                wifiAwareEnabled = meshSettings?.wifiAwareEnabled ?: false,
+                wifiDirectEnabled = meshSettings?.wifiDirectEnabled ?: false,
+                internetRelayEnabled = meshSettings?.relayEnabled == true && meshSettings?.internetEnabled == true
+            )
 
             // Detailed Stats
-            item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = stringResource(R.string.dashboard_section_performance),
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(bottom = 8.dp)
                     )
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = stringResource(R.string.dashboard_section_performance),
-                            style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
 
-                        TextDetailRow(stringResource(R.string.dashboard_label_uptime), formatDuration(stats?.uptimeSecs ?: 0uL))
-                        TextDetailRow(stringResource(R.string.dashboard_label_data_transferred), formatBytes(stats?.bytesTransferred ?: 0uL))
-                    }
+                    TextDetailRow(stringResource(R.string.dashboard_label_uptime), formatDuration(stats?.uptimeSecs ?: 0uL))
+                    TextDetailRow(stringResource(R.string.dashboard_label_data_transferred), formatBytes(stats?.bytesTransferred ?: 0uL))
                 }
             }
 
             // Discovered Nodes Header
-            item {
-                Text(
-                    text = stringResource(R.string.dashboard_section_discovered),
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(top = 8.dp)
-                )
-            }
+            Text(
+                text = stringResource(R.string.dashboard_section_discovered),
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(top = 8.dp)
+            )
 
             // UNIFICATION_V2: single unified sorted list — classification via badge, not section
             // Clickable: mesh nodes open peer detail / conversation
             if (sortedPeers.isEmpty()) {
-                item {
-                    Text(
-                        text = stringResource(R.string.dashboard_empty_state_discovered),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+                Text(
+                    text = stringResource(R.string.dashboard_empty_state_discovered),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             } else {
-                items(sortedPeers, key = { it.peerId }, contentType = { "peer" }) { peer ->
+                sortedPeers.forEach { peer ->
                     Column {
                         PeerItem(peer, onClick = { onPeerClick(peer) })
                         HorizontalDivider(
@@ -181,30 +170,20 @@ fun DashboardScreen(
             }
 
             // Navigation to detailed views
-            item {
-                Spacer(modifier = Modifier.height(16.dp))
-            }
-            item {
-                DashboardToPeerListNavigation(
-                    onNavigateToPeerList = { onNavigateToPeerList() },
-                    modifier = Modifier.padding(horizontal = 16.dp)
-                )
-            }
-            item {
-                DashboardToTopologyNavigation(
-                    onNavigateToTopology = { onNavigateToTopology() },
-                    modifier = Modifier.padding(horizontal = 16.dp)
-                )
-            }
-            item {
-                DashboardToJoinMeshNavigation(
-                    onNavigateToJoinMesh = { onNavigateToJoinMesh() },
-                    modifier = Modifier.padding(horizontal = 16.dp)
-                )
-            }
-            item {
-                Spacer(modifier = Modifier.height(16.dp))
-            }
+            Spacer(modifier = Modifier.height(16.dp))
+            DashboardToPeerListNavigation(
+                onNavigateToPeerList = { onNavigateToPeerList() },
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
+            DashboardToTopologyNavigation(
+                onNavigateToTopology = { onNavigateToTopology() },
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
+            DashboardToJoinMeshNavigation(
+                onNavigateToJoinMesh = { onNavigateToJoinMesh() },
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
+            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 }

@@ -2,8 +2,8 @@ package com.scmessenger.android.ui.dashboard
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
@@ -134,26 +134,27 @@ fun PeerListScreen(
                         }
 
                         // UNIFICATION_V2: single unified sorted list — classification via badge, not section
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(16.dp),
+                        // FIX: Use Column+verticalScroll to avoid LazyColumn prefetch crash on rapid list updates
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState())
+                                .padding(16.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            item(key = "section-nodes-header") {
-                                Column {
-                                    Text(
-                                        text = "Nodes (${displayPeers.size})",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        text = stringResource(R.string.shared_nodes_subtitle),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
+                            Column {
+                                Text(
+                                    text = "Nodes (${displayPeers.size})",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = stringResource(R.string.shared_nodes_subtitle),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
-                            items(displayPeers, key = { it.peerId }, contentType = { "peer" }) { peer ->
+                            displayPeers.forEach { peer ->
                                 PeerCard(peer = peer, onClick = { onPeerClick(peer) })
                             }
                         }
