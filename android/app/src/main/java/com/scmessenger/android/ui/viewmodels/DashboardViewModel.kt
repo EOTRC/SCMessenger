@@ -75,9 +75,15 @@ class DashboardViewModel @Inject constructor(
     val unifiedTotalPeersCount: StateFlow<Int> = _peers.map { it.size }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    // FIX: "nearby" must be online/recent only — not all ledger entries (up to 23). Exposes accurate online count for DashboardScreen.
-    val nearbyPeersCount: StateFlow<Int> = _peers.map { list -> list.count { it.isOnline } }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+    // FIX: "nearby" must be online+direct transport only — not all ledger entries. 2 nearby vs 9 total.
+    val nearbyPeersCount: StateFlow<Int> = _peers.map { list ->
+        val onlineCount = list.count { it.isOnline }
+        val nearbyCount = list.count { isNearby(it) }
+        if (list.isNotEmpty()) {
+            Timber.d("nearbyPeersCount: ${list.size} total, $onlineCount online, $nearbyCount nearby — peers: ${list.joinToString { "${it.peerId.take(8)}:${it.transport}:${it.isOnline}:${it.lastSeen}" }}")
+        }
+        nearbyCount
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
     // Loading state
     private val _isLoading = MutableStateFlow(false)
@@ -524,7 +530,22 @@ class DashboardViewModel @Inject constructor(
         val now = System.currentTimeMillis() / 1000
         val seenAt = timestamp.toEpochSeconds()
         val fiveMinutes = 300L
-        return seenAt <= now && (now - seenAt) < fiveMinutes
+        val isRecent = seenAt <= now && (now - seenAt) < fiveMinutes
+        Timber.v("isRecent: timestamp=$timestamp seenAt=$seenAt now=$now diff=${now - seenAt} isRecent=$isRecent")
+        return isRecent
+    }
+
+    /**
+     * Check if peer is nearby (very recent, direct transport). Stricter than isRecent for accurate nearby count.
+     */
+    private fun isNearby(peer: PeerInfo): Boolean {
+        if (!peer.isOnline) return false
+        // Only direct transports count as nearby, not Internet relay
+        if (peer.transport == "Internet" || peer.transport == MeshRepository.TRANSPORT_RELAY_CIRCUIT) return false
+        // Also check transports set for direct
+        val hasDirect = peer.transports.any { it == "BLE" || it == "TCP/LAN" || it == "WiFi Aware" || it == "WiFi Direct" }
+        if (!hasDirect && peer.transports.isNotEmpty()) return false
+        return true
     }
 
     private fun normalizeNickname(value: String?): String? = value?.trim()?.takeIf { it.isNotEmpty() }
