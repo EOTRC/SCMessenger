@@ -42,13 +42,14 @@ class RequestsInboxViewModel @Inject constructor(
     /**
      * Load pending message requests from repository.
      */
+    // UNIFICATION: pairing iteration via verbose logs — every load logs peerId, isKnownContact, transport, pairing state
     fun loadRequests() {
         viewModelScope.launch {
             try {
                 _isLoading.value = true
                 _error.value = null
 
-                // Get pending requests from repository
+                // Get pending requests from repository — promiscuous inbox (all nodes relay) but contact-gated inbox UI
                 val requests = meshRepository.getPendingMessageRequests()
                 _requests.value = requests.map { req ->
                     RequestItem(
@@ -60,6 +61,10 @@ class RequestsInboxViewModel @Inject constructor(
                     )
                 }
 
+                Timber.i("UNIFICATION RequestsInbox load: ${requests.size} pending (friend requests from non-contacts, awaiting accept to become contacts+conversations)")
+                requests.forEach { req ->
+                    Timber.d("UNIFICATION request detail: peer=${req.peerId.take(16)} nick=${req.nickname?.take(16) ?: "null"} preview=${req.messagePreview.take(32)} count=${req.messageCount} ts=${req.messageTimestamp} isKnownContact=${meshRepository.isKnownContact(req.peerId)}")
+                }
                 Timber.d("Loaded ${_requests.value.size} pending message requests")
             } catch (e: Exception) {
                 _error.value = "Failed to load requests: ${e.message}"
@@ -73,15 +78,19 @@ class RequestsInboxViewModel @Inject constructor(
     /**
      * Accept a message request - adds sender as contact.
      */
+    // UNIFICATION: accepting a friend request creates the contact + conversation — verbose pairing log
     fun acceptRequest(peerId: String) {
         viewModelScope.launch {
             try {
+                Timber.i("UNIFICATION pairing accept: peer=${peerId.take(16)} isKnownBefore=${meshRepository.isKnownContact(peerId)} — adding as contact + conversation")
                 withContext(Dispatchers.IO) {
                     meshRepository.addContactByPeerId(peerId)
                 }
+                Timber.i("UNIFICATION pairing accepted: peer=${peerId.take(16)} isKnownAfter=${meshRepository.isKnownContact(peerId)} — contact now exists, conversation visible")
                 Timber.i("Accepted message request from $peerId")
                 loadRequests()
             } catch (e: Exception) {
+                Timber.e(e, "UNIFICATION pairing accept FAILED for ${peerId.take(16)}: ${e.message}")
                 Timber.e(e, "Failed to accept request from $peerId")
             }
         }

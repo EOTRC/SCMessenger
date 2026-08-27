@@ -120,6 +120,9 @@ class ContactsViewModel @Inject constructor(
         return normalized.startsWith("peer-")
     }
 
+    // UNIFICATION: authoritative nickname resolution — real user/federated names always win over synthetic "peer-..." placeholders.
+    // Ledger sync with stale null/synthetic must NEVER overwrite a real saved nickname (e.g. ChristyLove).
+    // localNickname is user-defined (primary), nickname is federated (secondary); both use same synthetic filtering.
     private fun selectAuthoritativeNickname(incoming: String?, existing: String?): String? {
         val incomingNormalized = normalizeNickname(incoming)
         val existingNormalized = normalizeNickname(existing)
@@ -127,7 +130,7 @@ class ContactsViewModel @Inject constructor(
         val incomingSynthetic = isSyntheticFallbackNickname(incomingNormalized)
         val existingSynthetic = isSyntheticFallbackNickname(existingNormalized)
 
-        return when {
+        val result = when {
             incomingNormalized == null && existingSynthetic -> null
             incomingNormalized == null -> existingNormalized
             incomingSynthetic && existingNormalized == null -> null
@@ -136,6 +139,11 @@ class ContactsViewModel @Inject constructor(
             existingSynthetic -> incomingNormalized
             else -> incomingNormalized
         }
+        // UNIFICATION verbose logging for nickname merge decisions (diagnose ChristyLove -> peer-... revert)
+        if (incomingNormalized != existingNormalized) {
+            Timber.d("UNIFICATION selectAuthoritativeNickname: incoming=${incomingNormalized?.take(16) ?: "null"}${if (incomingSynthetic) " (synthetic)" else ""} existing=${existingNormalized?.take(16) ?: "null"}${if (existingSynthetic) " (synthetic)" else ""} -> result=${result?.take(16) ?: "null"}")
+        }
+        return result
     }
 
     // Identity validation logic centralized in PeerIdValidator
@@ -444,6 +452,7 @@ class ContactsViewModel @Inject constructor(
 
     /**
      * Load all contacts from repository.
+     * UNIFICATION verbose logging for nickname load — diagnose ledger overwrite of ChristyLove.
      */
     fun loadContacts() {
         viewModelScope.launch {
@@ -453,6 +462,15 @@ class ContactsViewModel @Inject constructor(
 
                 val contactList = meshRepository.listContacts()
                 _contacts.value = contactList
+                // UNIFICATION verbose: log nickname state on each load to catch synthetic revert
+                if (contactList.isNotEmpty()) {
+                    Timber.i("UNIFICATION loadContacts: loaded ${contactList.size} contacts")
+                    contactList.take(5).forEach { c ->
+                        Timber.d("UNIFICATION loadContacts entry: peer ${c.peerId.take(16)} nick=${c.nickname?.take(16) ?: "null"} localNick=${c.localNickname?.take(16) ?: "null"} pubKey ${c.publicKey.take(8)}...")
+                    }
+                } else {
+                    Timber.d("UNIFICATION loadContacts: empty")
+                }
 
                 // Drop any nearby entry that is now a saved contact
                 // Use comprehensive identity matching with public key as primary key
@@ -515,11 +533,23 @@ class ContactsViewModel @Inject constructor(
                 // UNIFIED ID FIX: the contact key is always the public-key
                 // identity. The libp2p peer ID remains in notes as routing
                 // metadata and must never become the persisted contact ID.
+                // UNIFICATION: nickname is federated (peer's self-reported name), localNickname is user-defined (e.g. ChristyLove).
+                // Federated nickname must never overwrite localNickname via ledger sync; localNickname is primary display name.
+                // For manual adds, the provided nickname is treated as user-defined localNickname; for discovered peers,
+                // the nickname is federated. Store both authoritatively but prefer localNickname for user input.
                 val canonicalPeerId = trimmedKey.lowercase()
+                val normalizedProvided = normalizeNickname(nickname)?.takeUnless { isSyntheticFallbackNickname(it) }
+                // Distinguish: if this peer was discovered (federated source), treat as nickname; otherwise as localNickname.
+                val isDiscoveredFederated = meshRepository.discoveredPeers.value.values.any {
+                    it.publicKey?.trim()?.equals(trimmedKey, ignoreCase = true) == true && normalizeNickname(it.nickname) == normalizedProvided
+                }
+                val federatedNick = if (isDiscoveredFederated) normalizedProvided else null
+                val userLocalNick = if (!isDiscoveredFederated) normalizedProvided else null
+                Timber.i("UNIFICATION addContact save: canonical $canonicalPeerId pubKey ${trimmedKey.take(8)}... providedNick=${normalizedProvided?.take(16) ?: "null"} federated=${federatedNick?.take(16) ?: "null"} userLocal=${userLocalNick?.take(16) ?: "null"}")
                 val contact = uniffi.api.Contact(
                     peerId = canonicalPeerId,
-                    nickname = nickname,
-                    localNickname = null,
+                    nickname = federatedNick,
+                    localNickname = userLocalNick,
                     publicKey = trimmedKey,
                     addedAt = (System.currentTimeMillis() / 1000).toULong(),
                     lastSeen = null,
@@ -530,6 +560,7 @@ class ContactsViewModel @Inject constructor(
                 )
 
                 meshRepository.addContact(contact)
+                Timber.i("UNIFICATION addContact saved: $canonicalPeerId federated=${federatedNick?.take(16) ?: "null"} local=${userLocalNick?.take(16) ?: "null"}")
 
                 // Update device ID for the contact if we have routing info
                 val discovered = meshRepository.discoveredPeers.value.entries.firstOrNull {
@@ -586,9 +617,12 @@ class ContactsViewModel @Inject constructor(
      * typing before propagating nickname changes to prevent real-time character-by-character
      * propagation that causes crashes.
      */
+    // UNIFICATION: save as localNickname (user-defined) — verbose logging, preserves ChristyLove over peer-... synthetic
     fun setLocalNickname(peerId: String, nickname: String?) {
         // Cancel any pending nickname update for this peer
         pendingNicknameJobs[peerId]?.cancel()
+        val normalized = normalizeNickname(nickname)?.takeUnless { isSyntheticFallbackNickname(it) }
+        Timber.i("UNIFICATION setLocalNickname request: peer ${peerId.take(16)} -> ${normalized?.take(16) ?: "null (clear)"} raw=${nickname?.take(16) ?: "null"}")
 
         // Launch a new debounced update
         pendingNicknameJobs[peerId] = viewModelScope.launch {
@@ -599,7 +633,7 @@ class ContactsViewModel @Inject constructor(
                 meshRepository.setLocalNickname(peerId, nickname)
                 loadContacts()
 
-                Timber.d("Local nickname updated for $peerId (debounced)")
+                Timber.i("UNIFICATION setLocalNickname saved (debounced): $peerId -> ${normalized?.take(16) ?: "null"}")
             } catch (e: kotlinx.coroutines.CancellationException) {
                 // Expected when user continues typing - don't log as error
                 Timber.d("Nickname update cancelled for $peerId (user still typing)")

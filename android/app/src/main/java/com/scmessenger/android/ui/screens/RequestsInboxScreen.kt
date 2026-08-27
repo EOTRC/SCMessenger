@@ -89,12 +89,21 @@ private fun RequestList(
     onNavigateToChat: ((peerId: String) -> Unit)?,
     modifier: Modifier = Modifier
 ) {
+    // FIX(Compose-crash): Add stable key + contentType to prevent MutableVector crash when
+    // request list mutates during accept/reject (peerId is stable identity).
+    val stableRequests = remember(requests) {
+        requests.filter { it.peerId.isNotBlank() }.distinctBy { it.peerId }
+    }
     LazyColumn(
         modifier = modifier,
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        items(requests) { request ->
+        items(
+            items = stableRequests,
+            key = { it.peerId },
+            contentType = { "request" }
+        ) { request ->
             RequestItem(
                 request = request,
                 onAccept = onAccept,

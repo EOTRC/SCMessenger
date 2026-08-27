@@ -1526,6 +1526,9 @@ open class MeshRepository(
             // 3. Wire up CoreDelegate (Rust -> Android Events)
             coreDelegate = object : uniffi.api.CoreDelegate {
                 override fun onPeerDiscovered(peerId: String) {
+                    // UNIFICATION: automatic mesh perfection — every peer discovery is logged with transport + isKnownContact for pairing verification
+                    val discIsKnown = try { isKnownContact(peerId) } catch (_: Exception) { false }
+                    Timber.i("UNIFICATION peer_discovery: peerId=${peerId.take(16)} isKnownContact=$discIsKnown transport=INTERNET (swarm) — promiscuous relay assist for anyone")
                     Timber.d("Core notified discovery: $peerId")
                     refreshAddressesSnapshots()
                     repoScope.launch {
@@ -1638,6 +1641,9 @@ open class MeshRepository(
                     }
                     peerIdentifiedDedupCache[trimmedPeerId] = identifySignature to now
 
+                    // UNIFICATION: verbose mesh perfection — connection event with transport, isKnownContact, listenAddrs
+                    val idIsKnown = try { isKnownContact(peerId) } catch (_: Exception) { false }
+                    Timber.i("UNIFICATION peer_connection: peerId=${peerId.take(16)} isKnownContact=$idIsKnown agent=$agentVersion transports=${listenAddrs.joinToString(",").take(120)} — mesh assist (promiscuous) but messaging gated to contacts")
                     Timber.d("Core notified identified: $peerId (agent: $agentVersion) with ${listenAddrs.size} addresses")
                     refreshAddressesSnapshots()
                     // Record successful transport event for health monitoring
@@ -1792,7 +1798,9 @@ open class MeshRepository(
                                                     PeerIdValidator.normalize(peerId)
                                                 }
 
-                                                Timber.i("Auto-creating contact for newly discovered peer: $peerId -> $canonicalId (extracted key: ${normalizedKey.take(8)}...)")
+                                                // UNIFICATION: discovered peer — promiscuous mesh will relay, but do NOT auto-create contact.
+                                                // Contact is created only on message → friend request → accept, or explicit add.
+                                                Timber.i("UNIFICATION discovered peer (non-contact) $peerId -> $canonicalId key=${normalizedKey.take(8)}... — NOT auto-creating contact (pairing requires message); mesh relay assist enabled")
                                                 repoScope.launch {
                                                     upsertFederatedContact(
                                                         canonicalPeerId = canonicalId,
@@ -1800,7 +1808,7 @@ open class MeshRepository(
                                                         nickname = null,
                                                         libp2pPeerId = peerId,
                                                         listeners = dialCandidates,
-                                                        createIfMissing = true
+                                                        createIfMissing = false
                                                     )
                                                 }
                                             }
@@ -1820,17 +1828,22 @@ open class MeshRepository(
                                 knownPublicKey = transportIdentity?.publicKey
                             )
                             if (transportIdentity != null) {
-                                // Don't auto-create contacts for relay peers - they are infrastructure, not user contacts
+                                // UNIFICATION: promiscuous relay — discovered identity does NOT auto-create contact.
+                                // Only upsert if already a contact (createIfMissing=false); new peers need message → request.
                                 if (!isBootstrapRelayPeer(peerId)) {
+                                    val alreadyKnown = isKnownContact(transportIdentity.canonicalPeerId)
+                                    Timber.i("UNIFICATION discovered identity peer ${transportIdentity.canonicalPeerId} isKnownContact=$alreadyKnown — ${if (alreadyKnown) "updating" else "NOT auto-creating"} (pairing requires message)")
                                     upsertFederatedContact(
                                         canonicalPeerId = transportIdentity.canonicalPeerId,
                                         publicKey = transportIdentity.publicKey,
                                         nickname = transportIdentity.nickname,
                                         libp2pPeerId = peerId,
                                         listeners = dialCandidates,
-                                        createIfMissing = true  // AUTO-CREATE contacts for all discovered peers
+                                        createIfMissing = false
                                     )
-                                    Timber.i("Auto-created/updated contact for peer: ${transportIdentity.canonicalPeerId} (nickname: ${transportIdentity.nickname})")
+                                    if (alreadyKnown) {
+                                        Timber.i("Updated contact for peer: ${transportIdentity.canonicalPeerId} (nickname: ${transportIdentity.nickname})")
+                                    }
                                 } else {
                                     Timber.d("Skipping contact creation for relay peer: $peerId")
                                 }
@@ -1856,6 +1869,9 @@ open class MeshRepository(
                 }
 
                 override fun onPeerDisconnected(peerId: String) {
+                    // UNIFICATION: automatic mesh perfection — every disconnection logged with isKnownContact for pairing iteration
+                    val discIsKnown = try { isKnownContact(peerId) } catch (_: Exception) { false }
+                    Timber.i("UNIFICATION peer_disconnection: peerId=${peerId.take(16)} isKnownContact=$discIsKnown — promiscuous mesh keeps relay ability, UI will mark offline")
                     // P0: Deduplicate disconnect events — libp2p may fire multiple per session
                     val trimmedPeerId = peerId.trim()
                     val now = System.currentTimeMillis()
@@ -2038,40 +2054,20 @@ open class MeshRepository(
                         val isChatEvent = messageKind == "text" || messageKind.isEmpty()
 
                         val existingContact = try { contactManager?.get(canonicalPeerId) } catch (e: Exception) { null }
-                        if (existingContact == null && normalizedSenderKey != null && isChatEvent) {
-                            var routeNotes = if (!routePeerId.isNullOrBlank()) {
-                                appendRoutingHint(notes = null, key = "libp2p_peer_id", value = routePeerId)
-                            } else {
-                                null
-                            }
-                            routeNotes = appendRoutingHint(
-                                notes = routeNotes,
-                                key = "wifi_peer_id",
-                                value = routeWifiPeerId
-                            )
-                            routeNotes = upsertRoutingListeners(
-                                routeNotes,
-                                normalizeOutboundListenerHints(hintedDialCandidates)
-                            )
-                             val autoContact = uniffi.api.Contact(
-                                peerId = canonicalPeerId,
-                                nickname = knownNickname,
-                                localNickname = null,
-                                publicKey = normalizedSenderKey,
-                                addedAt = (System.currentTimeMillis() / 1000).toULong(),
-                                lastSeen = (System.currentTimeMillis() / 1000).toULong(),
-                                notes = routeNotes,
-                                lastKnownDeviceId = verifiedHints?.deviceId,
-                                verifiedAt = null,
-                                isTombstone = false
-                            )
-                            try {
-                                contactManager?.add(autoContact)
-                                Timber.i("Auto-created contact from received message: ${canonicalPeerId.take(8)} key: ${senderPublicKeyHex.take(8)}...")
-                            } catch (e: Exception) {
-                                Timber.w("Auto-create contact failed for ${canonicalPeerId.take(8)}: ${e.message}")
-                            }
-                        } else if (existingContact != null) {
+                        val isKnownForPairing = existingContact != null || isKnownContact(canonicalPeerId)
+                        // UNIFICATION: automatic mesh perfection — promiscuous relay (all nodes assist) but
+                        // only contacts can send. Inbound from non-contacts becomes a friend request
+                        // + conversation (visible via RequestsInbox/history) — not an immediate contact.
+                        Timber.i("UNIFICATION onMessageReceived pairing: sender=$senderId canonical=$canonicalPeerId routePeerId=${routePeerId ?: "null"} messageId=$messageId kind=$messageKind transport=INTERNET isKnownContact=$isKnownForPairing isChatEvent=$isChatEvent publicKey=${normalizedSenderKey?.take(8) ?: "null"}")
+                        if (!isKnownForPairing && normalizedSenderKey != null && isChatEvent) {
+                            Timber.i("UNIFICATION friend_request CREATED: from ${canonicalPeerId.take(16)} (${knownNickname ?: "unknown"}) messageId=$messageId — inbox holds request, history will store conversation; awaiting user accept via RequestsInbox (contact will be created on accept)")
+                            Timber.d("UNIFICATION friend_request detail: senderKey=${normalizedSenderKey.take(8)}... routePeerId=${routePeerId ?: "none"} hintedAddrs=${hintedAddresses.size} isKnownContact=$isKnownForPairing")
+                            // Do NOT auto-create contact — preserve friend-request flow. Routing hints still
+                            // annotated below via annotateIdentityInLedger, so pairing info is retained.
+                        } else if (!isKnownForPairing && isChatEvent) {
+                            Timber.w("UNIFICATION friend_request missing sender key: canonical=$canonicalPeerId messageId=$messageId — cannot create request without key")
+                        }
+                        if (existingContact != null) {
                             try { contactManager?.updateLastSeen(canonicalPeerId) } catch (e: Exception) {
                                 Timber.d("updateLastSeen failed: ${e.message}")
                             }
@@ -4337,19 +4333,37 @@ open class MeshRepository(
         // reinstalls; keeping it as Contact.peerId creates duplicate contacts
         // and makes message lookup depend on the import surface used.
         val canonicalContactId = trimmedKey.lowercase()
+        // UNIFICATION: resolve nicknames authoritatively — real nickname over synthetic/null ledger data.
+        // localNickname is user-defined (primary), nickname is federated (secondary). Both use the same
+        // synthetic-filtering rule: a synthetic "peer-xxxx" must never overwrite a real user name.
+        val incomingNick = normalizeNickname(contact.nickname)
+        val existingNick = normalizeNickname(existingWithKey?.nickname)
+        val resolvedNickname = selectAuthoritativeNickname(incomingNick, existingNick)
+            ?: incomingNick?.takeUnless { isSyntheticFallbackNickname(it) }
+            ?: existingNick?.takeUnless { isSyntheticFallbackNickname(it) }
+        val incomingLocal = normalizeNickname(contact.localNickname)
+        val existingLocal = normalizeNickname(existingWithKey?.localNickname)
+        val resolvedLocalNickname = selectAuthoritativeNickname(incomingLocal, existingLocal)
+            ?: incomingLocal?.takeUnless { isSyntheticFallbackNickname(it) }
+            ?: existingLocal?.takeUnless { isSyntheticFallbackNickname(it) }
+        // UNIFICATION verbose logging for nickname save path
+        if (existingWithKey != null) {
+            Timber.i("UNIFICATION addContact idempotent upsert: peer ${contact.peerId} -> canonical $canonicalContactId existingNick=${existingNick?.take(16) ?: "null"} incomingNick=${incomingNick?.take(16) ?: "null"} resolvedNick=${resolvedNickname?.take(16) ?: "null"} existingLocal=${existingLocal?.take(16) ?: "null"} incomingLocal=${incomingLocal?.take(16) ?: "null"} resolvedLocal=${resolvedLocalNickname?.take(16) ?: "null"}")
+        } else {
+            Timber.i("UNIFICATION addContact new: canonical $canonicalContactId nick=${incomingNick?.take(16) ?: "null"} localNick=${incomingLocal?.take(16) ?: "null"} pubKey ${trimmedKey.take(8)}...")
+        }
         val finalContact = if (existingWithKey != null) {
-            Timber.i("Idempotent contact upsert: peer ${contact.peerId} matches existing contact ${existingWithKey.peerId} by public key")
             uniffi.api.Contact(
                 peerId = canonicalContactId,
-                nickname = contact.nickname ?: existingWithKey.nickname,
-                localNickname = contact.localNickname ?: existingWithKey.localNickname,
+                nickname = resolvedNickname,
+                localNickname = resolvedLocalNickname,
                 publicKey = trimmedKey,
                 addedAt = existingWithKey.addedAt,
                 lastSeen = if (contact.lastSeen != null) {
                     val currentLastSeen = existingWithKey.lastSeen ?: 0u
                     if (contact.lastSeen!! > currentLastSeen) contact.lastSeen else currentLastSeen
                 } else existingWithKey.lastSeen,
-                notes = contact.notes ?: existingWithKey.notes,
+                notes = mergeNotes(existingWithKey.notes, contact.notes) ?: contact.notes ?: existingWithKey.notes,
                 lastKnownDeviceId = contact.lastKnownDeviceId ?: existingWithKey.lastKnownDeviceId,
                 verifiedAt = contact.verifiedAt ?: existingWithKey.verifiedAt,
                 isTombstone = false
@@ -4357,8 +4371,8 @@ open class MeshRepository(
         } else {
             uniffi.api.Contact(
                 peerId = canonicalContactId,
-                nickname = contact.nickname,
-                localNickname = contact.localNickname,
+                nickname = resolvedNickname ?: incomingNick?.takeUnless { isSyntheticFallbackNickname(it) },
+                localNickname = resolvedLocalNickname ?: incomingLocal?.takeUnless { isSyntheticFallbackNickname(it) },
                 publicKey = trimmedKey,
                 addedAt = contact.addedAt,
                 lastSeen = contact.lastSeen,
@@ -4377,7 +4391,7 @@ open class MeshRepository(
             publicKey = finalContact.publicKey,
             nickname = finalContact.nickname
         )
-        Timber.d("Contact added/updated: ${finalContact.peerId}")
+        Timber.i("UNIFICATION addContact saved: peerId $canonicalContactId nickname ${finalContact.nickname?.take(16) ?: "null"} localNickname ${finalContact.localNickname?.take(16) ?: "null"} pubKey ${finalContact.publicKey.take(8)}...")
     }
 
     /**
@@ -4508,7 +4522,17 @@ open class MeshRepository(
     }
 
     fun listContacts(): List<uniffi.api.Contact> {
-        return contactManager?.list() ?: emptyList()
+        val list = contactManager?.list() ?: emptyList()
+        // UNIFICATION verbose logging for nickname load — helps diagnose ChristyLove revert to peer-...
+        if (list.isNotEmpty()) {
+            Timber.i("UNIFICATION listContacts: loaded ${list.size} contacts")
+            list.take(5).forEach { c ->
+                Timber.d("UNIFICATION listContacts entry: peer ${c.peerId.take(16)} nick=${c.nickname?.take(16) ?: "null"} localNick=${c.localNickname?.take(16) ?: "null"} pubKey ${c.publicKey.take(8)}...")
+            }
+        } else {
+            Timber.d("UNIFICATION listContacts: empty")
+        }
+        return list
     }
 
     fun searchContacts(query: String): List<uniffi.api.Contact> {
@@ -4516,6 +4540,8 @@ open class MeshRepository(
     }
 
     fun setContactNickname(peerId: String, nickname: String?) {
+        // UNIFICATION: federated nickname save — verbose logging, synthetic filtering handled by caller
+        Timber.i("UNIFICATION setContactNickname: save peer $peerId -> federated nick ${nickname?.take(16) ?: "null"} (clears if blank)")
         contactManager?.setNickname(peerId, nickname)
         Timber.d("Contact nickname updated: $peerId -> $nickname")
         try {
@@ -4652,20 +4678,31 @@ open class MeshRepository(
      * A message request is from a peer who has sent a message but is not yet a contact.
      * Returns a list of MessageRequest objects with sender info and preview.
      */
+    // UNIFICATION: inbox is the friend-request source — promiscuous relay delivers for anyone,
+    // but only contacts can send; non-contact inbound becomes a request + conversation on accept.
     fun getPendingMessageRequests(): List<uniffi.api.MessageRequest> {
         ensureServiceInitializedFireAndForget()
         return try {
             val contacts = contactManager?.list() ?: emptyList()
             val contactPeerIds = contacts.map { it.peerId }.toSet()
 
-            // Get all messages from inbox to find senders without conversations
-            val inboxMessages = ironCore?.drainReceivedMessages() ?: emptyList()
+            // UNIFICATION: use peek not drain — drain is destructive and loses requests on every poll
+            // (gap audit: repeated calls drained inbox). peek is idempotent for UI polling.
+            val inboxMessages = ironCore?.peekReceivedMessages() ?: emptyList()
+            Timber.i("UNIFICATION getPendingMessageRequests: inbox=${inboxMessages.size} contacts=${contacts.size} (isKnownContact gated)")
 
-            // Get unique peerIds from messages that aren't contacts
+            // Get unique peerIds from messages that aren't contacts — verbose pairing logs
             val requestPeerIds = inboxMessages
                 .map { it.senderId }
-                .filter { it !in contactPeerIds }
+                .filter { it !in contactPeerIds && !isKnownContact(it) }
                 .distinct()
+                .also { ids ->
+                    Timber.i("UNIFICATION friend-request pairing: ${ids.size} pending requests from inbox (peerIds=${ids.joinToString { it.take(12) }})")
+                    ids.forEach { pid ->
+                        val transportHints = try { contactManager?.get(pid)?.notes } catch (_: Exception) { null }
+                        Timber.d("UNIFICATION pairing detail: peer=${pid.take(16)} transportHints=${transportHints?.take(32) ?: "unknown"} isKnownContact=${isKnownContact(pid)}")
+                    }
+                }
 
             // Build MessageRequest objects for each peer
             requestPeerIds.map { peerId ->
@@ -5028,9 +5065,12 @@ open class MeshRepository(
     }
 
     fun setLocalNickname(peerId: String, nickname: String?) {
+        // UNIFICATION: user-defined localNickname save — verbose logging, never overwritten by federated sync
+        val normalizedInput = nickname?.trim()?.takeIf { it.isNotEmpty() }
+        Timber.i("UNIFICATION setLocalNickname: save peer $peerId -> localNick ${normalizedInput?.take(16) ?: "null (clear)"} raw=${nickname?.take(16) ?: "null"}")
         try {
             contactManager?.setLocalNickname(peerId, nickname)
-            Timber.i("Local nickname for $peerId set to: $nickname")
+            Timber.i("UNIFICATION setLocalNickname saved: $peerId -> ${nickname?.take(16) ?: "null"}")
             _discoveredPeers.update { current ->
                 val normalized = peerId.trim()
                 if (current.containsKey(normalized)) {
@@ -5143,6 +5183,18 @@ open class MeshRepository(
                 normalizePublicKey(publicKey) ?: routingPeerId
             } else {
                 routingPeerId
+            }
+
+            // UNIFICATION: contact-gated send — mesh is promiscuous (all nodes relay),
+            // but only contacts may be messaged. Fail fast with clear prompt to add contact.
+            // Verbose log aids Android/Windows/Ubuntu pairing verification (peerId, transport, isKnownContact).
+            val isKnown = isKnownContact(normalizedPeerId) || isKnownContact(routingPeerId) || (contact != null)
+            Timber.i("UNIFICATION sendMessage pairing check: routingPeerId=${routingPeerId.take(16)} normalizedPeerId=${normalizedPeerId.take(16)} publicKey=${publicKey?.take(8) ?: "null"} isKnownContact=$isKnown contactExists=${contact != null}")
+            if (!isKnown) {
+                val errMsg = "Recipient not in contacts — add ${normalizedPeerId.take(12)} as a contact before sending. Promiscuous relay is enabled (all nodes assist), but messaging is contact-only."
+                Timber.w("UNIFICATION sendMessage BLOCKED: $errMsg (peerId=$normalizedPeerId routing=$routingPeerId)")
+                logDeliveryState(messageId = initialMessageId, state = "blocked_not_contact", detail = "recipient_not_contact peer=$normalizedPeerId")
+                throw IllegalStateException(errMsg)
             }
 
             // 1. Save to history IMMEDIATELY.
@@ -6406,10 +6458,13 @@ open class MeshRepository(
                 if (!nickBlank && !nickSynthetic) continue
                 val peerIdTrimmed = contact.peerId.trim()
                 if (peerIdTrimmed.isEmpty()) continue
-                if (!PeerIdValidator.isLibp2pPeerId(peerIdTrimmed)) continue
+                // UNIFICATION: repair synthetic nicknames for BOTH canonical hex (30d0fa) and legacy libp2p (12D3) peerIds.
+                // Previously filtered to libp2p only, leaving canonical hex contacts stuck on peer-... synthetic.
+                // identity split fix: use publicKey matching as primary key to find authoritative ledger nickname.
                 // Do not overwrite if localNickname is already a real (non-synthetic) value:
                 // the contact's displayName will already be correct via displayNames() primary,
                 // but we still repair nickname so ledger authority is not lost. We preserve localNickname.
+                Timber.d("UNIFICATION repairSynthetic check: peer ${peerIdTrimmed.take(16)} nick=${contact.nickname?.take(16) ?: "null"} localNick=${contact.localNickname?.take(16) ?: "null"} pubKey ${contact.publicKey.take(8)}... blank=$nickBlank synthetic=$nickSynthetic")
                 val normalizedContactKey = normalizePublicKey(contact.publicKey)
                 val authoritative = ledgerEntries.asSequence()
                     .filter { entry ->
@@ -7132,6 +7187,8 @@ open class MeshRepository(
         }
     }
 
+    // UNIFICATION: promiscuous relay — every node assists (relay for anyone), but messaging is contact-gated.
+    // This function logs every relay attempt with peerId, transport, isKnownContact for mesh perfection verification.
     private suspend fun attemptDirectSwarmDelivery(
         routePeerCandidates: List<String>,
         listeners: List<String>,
@@ -7144,6 +7201,11 @@ open class MeshRepository(
         recipientIdentityId: String? = null,
         intendedDeviceId: String? = null
     ): DeliveryAttemptResult {
+        try {
+            val relayCandidates = routePeerCandidates.joinToString { it.take(8) }
+            val knownFlags = routePeerCandidates.joinToString { "${it.take(8)}:${isKnownContact(it)}" }
+            Timber.i("UNIFICATION message_relay: ctx=$attemptContext relayAssist=promiscuous (all nodes relay) candidates=[$relayCandidates] isKnown=[$knownFlags] listeners=${listeners.size} msg=${traceMessageId?.take(12)}")
+        } catch (_: Exception) {}
         // AND-DELIVERY-001: Resolve nullable traceMessageId to a non-null value early,
         // so all internal logDeliveryAttempt calls use a real message ID and never emit msg=unknown.
         val traceMessageId = traceMessageId?.takeIf { it.isNotBlank() }
@@ -9006,15 +9068,17 @@ open class MeshRepository(
                 )
             }
 
-            Timber.w("Creating emergency contact for unknown peer: ${normalizedKey.take(8)}...")
-            val emergencyContact = createEmergencyContact(normalizedKey)
-            logIdentityResolutionDetails(normalizedKey, emergencyContact, createdNew = true)
+            // UNIFICATION: automatic mesh perfection — promiscuous discovery (all nodes relay) but
+            // contact-gated messaging. Do NOT auto-create contact for a merely discovered peer;
+            // they become a contact only on inbound message → friend request → accept, or explicit add.
+            Timber.i("UNIFICATION discovered non-contact peer ${normalizedKey.take(8)}... — promiscuous mesh will relay for it, but messaging gated (isKnownContact=false, pairing requires message/request)")
+            logIdentityResolutionDetails(normalizedKey, null, createdNew = false)
 
             return TransportIdentityResolution(
                 canonicalPeerId = normalizedKey,
                 publicKey = normalizedKey,
-                nickname = emergencyContact.nickname?.takeIf { it.isNotBlank() },
-                localNickname = emergencyContact.localNickname?.takeIf { it.isNotBlank() }
+                nickname = null,
+                localNickname = null
             )
         }
 
@@ -9171,8 +9235,14 @@ open class MeshRepository(
             val resolvedPeerId = existing?.peerId ?: normalizedPeerId
             val resolvedPublicKey = existingByKey?.publicKey ?: normalizedKey
             val incomingNickname = normalizeNickname(nickname)
+            // UNIFICATION: federated nickname must never overwrite real user name with synthetic/null stale ledger data.
+            // localNickname is user-defined (primary) and is NEVER overwritten by federated sync.
             val resolvedNickname = selectAuthoritativeNickname(incomingNickname, existing?.nickname)
-            val resolvedLocalNickname = normalizeNickname(existing?.localNickname)
+                ?: incomingNickname?.takeUnless { isSyntheticFallbackNickname(it) }
+                ?: normalizeNickname(existing?.nickname)?.takeUnless { isSyntheticFallbackNickname(it) }
+            val resolvedLocalNickname = normalizeNickname(existing?.localNickname)?.takeUnless { isSyntheticFallbackNickname(it) }
+                ?: normalizeNickname(existing?.localNickname)
+            Timber.i("UNIFICATION upsertFederatedContact: peer $resolvedPeerId pubKey ${resolvedPublicKey.take(8)}... incomingNick=${incomingNickname?.take(16) ?: "null"} existingNick=${existing?.nickname?.take(16) ?: "null"} resolvedNick=${resolvedNickname?.take(16) ?: "null"} existingLocal=${existing?.localNickname?.take(16) ?: "null"} -> resolvedLocal=${resolvedLocalNickname?.take(16) ?: "null"}")
 
             val updated = uniffi.api.Contact(
                 peerId = resolvedPeerId,
@@ -9721,6 +9791,33 @@ open class MeshRepository(
     // isKnownRelay retained for API compat but always returns false (no special relay category).
     fun isKnownRelay(peerId: String): Boolean {
         return false
+    }
+
+    // UNIFICATION: contact-gated messaging + promiscuous relay mesh perfection.
+    // All nodes relay for anyone (isRelay unified), but only contacts may send messages.
+    // This helper is the single source of truth for "is this peer a known contact?"
+    // Used by sendMessage guard and inbound friend-request pairing logic. Verbose logs
+    // aid Android/Windows/Ubuntu pairing verification (peerId, transport, isKnownContact).
+    fun isKnownContact(peerId: String): Boolean {
+        val trimmed = peerId.trim()
+        if (trimmed.isEmpty()) return false
+        return try {
+            // Canonical path: public_key_hex is the stored peerId (addContact canonicalizes to hex)
+            val canonical = canonicalId(trimmed)
+            contactManager?.get(canonical)?.let { return true }
+            // Fallback: libp2p vs hex mismatch — match by publicKey or routing hint
+            val normalizedKey = normalizePublicKey(trimmed)?.lowercase()
+            val contacts = contactManager?.list().orEmpty()
+            contacts.any { c ->
+                normalizePublicKey(c.publicKey)?.lowercase() == normalizedKey ||
+                    c.peerId.equals(trimmed, ignoreCase = true) ||
+                    parseRoutingHints(c.notes).libp2pPeerId.equals(trimmed, ignoreCase = false) ||
+                    normalizePublicKey(c.publicKey)?.equals(trimmed, ignoreCase = true) == true
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "UNIFICATION isKnownContact check failed for ${trimmed.take(16)}")
+            false
+        }
     }
 
     private fun relayCircuitAddressesForPeer(targetPeerId: String): List<String> {

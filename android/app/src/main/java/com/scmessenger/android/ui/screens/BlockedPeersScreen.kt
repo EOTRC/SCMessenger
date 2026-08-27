@@ -64,6 +64,12 @@ fun BlockedPeersScreen(
                 }
             }
         } else {
+            // FIX(Compose-crash): Add stable key + contentType to BlockedPeers LazyColumn.
+            // Although this list is low-churn, missing keys still risk MutableVector corruption
+            // if the user deletes/unblocks while prefetch is in flight; dedup guards duplicates.
+            val stableBlocked = remember(blockedPeers) {
+                blockedPeers.filter { it.peerId.isNotBlank() }.distinctBy { it.peerId }
+            }
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
@@ -71,7 +77,11 @@ fun BlockedPeersScreen(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(blockedPeers) { blocked ->
+                items(
+                    items = stableBlocked,
+                    key = { it.peerId },
+                    contentType = { "blocked_peer" }
+                ) { blocked ->
                     BlockedPeerItem(
                         blocked = blocked,
                         onUnblock = { showUnblockConfirm = blocked }

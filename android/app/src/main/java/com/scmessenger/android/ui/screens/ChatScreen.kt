@@ -267,6 +267,15 @@ fun ChatScreen(
                     }
                 }
                 else -> {
+                    // FIX(Compose-crash): Add stable key + contentType to prevent
+                    // LayoutNode.onChildRemoved NPE / MutableVector.add ArrayIndexOutOfBounds
+                    // during prefetch when chatMessages updates rapidly (receipt events,
+                    // messageEvents). Key is message.id (stable server-assigned); contentType
+                    // distinguishes sent vs received bubbles for correct prefetch slotting.
+                    // Use distinctBy to guard against duplicate ids that corrupt LazyColumn vector.
+                    val stableMessages = remember(chatMessages) {
+                        chatMessages.distinctBy { it.id }
+                    }
                     LazyColumn(
                         state = listState,
                         modifier = Modifier
@@ -276,7 +285,11 @@ fun ChatScreen(
                         contentPadding = PaddingValues(vertical = 16.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(chatMessages) { message ->
+                        items(
+                            items = stableMessages,
+                            key = { it.id },
+                            contentType = { it.direction }
+                        ) { message ->
                             MessageBubble(
                                 message = message,
                                 isMe = message.direction == uniffi.api.MessageDirection.SENT

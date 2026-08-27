@@ -153,10 +153,11 @@ impl ContactManager {
         }
     }
 
-    /// Migration: canonicalize peer_id from libp2p (12D3Koo...) to public_key_hex (64 hex).
+    /// UNIFICATION: canonicalize peer_id from libp2p (12D3Koo...) to public_key_hex (64 hex).
     /// Both hashes refer to same identity (libp2p for routing, hex for crypto) but must not spawn duplicate nodes.
-    /// Verbose log for verification. Re-runnable: checks flag but still scans for remaining libp2p contacts if flag set,
-    /// to catch contacts added as 12D3 after initial migration (e.g., via addContact before canonical fix).
+    /// Verbose log for verification. Re-runnable: scans every startup even if flag set, to catch contacts added
+    /// as 12D3 after initial migration (e.g., via addContact before canonical fix, or ledger entries with old 12D3).
+    /// Also canonicalizes peer_id from `public_key` when peerId is libp2p but public_key is already 30d0fa hex.
     fn migrate_libp2p_peer_ids_to_canonical_hex(&self) {
         let already_migrated = self
             .backend
@@ -169,12 +170,14 @@ impl ContactManager {
         };
         let mut migrated = 0u32;
         let mut deduped = 0u32;
+        let mut normalized_case = 0u32;
         for contact in contacts {
             let peer_id_trimmed = contact.peer_id.trim();
             if peer_id_trimmed.is_empty() {
                 continue;
             }
-            // Determine canonical hex: publicKey if valid, else try derive from libp2p peerId
+            // UNIFICATION: Determine canonical hex: valid publicKey (64-hex) is strongest, else derive from libp2p peerId.
+            // This handles the duplicate where peerId=12D3Koo... and public_key=30d0fa... (both same identity).
             let canonical_hex = if contact.public_key.trim().len() == 64
                 && contact.public_key.chars().all(|c| c.is_ascii_hexdigit())
                 && hex::decode(contact.public_key.trim()).is_ok()
@@ -186,6 +189,24 @@ impl ContactManager {
                 continue;
             };
             if canonical_hex == peer_id_trimmed.to_lowercase() {
+                // UNIFICATION: Already canonical hex but may need case normalization (30D0FA -> 30d0fa)
+                let needs_case_norm = contact.peer_id != canonical_hex
+                    || contact.public_key.trim() != canonical_hex;
+                if needs_case_norm {
+                    let mut norm = contact.clone();
+                    norm.peer_id = canonical_hex.clone();
+                    norm.public_key = canonical_hex.clone();
+                    if self.add(norm).is_ok() && contact.peer_id != canonical_hex {
+                        let _ = self.backend.remove(&contact_key(peer_id_trimmed));
+                    }
+                    normalized_case += 1;
+                    tracing::info!(
+                        event = "contacts_canonical_hex_case_norm",
+                        from = %peer_id_trimmed,
+                        to = %canonical_hex,
+                        "normalized contact case to canonical lower hex"
+                    );
+                }
                 continue;
             }
             // Check if canonical already exists (avoid duplicate)
@@ -239,12 +260,19 @@ impl ContactManager {
             }
         }
         let _ = self.backend.put(b"metadata_contacts_canonical_hex_migrated", b"true");
-        if migrated > 0 || deduped > 0 {
+        if migrated > 0 || deduped > 0 || normalized_case > 0 {
             tracing::info!(
                 event = "contacts_canonical_hex_migration_done",
                 migrated_count = migrated,
                 deduped_count = deduped,
+                normalized_case_count = normalized_case,
+                already_migrated_flag = already_migrated,
                 "contacts canonical hex migration completed"
+            );
+        } else if already_migrated {
+            tracing::debug!(
+                event = "contacts_canonical_hex_migration_skipped",
+                "contacts already canonical — re-runnable check found no libp2p entries"
             );
         }
     }
@@ -315,6 +343,15 @@ impl ContactManager {
     }
 
     pub fn add(&self, contact: Contact) -> Result<(), IronCoreError> {
+        // UNIFICATION verbose logging for nickname save — diagnose ChristyLove revert to peer-... synthetic
+        tracing::info!(
+            event = "contacts_add",
+            peer_id = %contact.peer_id,
+            nickname = ?contact.nickname,
+            local_nickname = ?contact.local_nickname,
+            public_key_prefix = %contact.public_key.chars().take(8).collect::<String>(),
+            "UNIFICATION saving contact nickname"
+        );
         let key = contact_key(&contact.peer_id);
         let value = serde_json::to_vec(&contact).map_err(|_| IronCoreError::Internal)?;
         self.backend
@@ -333,6 +370,7 @@ impl ContactManager {
     }
 
     pub fn get(&self, peer_id: String) -> Result<Option<Contact>, IronCoreError> {
+        // UNIFICATION verbose logging for nickname load
         let key = contact_key(&peer_id);
         if let Some(data) = self
             .backend
@@ -341,6 +379,13 @@ impl ContactManager {
         {
             let contact: Contact =
                 serde_json::from_slice(&data).map_err(|_| IronCoreError::Internal)?;
+            tracing::debug!(
+                event = "contacts_get",
+                peer_id = %peer_id,
+                nickname = ?contact.nickname,
+                local_nickname = ?contact.local_nickname,
+                "UNIFICATION loaded contact nickname"
+            );
             Ok(Some(contact))
         } else {
             // If not found by peer_id, try resolving as identity_id
@@ -432,6 +477,13 @@ impl ContactManager {
         }
 
         contacts.sort_by(|a, b| a.display_name().cmp(b.display_name()));
+        // UNIFICATION verbose logging for nickname list — helps diagnose ledger overwrite of localNickname
+        tracing::debug!(
+            event = "contacts_list",
+            count = contacts.len(),
+            nicknames = ?contacts.iter().map(|c| (c.peer_id.chars().take(8).collect::<String>(), c.nickname.clone(), c.local_nickname.clone())).collect::<Vec<_>>(),
+            "UNIFICATION listed contacts with nicknames"
+        );
         Ok(contacts)
     }
 

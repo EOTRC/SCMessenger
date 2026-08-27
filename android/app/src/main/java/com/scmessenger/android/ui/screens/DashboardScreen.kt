@@ -72,7 +72,8 @@ fun DashboardScreen(
     ) { paddingValues ->
         val peers by dashboardViewModel.peers.collectAsState()
         // UNIFICATION_V2 crash guard: ensure distinct keys for Compose stability (outside LazyColumn scope)
-        // TRANSPORT_UNIFICATION: filtered display list excludes very stale non-contacts; nearbyCount is isOnline only.
+        // UNIFICATION FIX: nearbyCount is discovery-based (BLE/TCP/mDNS direct + isRecent) not ledger history — 2 nearby vs 9 total.
+        // sortedPeers is unified single-list (online first, offline last) via DashboardViewModel.sortPeersForUnifiedView; total is authoritative.
         val sortedPeers = remember(peers) { peers.filter { it.peerId.isNotBlank() }.distinctBy { it.peerId } }
 
         // FIX: Use Column+verticalScroll instead of LazyColumn to avoid Compose MutableVector crash on rapid list updates
@@ -101,7 +102,7 @@ fun DashboardScreen(
                         append(stringResource(R.string.dashboard_stat_nodes_format, fullPeers))
                         if (headlessPeers > 0) append(stringResource(R.string.dashboard_stat_headless_format, headlessPeers))
                     },
-                    // UNIFICATION_V2: nearby accuracy — online/recent only, not all ledger entries
+                    // UNIFICATION FIX: nearby accuracy — discovery-based direct transport (BLE/TCP/LAN) + isOnline, not ledger history. Fixes 9 vs 2.
                     value = "$nearbyCount / ${sortedPeers.size}",
                     icon = Icons.Filled.People,
                     color = MaterialTheme.colorScheme.primary

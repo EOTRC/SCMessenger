@@ -75,12 +75,27 @@ class DashboardViewModel @Inject constructor(
     val unifiedTotalPeersCount: StateFlow<Int> = _peers.map { it.size }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    // FIX: "nearby" must be online+direct transport only — not all ledger entries. 2 nearby vs 9 total.
-    val nearbyPeersCount: StateFlow<Int> = _peers.map { list ->
-        val onlineCount = list.count { it.isOnline }
-        val nearbyCount = list.count { isNearby(it) }
-        if (list.isNotEmpty()) {
-            Timber.d("nearbyPeersCount: ${list.size} total, $onlineCount online, $nearbyCount nearby — peers: ${list.joinToString { "${it.peerId.take(8)}:${it.transport}:${it.isOnline}:${it.lastSeen}" }}")
+    // UNIFICATION FIX: nearby must be discovery-based, not ledger history. Previous _peers-based count inflated to 9 vs 2 actual BLE/mDNS.
+    // _peers includes dialable+seed+deadRecent ledger entries that were counted as nearby if isOnline+direct, even when not currently in BLE/mDNS range.
+    // Correct: nearby = deduplicated discoveredPeers that are isRecent (<5min) + direct transport (BLE, TCP/LAN, WiFi Aware/Direct) only. Ledger history excluded.
+    // Uses combine to log both nearby (discovery-based) vs total (unified _peers) for diagnosis.
+    val nearbyPeersCount: StateFlow<Int> = combine(_peers, meshRepository.discoveredPeers) { peersList, discovered ->
+        val deduped = deduplicateDiscoveredPeers(discovered)
+        val onlineCount = deduped.values.count { isRecent(it.lastSeen) }
+        val nearbyCount = deduped.values.count { isNearbyDiscovered(it) }
+        if (deduped.isNotEmpty() || peersList.isNotEmpty()) {
+            Timber.d("UNIFICATION nearbyPeersCount: ${deduped.size} discovered deduped, $onlineCount online, $nearbyCount nearby(direct) — discovered: ${deduped.values.joinToString { "${it.peerId.take(8)}:${it.transport}:${isRecent(it.lastSeen)}:${it.lastSeen}" }} | totalPeers=${peersList.size} onlinePeers=${peersList.count { it.isOnline }} nearbyDirectInList=${peersList.count { isNearby(it) }}")
+        }
+        if (peersList.isNotEmpty() && deduped.isEmpty()) {
+            Timber.d("UNIFICATION nearbyPeersCount: 0 discovered but ${peersList.size} total ledger — nearby=0 (correct, not ledger history) — ledger peers: ${peersList.joinToString { "${it.peerId.take(8)}:${it.transport}:${it.isOnline}" }}")
+        }
+        // Verbose per-peer nearby diagnosis — helps diagnose why 9 vs 2
+        if (deduped.isNotEmpty()) {
+            deduped.values.forEach { info ->
+                val recent = isRecent(info.lastSeen)
+                val nearby = isNearbyDiscovered(info)
+                Timber.v("UNIFICATION nearby diagnosis: ${info.peerId.take(8)} transport=${info.transport} transports=${info.transports} lastSeen=${info.lastSeen} recent=$recent nearby=$nearby")
+            }
         }
         nearbyCount
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
@@ -194,32 +209,39 @@ class DashboardViewModel @Inject constructor(
                 )
             }.toMutableMap()
 
-            // Enrich/Add with ledger entries — canonicalize: 12D3 (libp2p) and 30d0fa (hex) for same identity must merge
+            // UNIFICATION: Enrich/Add with ledger entries — canonicalize: 12D3 (libp2p) and 30d0fa (hex) for same identity must merge to ONE node.
+            // Robust even when ironCore is null at cold start: canonicalHexForAnyId uses PeerKeyUtils protobuf fallback.
+            // Verbose logs persisted via FileLoggingTree for 2x claude-windows-driver diagnosis.
             ledgerEntries.forEach { entry ->
                 val rawPeerId = entry.peerId ?: return@forEach
+                // UNIFICATION: resolve via route alias AND via publicKey->canonical lookup (both hints)
                 val resolvedPeerId = routeAliasToCanonical[rawPeerId]
                     ?: normalizePublicKey(entry.publicKey)?.let { canonicalByPublicKey[it] }
                     ?: rawPeerId
-                // Canonicalize libp2p -> hex so 12D3KooWD6... and 30d0fa... share one key (both hashes needed but not duplicate nodes)
-                // Use robust helper with PeerKeyUtils fallback for cold-start (ironCore null) + verbose log
+                // UNIFICATION: Canonicalize BOTH rawPeerId and publicKeyHint via same helper — strongest is publicKeyHint.
+                // This ensures ledger entries with peer_id 12D3 + public_key 30d0fa correctly collapse when ironCore null.
                 val peerId = canonicalHexForAnyId(resolvedPeerId, entry.publicKey)
+                    ?: canonicalHexForAnyId(rawPeerId, entry.publicKey)
                     ?: try { meshRepository.canonicalContactIdPublic(resolvedPeerId).takeIf { it.isNotEmpty() } ?: resolvedPeerId } catch (_: Exception) { resolvedPeerId }
-                Timber.d("loadPeers ledger: $rawPeerId -> $peerId (via canonicalHex)")
-                // For lookup, also try canonical variant of existing keys (peerMap is keyed by canonical hex)
+                Timber.d("UNIFICATION loadPeers ledger: raw $rawPeerId (pubKey=${entry.publicKey?.take(8)}) resolved $resolvedPeerId -> canonical $peerId")
+                // UNIFICATION: peerMap is keyed by canonical hex (lowercase). Lookup via canonical variants only.
                 val lookupKey = peerId.trim().lowercase()
-                val existing = peerMap[lookupKey] ?: peerMap[peerId] ?: peerMap[resolvedPeerId] ?: run {
-                    // Last resort: try canonical of rawPeerId
-                    val altKey = canonicalHexForAnyId(rawPeerId, entry.publicKey)?.lowercase()
-                    if (altKey != null) peerMap[altKey] else null
-                }
+                val canonicalRawKey = canonicalHexForAnyId(rawPeerId, entry.publicKey)?.lowercase()
+                val canonicalResolvedKey = canonicalHexForAnyId(resolvedPeerId, entry.publicKey)?.lowercase()
+                val existing = peerMap[lookupKey]
+                    ?: canonicalRawKey?.let { peerMap[it] }
+                    ?: canonicalResolvedKey?.let { peerMap[it] }
+                    ?: peerMap[resolvedPeerId]
+                    ?: peerMap[rawPeerId]
                 if (existing != null) {
+                    Timber.d("UNIFICATION loadPeers ledger MERGE $rawPeerId -> $lookupKey (existing ${existing.peerId.take(8)}... lastSeen ${existing.lastSeen})")
                     val entryLastSeen = entry.lastSeen
                     val existingLastSeen = existing.lastSeen
                     val authoritativeNick = selectAuthoritativeNickname(existing.nickname, entry.nickname)
                         ?: selectAuthoritativeNickname(entry.nickname, existing.nickname)
                         ?: existing.nickname
                     val authoritativeLocal = existing.localNickname
-                    // Update via canonical key to avoid 12D3/30d0fa duplicate
+                    // UNIFICATION: Update via canonical lookupKey to avoid 12D3/30d0fa duplicate node
                     peerMap[lookupKey] = existing.copy(
                         nickname = authoritativeNick,
                         localNickname = authoritativeLocal,
@@ -235,14 +257,27 @@ class DashboardViewModel @Inject constructor(
                             MeshRepository.parseTransportsFromMultiaddrs(listOf(entry.multiaddr)))
                             .distinct()
                     )
-                    // Remove any stale alias key if lookup used alternative
-                    if (lookupKey != peerId && peerMap.containsKey(peerId)) peerMap.remove(peerId)
-                    if (lookupKey != resolvedPeerId && peerMap.containsKey(resolvedPeerId)) peerMap.remove(resolvedPeerId)
+                    // UNIFICATION: Remove any stale alias keys (12D3 vs 30d0fa) to prevent duplicate nodes
+                    if (lookupKey != peerId && peerMap.containsKey(peerId)) {
+                        Timber.d("UNIFICATION loadPeers dedup remove stale peerId key $peerId -> $lookupKey")
+                        peerMap.remove(peerId)
+                    }
+                    if (lookupKey != resolvedPeerId && peerMap.containsKey(resolvedPeerId)) {
+                        Timber.d("UNIFICATION loadPeers dedup remove stale resolved key $resolvedPeerId -> $lookupKey")
+                        peerMap.remove(resolvedPeerId)
+                    }
+                    canonicalRawKey?.let { if (it != lookupKey && peerMap.containsKey(it)) { Timber.d("UNIFICATION dedup remove stale raw canonical $it -> $lookupKey"); peerMap.remove(it) } }
+                    canonicalResolvedKey?.let { if (it != lookupKey && peerMap.containsKey(it)) { Timber.d("UNIFICATION dedup remove stale resolved canonical $it -> $lookupKey"); peerMap.remove(it) } }
+                    if (rawPeerId != lookupKey && peerMap.containsKey(rawPeerId)) {
+                        Timber.d("UNIFICATION dedup remove stale raw $rawPeerId -> $lookupKey")
+                        peerMap.remove(rawPeerId)
+                    }
                 } else {
+                    Timber.d("UNIFICATION loadPeers ledger NEW $rawPeerId -> $lookupKey (peerId $peerId)")
                     // Preserve authoritative nickname: filter synthetic ledger nicknames
                     val ledgerNick = selectAuthoritativeNickname(entry.nickname, null)
                     peerMap[lookupKey] = PeerInfo(
-                        peerId = peerId,
+                        peerId = peerId.lowercase(),
                         nickname = ledgerNick,
                         multiaddr = entry.multiaddr,
                         lastSeen = entry.lastSeen,
@@ -310,7 +345,14 @@ class DashboardViewModel @Inject constructor(
                 Timber.d("loadPeers: no change, skipping emit to avoid recomposition")
             }
 
-            Timber.d("Loaded ${sortedPeerList.size} discovered peers (${sortedPeerList.count { it.isFull }} full, ${sortedPeerList.count { it.isRelay }} relays) — nearby(online)=${sortedPeerList.count { it.isOnline }}")
+            // UNIFICATION FIX: verbose diagnosis for 9 nearby vs 2 actual — log total, online, nearby(direct), and transports
+            val onlineCount = sortedPeerList.count { it.isOnline }
+            val nearbyDirectCount = sortedPeerList.count { isNearby(it) }
+            // Discovery-based nearby (accurate) vs _peers-based naive nearby — diagnose inflation
+            val discoveredDeduped = deduplicateDiscoveredPeers(discoveredSnapshot)
+            val discoveredNearby = discoveredDeduped.values.count { isNearbyDiscovered(it) }
+            Timber.d("UNIFICATION loadPeers: ${sortedPeerList.size} total unified (online=$onlineCount nearbyDirectInList=$nearbyDirectCount discoveredNearby=$discoveredNearby dedupedDiscovered=${discoveredDeduped.size} ledgerEntries=${ledgerEntries.size}) — peers: ${sortedPeerList.joinToString { "${it.peerId.take(8)}:${it.transport}:${it.transports.joinToString("/")}:${it.isOnline}:${it.lastSeen}" }}")
+            Timber.d("Loaded ${sortedPeerList.size} peers (${sortedPeerList.count { it.isFull }} full) — online=$onlineCount nearbyDirectInList=$nearbyDirectCount discoveredNearby=$discoveredNearby (discovery-based nearby is authoritative for Dashboard 'nearby' stat)")
         } catch (e: Exception) {
             Timber.e(e, "Failed to load peers")
         } finally {
@@ -319,33 +361,58 @@ class DashboardViewModel @Inject constructor(
     }
 
     // UNIFICATION: canonical dedup by public_key_hex — 12D3 (libp2p) and 30d0fa (hex) for same identity must merge.
+    // Robust even when ironCore is null at cold start: PeerKeyUtils protobuf fallback is authoritative.
+    // Verbose Timber logs are persisted to file via FileLoggingTree for post-hoc verification.
     private fun canonicalHexForAnyId(rawId: String, publicKeyHint: String?): String? {
-        // Strongest: explicit publicKey field
-        normalizePublicKey(publicKeyHint)?.let { return it }
-        // Try MeshRepository canonical (uses ironCore when available) — verbose log
-        try {
-            val viaRepo = meshRepository.canonicalContactIdPublic(rawId)
-            if (viaRepo.isNotEmpty() && viaRepo != rawId) {
-                Timber.d("canonicalHex: $rawId -> $viaRepo via repo")
-                normalizePublicKey(viaRepo)?.let { return it }
-                if (viaRepo.length == 64) return viaRepo.lowercase()
+        val trimmedRaw = rawId.trim()
+        if (trimmedRaw.isEmpty()) return null
+        // Strongest: explicit publicKey field (already self-certified in MeshRepository read guards)
+        normalizePublicKey(publicKeyHint)?.let {
+            if (trimmedRaw.lowercase() != it.lowercase()) {
+                Timber.d("UNIFICATION canonicalHex: $trimmedRaw + publicKeyHint ${publicKeyHint?.take(8)}... -> $it via hint")
             }
-            // Fallback: manual libp2p -> hex extraction (no ironCore needed, e.g., cold start or degraded)
-            if (com.scmessenger.android.utils.PeerIdValidator.isLibp2pPeerId(rawId)) {
-                com.scmessenger.android.utils.PeerKeyUtils.extractPublicKeyFromPeerId(rawId)?.let { hex ->
-                    normalizePublicKey(hex)?.let {
-                        Timber.d("canonicalHex: $rawId -> $it via PeerKeyUtils fallback")
-                        return it
-                    }
+            return it
+        }
+        // Try MeshRepository canonical (uses ironCore.resolveIdentity when available)
+        var viaRepo: String? = null
+        try {
+            viaRepo = meshRepository.canonicalContactIdPublic(trimmedRaw)
+            if (viaRepo.isNotEmpty() && viaRepo != trimmedRaw) {
+                Timber.d("UNIFICATION canonicalHex: $trimmedRaw -> $viaRepo via repo (ironCore)")
+                normalizePublicKey(viaRepo)?.let { return it }
+                if (viaRepo.length == 64 && viaRepo.all { c -> c in '0'..'9' || c in 'a'..'f' || c in 'A'..'F' }) {
+                    return viaRepo.lowercase()
                 }
             }
-            // If rawId itself is 64-hex public key, use it
-            normalizePublicKey(viaRepo)?.let { return it }
-            if (viaRepo.length == 64) return viaRepo.lowercase()
         } catch (e: Exception) {
-            Timber.w(e, "canonicalHex failed for $rawId")
+            Timber.w(e, "UNIFICATION canonicalHex repo failed for $trimmedRaw")
         }
-        normalizePublicKey(rawId)?.let { return it }
+        // Fallback: manual libp2p -> hex extraction (no ironCore needed, e.g., cold start or degraded)
+        // UNIFICATION: PeerKeyUtils now uses protobuf 00 24 08 01 12 20 extraction matching Rust.
+        if (com.scmessenger.android.utils.PeerIdValidator.isLibp2pPeerId(trimmedRaw)) {
+            com.scmessenger.android.utils.PeerKeyUtils.extractPublicKeyFromPeerId(trimmedRaw)?.let { hex ->
+                normalizePublicKey(hex)?.let {
+                    Timber.d("UNIFICATION canonicalHex: $trimmedRaw -> $it via PeerKeyUtils fallback (cold-start)")
+                    return it
+                }
+            }
+            // Verbose: why fallback failed (helps diagnose stale 12D3 entries that still duplicate)
+            Timber.w("UNIFICATION canonicalHex: PeerKeyUtils failed to extract hex from libp2p $trimmedRaw (viaRepo=${viaRepo?.take(16)})")
+        }
+        // If rawId itself is 64-hex public key, use it (covers already-migrated ledger peer_ids)
+        normalizePublicKey(trimmedRaw)?.let {
+            Timber.d("UNIFICATION canonicalHex: $trimmedRaw is itself 64-hex -> $it")
+            return it
+        }
+        // Last chance: viaRepo may have been 64-hex even though it equaled rawId (already canonical)
+        viaRepo?.let { vr ->
+            normalizePublicKey(vr)?.let {
+                Timber.d("UNIFICATION canonicalHex: $trimmedRaw viaRepo fallback -> $it")
+                return it
+            }
+            if (vr.length == 64) return vr.lowercase()
+        }
+        Timber.d("UNIFICATION canonicalHex: no canonical hex for $trimmedRaw (hint=${publicKeyHint?.take(8)}) viaRepo=${viaRepo?.take(16)}")
         return null
     }
 
@@ -356,24 +423,27 @@ class DashboardViewModel @Inject constructor(
         discovered.values.forEach { info ->
             val rawId = info.peerId.trim()
             if (rawId.isEmpty()) return@forEach
-            // Canonicalize: libp2p 12D3Koo... -> 64-hex public_key, hex stays lowercased — both hashes unified
+            // UNIFICATION: canonicalize via canonicalHexForAnyId for BOTH rawPeerId and publicKey hint
+            // so 12D3Koo (libp2p) and 30d0fa (hex) for same identity merge to one node even at cold start.
             val canonicalByKey = canonicalHexForAnyId(rawId, info.publicKey) ?: rawId.lowercase()
             val mapKey = canonicalByKey.lowercase()
-            val canonicalPeerId = try {
-                meshRepository.canonicalContactIdPublic(rawId).takeIf { it.isNotEmpty() } ?: canonicalByKey
-            } catch (_: Exception) { canonicalByKey }
+            // Use canonicalByKey as authoritative peerId — ensures key == peerId (previous bug: viaRepo
+            // returned raw 12D3 when ironCore null, causing key=30d0fa but peerId=12D3 mismatch and duplicate).
+            val canonicalPeerId = canonicalByKey.lowercase()
             val existing = merged[mapKey]
             if (existing == null) {
-                // Store with canonical peerId (public_key_hex) so UI shows correct hash (30d0fa...), not libp2p
-                merged[mapKey] = info.copy(peerId = canonicalPeerId.lowercase())
+                // UNIFICATION: Store with canonical peerId (public_key_hex) so UI shows 30d0fa..., not libp2p
+                Timber.d("UNIFICATION dedup: NEW $rawId (hint=${info.publicKey?.take(8)}) -> key $mapKey peerId $canonicalPeerId")
+                merged[mapKey] = info.copy(peerId = canonicalPeerId)
             } else {
+                Timber.d("UNIFICATION dedup: MERGE $rawId (hint=${info.publicKey?.take(8)}) into $mapKey (existing ${existing.peerId.take(8)}... + ${info.peerId.take(8)}...)")
                 val authoritativeNick = selectAuthoritativeNickname(existing.nickname, info.nickname)
                     ?: selectAuthoritativeNickname(info.nickname, existing.nickname)
                     ?: existing.nickname
                 val authoritativeLocal = selectAuthoritativeNickname(existing.localNickname, info.localNickname)
                     ?: existing.localNickname ?: info.localNickname
                 merged[mapKey] = existing.copy(
-                    peerId = canonicalPeerId.lowercase(),
+                    peerId = canonicalPeerId,
                     publicKey = existing.publicKey ?: info.publicKey,
                     nickname = authoritativeNick,
                     localNickname = authoritativeLocal,
@@ -391,6 +461,9 @@ class DashboardViewModel @Inject constructor(
                     transports = existing.transports + info.transports
                 )
             }
+        }
+        if (discovered.size != merged.size) {
+            Timber.i("UNIFICATION dedup: ${discovered.size} discovered -> ${merged.size} merged (collapsed ${discovered.size - merged.size} duplicates)")
         }
         return merged
     }
@@ -463,13 +536,32 @@ class DashboardViewModel @Inject constructor(
 
     /**
      * Observe network events for real-time updates — debounced to prevent Compose crash from rapid updates.
+     * FIX(holistic-crash): previous 500ms debounce + tryLock was insufficient when discoveredPeers
+     * updates every 1-2s with lastSeen jitter; multiple refreshData() coroutines raced and
+     * emitted new List instances with same content, triggering LazyColumn MutableVector corruption
+     * via prefetch. Increase debounce to 700ms, use distinctUntilChanged on serialized key (size
+     * + sorted peerIds + lastSeen bucket) to suppress jitter-only emits, and serialize refreshData
+     * via mutex with verbose coalesce logging.
      */
     @OptIn(FlowPreview::class)
     private fun observeNetworkEvents() {
         viewModelScope.launch {
             meshRepository.discoveredPeers
-                .debounce(500)
-                .distinctUntilChanged()
+                .debounce(700)
+                .distinctUntilChanged { old, new ->
+                    // Suppress jitter-only updates: compare stable snapshot string (size + sorted keys + lastSeen/10s bucket)
+                    fun snapshot(map: Map<String, MeshRepository.PeerDiscoveryInfo>): String {
+                        if (map.isEmpty()) return "empty"
+                        return map.entries.sortedBy { it.key }.joinToString("|") { (k, v) ->
+                            // Bucket lastSeen to 10s to avoid per-second jitter
+                            val bucket = (v.lastSeen ?: 0uL) / 10uL
+                            "${k.take(8)}:$bucket:${v.transport}"
+                        }
+                    }
+                    val same = snapshot(old) == snapshot(new)
+                    if (same) Timber.v("observeNetworkEvents: suppressed jitter-only emit (${old.size} peers)")
+                    same
+                }
                 .collect {
                     withContext(Dispatchers.IO) {
                         refreshData()
@@ -537,15 +629,57 @@ class DashboardViewModel @Inject constructor(
 
     /**
      * Check if peer is nearby (very recent, direct transport). Stricter than isRecent for accurate nearby count.
+     * UNIFICATION FIX: Nearby means isOnline + direct transport (BLE, TCP/LAN, WiFi Aware/Direct) only — Internet/Relay excluded.
+     * Previous allowed empty transports to count as nearby; now requires explicit direct transport to prevent ledger inflation.
+     * Note: nearbyPeersCount is now discovery-based (isNearbyDiscovered) to exclude ledger history; this helper remains for _peers-based checks where needed.
      */
     private fun isNearby(peer: PeerInfo): Boolean {
         if (!peer.isOnline) return false
-        // Only direct transports count as nearby, not Internet relay
-        if (peer.transport == "Internet" || peer.transport == MeshRepository.TRANSPORT_RELAY_CIRCUIT) return false
-        // Also check transports set for direct
-        val hasDirect = peer.transports.any { it == "BLE" || it == "TCP/LAN" || it == "WiFi Aware" || it == "WiFi Direct" }
-        if (!hasDirect && peer.transports.isNotEmpty()) return false
-        return true
+        // UNIFICATION: Direct transports only — BLE, TCP/LAN, WiFi Aware, WiFi Direct. Internet and Via shared node are not proximity.
+        val hasDirect = peer.transports.any {
+            it == MeshRepository.TRANSPORT_BLE || it == MeshRepository.TRANSPORT_TCP_LAN || it == MeshRepository.TRANSPORT_WIFI_AWARE || it == MeshRepository.TRANSPORT_WIFI_DIRECT ||
+                it == "BLE" || it == "TCP/LAN" || it == "TCP/mDNS" || it == "WiFi Aware" || it == "WiFi Direct"
+        }
+        if (peer.transports.isNotEmpty()) {
+            if (!hasDirect) {
+                Timber.v("isNearby false: ${peer.peerId.take(8)} no direct transport in ${peer.transports} (primary ${peer.transport})")
+            }
+            return hasDirect
+        }
+        // Fallback when transports empty — check primary transport explicitly (must be direct)
+        val primaryIsDirect = peer.transport == MeshRepository.TRANSPORT_BLE || peer.transport == MeshRepository.TRANSPORT_TCP_LAN || peer.transport == MeshRepository.TRANSPORT_WIFI_AWARE || peer.transport == MeshRepository.TRANSPORT_WIFI_DIRECT ||
+            peer.transport == "BLE" || peer.transport == "TCP/LAN" || peer.transport == "TCP/mDNS" || peer.transport == "WiFi Aware" || peer.transport == "WiFi Direct"
+        if (!primaryIsDirect) {
+            Timber.v("isNearby false: ${peer.peerId.take(8)} primary ${peer.transport} not direct and empty transports")
+        }
+        return primaryIsDirect
+    }
+
+    /**
+     * UNIFICATION: Discovery-based nearby check — used for nearbyPeersCount to exclude ledger history.
+     * Counts only peers currently discovered via direct transport (BLE, TCP/mDNS, WiFi Aware/Direct) and isRecent (<5min).
+     * Ledger entries (dialable+seed+deadRecent) are not counted even if they have direct multiaddrs, because they are not currently nearby via BLE/mDNS.
+     */
+    private fun isNearbyDiscovered(info: MeshRepository.PeerDiscoveryInfo): Boolean {
+        if (!isRecent(info.lastSeen)) return false
+        // Direct transport via enum — BLE, TCP_MDNS (LAN), WiFi Aware/Direct are direct; INTERNET is not
+        val primaryIsDirect = when (info.transport) {
+            com.scmessenger.android.service.TransportType.BLE,
+            com.scmessenger.android.service.TransportType.TCP_MDNS,
+            com.scmessenger.android.service.TransportType.WIFI_AWARE,
+            com.scmessenger.android.service.TransportType.WIFI_DIRECT -> true
+            com.scmessenger.android.service.TransportType.INTERNET -> false
+        }
+        if (primaryIsDirect) return true
+        // Fallback: check transports set for direct (covers merged discovered entries where primary became INTERNET but still has BLE)
+        if (info.transports.isNotEmpty()) {
+            val hasDirect = info.transports.any {
+                it == MeshRepository.TRANSPORT_BLE || it == MeshRepository.TRANSPORT_TCP_LAN || it == MeshRepository.TRANSPORT_WIFI_AWARE || it == MeshRepository.TRANSPORT_WIFI_DIRECT ||
+                    it == "BLE" || it == "TCP/LAN" || it == "TCP/mDNS" || it == "WiFi Aware" || it == "WiFi Direct"
+            }
+            return hasDirect
+        }
+        return false
     }
 
     private fun normalizeNickname(value: String?): String? = value?.trim()?.takeIf { it.isNotEmpty() }

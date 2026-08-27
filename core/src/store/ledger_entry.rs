@@ -734,6 +734,96 @@ impl LedgerManager {
             );
         }
 
+        // UNIFICATION: canonicalize peer_id from libp2p (12D3Koo...) to public_key_hex (64 hex).
+        // Both hashes refer to same identity (libp2p for routing, hex for crypto) but must not spawn duplicate nodes.
+        // Ledger.json still has many entries with peer_id 12D3 and public_key 30d0fa — each must collapse to hex.
+        // Re-runnable, verbose, idempotent — mirrors contacts.rs migration. Covers cold-start where
+        // DashboardViewModel's canonicalHexForAnyId falls back to PeerKeyUtils protobuf extraction.
+        let mut ledger_migrated = 0usize;
+        for entry in &mut entries {
+            let peer_id_raw = match &entry.peer_id {
+                Some(pid) if !pid.trim().is_empty() => pid.trim().to_string(),
+                _ => continue,
+            };
+            // Determine canonical hex: self-certifying public_key wins, else derive from libp2p, else hex normalize
+            let canonical_hex: Option<String> = {
+                // If peer_id itself is 64-hex, canonical is its lowercased form (already hex)
+                if peer_id_raw.len() == 64
+                    && peer_id_raw.chars().all(|c| c.is_ascii_hexdigit())
+                    && hex::decode(peer_id_raw.trim()).is_ok()
+                {
+                    Some(peer_id_raw.trim().to_lowercase())
+                } else if let Some(pk) = &entry.public_key {
+                    let pk_trimmed = pk.trim();
+                    let pk_valid = pk_trimmed.len() == 64
+                        && pk_trimmed.chars().all(|c| c.is_ascii_hexdigit())
+                        && hex::decode(pk_trimmed).is_ok();
+                    if pk_valid && is_self_certifying_binding(&peer_id_raw, pk_trimmed) {
+                        Some(pk_trimmed.to_lowercase())
+                    } else if let Some(derived) = public_key_hex_from_libp2p_peer_id(&peer_id_raw) {
+                        Some(derived.to_lowercase())
+                    } else if pk_valid {
+                        // Fallback: peer_id not libp2p but public_key valid — keep peer_id hex if it is hex, else derived failed
+                        None
+                    } else {
+                        public_key_hex_from_libp2p_peer_id(&peer_id_raw).map(|s| s.to_lowercase())
+                    }
+                } else {
+                    public_key_hex_from_libp2p_peer_id(&peer_id_raw).map(|s| s.to_lowercase())
+                }
+            };
+            if let Some(canonical) = canonical_hex {
+                if canonical != peer_id_raw.trim().to_lowercase() {
+                    tracing::info!(
+                        event = "ledger_canonical_hex_migration",
+                        from = %peer_id_raw,
+                        to = %canonical,
+                        multiaddr = %entry.multiaddr,
+                        "migrated ledger peer_id libp2p -> canonical public_key_hex"
+                    );
+                    entry.peer_id = Some(canonical.clone());
+                    // Ensure public_key is populated/normalized (routing preserved, identity collapsed)
+                    match &entry.public_key {
+                        Some(pk) if pk.trim().to_lowercase() == canonical => {
+                            if *pk != canonical {
+                                entry.public_key = Some(canonical.clone());
+                            }
+                        }
+                        None => {
+                            entry.public_key = Some(canonical.clone());
+                        }
+                        Some(_) => {
+                            // Keep existing if already self-certifying; otherwise poisoned was stripped above
+                            // and we now have canonical from peer_id — leave public_key as canonical if it was None
+                        }
+                    }
+                    ledger_migrated += 1;
+                    changed = true;
+                } else {
+                    // Already canonical — still normalize case for both fields
+                    let normalized_peer = peer_id_raw.trim().to_lowercase();
+                    if entry.peer_id.as_deref() != Some(normalized_peer.as_str()) {
+                        entry.peer_id = Some(normalized_peer);
+                        changed = true;
+                    }
+                    if let Some(pk) = &entry.public_key {
+                        let normalized_pk = pk.trim().to_lowercase();
+                        if normalized_pk != *pk {
+                            entry.public_key = Some(normalized_pk);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if ledger_migrated > 0 {
+            tracing::info!(
+                event = "ledger_canonical_hex_migration_done",
+                migrated_count = ledger_migrated,
+                "ledger peer_id canonical hex migration completed"
+            );
+        }
+
         // Compact input can expand beyond the durable bound when pretty
         // serialized (indentation and escaped characters). Preflight the exact
         // representation before either publishing it in memory or rewriting it.

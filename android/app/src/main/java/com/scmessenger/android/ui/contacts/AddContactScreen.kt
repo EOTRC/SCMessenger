@@ -628,17 +628,21 @@ private fun PeerList(
     inlineErrorMessage: String?,
     onDismissInlineError: () -> Unit
 ) {
+    // FIX(Compose-crash): Add contentType + dedup for prefetch stability; peers list churns via discovery.
+    val stablePeers = remember(peers) {
+        peers.filter { it.peerId.isNotBlank() }.distinctBy { it.peerId }
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         if (hasInlineError && inlineErrorMessage != null) {
-            item(key = "nearby_error") {
+            item(key = "nearby_error", contentType = "error") {
                 ErrorBanner(message = inlineErrorMessage, onDismiss = onDismissInlineError)
             }
         }
-        items(peers, key = { it.peerId }) { peer ->
+        items(stablePeers, key = { it.peerId }, contentType = { "nearby_peer" }) { peer ->
             NearbyPeerCard(peer = peer, onAdd = { onAdd(peer) }, onDismiss = { onDismissPeer(peer) })
         }
     }

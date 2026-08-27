@@ -26,6 +26,7 @@ import com.scmessenger.android.ui.components.StatusIndicator
 import com.scmessenger.android.ui.theme.*
 import com.scmessenger.android.ui.viewmodels.DashboardViewModel
 import com.scmessenger.android.utils.toEpochMillis
+import timber.log.Timber
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -104,9 +105,17 @@ fun PeerListScreen(
                 }
 
                 else -> {
-                    // UNIFICATION_V2: Connected Peers = isOnline only (promiscuous mesh assists, but only contacts can send)
-                    // All nodes are relays, but Connected = recently seen (<5 min) — accurate nearby, not stale ledger
-                    val displayPeers = remember(peers) { peers.filter { it.peerId.isNotBlank() && it.isOnline }.distinctBy { it.peerId } }
+                    // UNIFICATION FIX: Connected Peers = isOnline only — not all ledger entries. Fixes buggy window that showed offline peers as connected.
+                    // isOnline is isRecent (<5min) from DashboardViewModel.loadPeers; direct+Internet both count as connected, but only isOnline shows.
+                    // Preserves single-list unified sort (online first via DashboardViewModel.sortPeersForUnifiedView); displayPeers is filtered view of sorted _peers.
+                    val displayPeers = remember(peers) {
+                        val filtered = peers.filter { it.peerId.isNotBlank() && it.isOnline }.distinctBy { it.peerId }
+                        Timber.d("UNIFICATION PeerListScreen: ${peers.size} total peers, ${filtered.size} connected(isOnline) — total peers: ${peers.joinToString { "${it.peerId.take(8)}:${it.isOnline}:${it.transport}" }} | display: ${filtered.joinToString { "${it.peerId.take(8)}:${it.transport}" }}")
+                        if (peers.size != filtered.size) {
+                            Timber.d("UNIFICATION PeerListScreen: filtered ${peers.size - filtered.size} offline peers (not connected) — connected=${filtered.size} offline=${peers.size - filtered.size}")
+                        }
+                        filtered
+                    }
                     Column(modifier = Modifier.fillMaxSize()) {
                         // Error banner
                         error?.let {

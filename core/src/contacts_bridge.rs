@@ -130,7 +130,16 @@ impl ContactManager {
     }
 
     /// Add a contact to the database
+    // UNIFICATION: verbose logging for nickname save — localNickname is user-defined (e.g. ChristyLove), nickname is federated
     pub fn add(&self, contact: Contact) -> Result<(), crate::IronCoreError> {
+        tracing::info!(
+            event = "contacts_bridge_add",
+            peer_id = %contact.peer_id,
+            nickname = ?contact.nickname,
+            local_nickname = ?contact.local_nickname,
+            public_key_prefix = %contact.public_key.chars().take(8).collect::<String>(),
+            "UNIFICATION saving contact nickname (bridge)"
+        );
         let db = self.db.lock();
         let key = contact.peer_id.as_bytes();
         let value = serde_json::to_vec(&contact)
@@ -145,6 +154,7 @@ impl ContactManager {
     }
 
     /// Get a contact by peer ID
+    // UNIFICATION verbose logging for nickname load
     pub fn get(&self, peer_id: String) -> Result<Option<Contact>, crate::IronCoreError> {
         let db = self.db.lock();
         if let Some(data) = db
@@ -154,6 +164,13 @@ impl ContactManager {
             let contact: Contact = serde_json::from_slice(&data)
                 .context("Failed to deserialize contact")
                 .map_err(|_| crate::IronCoreError::Internal)?;
+            tracing::debug!(
+                event = "contacts_bridge_get",
+                peer_id = %peer_id,
+                nickname = ?contact.nickname,
+                local_nickname = ?contact.local_nickname,
+                "UNIFICATION loaded contact nickname"
+            );
             Ok(Some(contact))
         } else {
             Ok(None)
@@ -169,6 +186,7 @@ impl ContactManager {
     }
 
     /// List all contacts, sorted by display name
+    // UNIFICATION verbose logging for nickname list
     pub fn list(&self) -> Result<Vec<Contact>, crate::IronCoreError> {
         let db = self.db.lock();
         let mut contacts = Vec::new();
@@ -182,6 +200,12 @@ impl ContactManager {
         }
 
         contacts.sort_by(|a, b| a.display_name().cmp(b.display_name()));
+        tracing::debug!(
+            event = "contacts_bridge_list",
+            count = contacts.len(),
+            nicknames = ?contacts.iter().map(|c| (c.peer_id.chars().take(8).collect::<String>(), c.nickname.clone(), c.local_nickname.clone())).collect::<Vec<_>>(),
+            "UNIFICATION listed contacts with nicknames (bridge)"
+        );
         Ok(contacts)
     }
 
@@ -217,11 +241,18 @@ impl ContactManager {
     }
 
     /// Set or update contact federated nickname
+    // UNIFICATION: nickname is federated (peer's self-reported name), not user-defined
     pub fn set_nickname(
         &self,
         peer_id: String,
         nickname: Option<String>,
     ) -> Result<(), crate::IronCoreError> {
+        tracing::info!(
+            event = "contacts_bridge_set_nickname",
+            peer_id = %peer_id,
+            nickname = ?nickname,
+            "UNIFICATION set federated nickname"
+        );
         if let Some(mut contact) = self.get(peer_id.clone())? {
             contact.nickname = nickname
                 .map(|value| value.trim().to_string())
@@ -234,11 +265,18 @@ impl ContactManager {
     }
 
     /// Set or update local nickname override
+    // UNIFICATION: local_nickname is user-defined (e.g. ChristyLove), never overwritten by ledger sync
     pub fn set_local_nickname(
         &self,
         peer_id: String,
         nickname: Option<String>,
     ) -> Result<(), crate::IronCoreError> {
+        tracing::info!(
+            event = "contacts_bridge_set_local_nickname",
+            peer_id = %peer_id,
+            local_nickname = ?nickname,
+            "UNIFICATION set user-defined local nickname"
+        );
         if let Some(mut contact) = self.get(peer_id.clone())? {
             contact.local_nickname = nickname
                 .map(|value| value.trim().to_string())

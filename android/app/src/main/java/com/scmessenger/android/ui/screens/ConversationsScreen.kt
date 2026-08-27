@@ -147,28 +147,53 @@ fun ConversationsScreen(
                     }
                 }
             } else {
-                // Conversation list
+                // FIX(Compose-crash): LazyColumn prefetch crash (LayoutNode.onChildRemoved NPE,
+                // MutableVector.add ArrayIndexOutOfBounds) — add stable key + contentType and
+                // avoid recomputing FFI contact lookup during composition without remember.
+                // Conversations list is grouped by peerId (stable identity) so key is peerId;
+                // contentType isolates ConversationItem from header/footer recomposition.
+                // Deduplicate to prevent duplicate-key MutableVector corruption.
+                val stableConversations = remember(conversations) {
+                    conversations.filter { (peerId, msgs) -> peerId.isNotBlank() && msgs.isNotEmpty() }
+                        .distinctBy { (peerId, _) -> peerId }
+                }
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(conversations) { (peerId, messages) ->
-                        val contact = viewModel.getContactForPeer(peerId)
+                    items(
+                        items = stableConversations,
+                        key = { (peerId, _) -> peerId },
+                        contentType = { "conversation" }
+                    ) { (peerId, messages) ->
+                        // Memoize FFI-backed lookups — previously getContactForPeer() + resolveDeliveryState()
+                        // were called unconditionally on every recomposition inside LazyColumn's item lambda,
+                        // triggering FFI on the UI thread during prefetch and amplifying layout thrash.
+                        val contact = remember(peerId) { viewModel.getContactForPeer(peerId) }
                         val idFallback = peerId.take(8) + "..."
-                        // Dual-nickname: localNickname primary, chosen nickname in parens.
                         val displayName = contact?.displayName(idFallback) ?: idFallback
-                        ConversationItem(
-                            displayName = displayName,
-                            peerId = peerId,
-                            messages = messages,
-                            onNavigateToChat = onNavigateToChat,
-                            onRequestDelete = {
-                                conversationToDelete = peerId to messages
-                                showDeleteDialog = true
-                            },
-                            deliveryState = viewModel.resolveDeliveryState(messages.first())
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
+                        val deliveryState = remember(messages.firstOrNull()?.id) {
+                            messages.firstOrNull()?.let { viewModel.resolveDeliveryState(it) }
+                                ?: DeliveryStatePresentation(
+                                    state = DeliveryStateSurface.PENDING,
+                                    label = DeliveryStateSurface.PENDING.label,
+                                    detail = DeliveryStateSurface.PENDING.detail
+                                )
+                        }
+                        if (messages.isNotEmpty()) {
+                            ConversationItem(
+                                displayName = displayName,
+                                peerId = peerId,
+                                messages = messages,
+                                onNavigateToChat = onNavigateToChat,
+                                onRequestDelete = {
+                                    conversationToDelete = peerId to messages
+                                    showDeleteDialog = true
+                                },
+                                deliveryState = deliveryState
+                            )
+                        }
                     }
                 }
             }
