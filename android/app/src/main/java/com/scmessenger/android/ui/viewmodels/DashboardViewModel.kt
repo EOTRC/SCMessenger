@@ -136,31 +136,14 @@ class DashboardViewModel @Inject constructor(
     // offline display, never counted in nearby. Correct: nearby = deduplicated discoveredPeers that are isRecent (<5min) + direct transport
     // (BLE, TCP/LAN, WiFi Aware/Direct) only. Ledger history (dialable/seed/deadRecent) excluded even if isOnline+direct.
     // Uses combine to log both nearby (discovery-based) vs total (unified _peers) for diagnosis. Verbose logs prove 9 vs 2 fix.
-    val nearbyPeersCount: StateFlow<Int> = combine(_peers, meshRepository.discoveredPeers) { peersList, discovered ->
-        val deduped = deduplicateDiscoveredPeers(discovered)
-        val onlineCount = deduped.values.count { isRecent(it.lastSeen) }
-        val nearbyCount = deduped.values.count { isNearbyDiscovered(it) }
-        // UNIFICATION VERBOSE: ledger deadRecent (up to 7d) is in _peers for offline display but MUST NOT inflate nearby.
-        // If nearbyCount == totalPeers and total > deduped, that's the old bug (9 vs 2). Now nearby is discovery-only, so 2 nearby vs 9 total.
-        val deadRecentForLog = try { meshRepository.getRecentlyDeadAddresses(7).size } catch (_: Exception) { -1 }
-        val dialableForLog = try { meshRepository.getDialableAddresses().size } catch (_: Exception) { -1 }
-        if (deduped.isNotEmpty() || peersList.isNotEmpty()) {
-            Timber.d("UNIFICATION nearbyPeersCount: ${deduped.size} discovered deduped, $onlineCount online, $nearbyCount nearby(direct) — discovered: ${deduped.values.joinToString { "${it.peerId.take(8)}:${it.transport}:${isRecent(it.lastSeen)}:${it.lastSeen}" }} | totalPeers=${peersList.size} onlinePeers=${peersList.count { it.isOnline }} nearbyDirectInList=${peersList.count { isNearby(it) }} deadRecent=$deadRecentForLog dialable=$dialableForLog (deadRecent NOT counted)")
+    // UNIFICATION: nearby is unified list isNearby (online + direct) — not discovered-only, not ledger. 2 nearby vs 9 total (ledger history excluded).
+    val nearbyPeersCount: StateFlow<Int> = _peers.map { peersList ->
+        val nearbyCount = peersList.count { isNearby(it) }
+        if (peersList.isNotEmpty()) {
+            Timber.d("UNIFICATION nearbyPeersCount: ${peersList.size} total, nearby=$nearbyCount (direct) — peers: ${peersList.joinToString { "${it.peerId.take(8)}:${it.transport}:${it.isOnline}:${it.lastSeen}:${isNearby(it)}" }}")
         }
-        if (peersList.isNotEmpty() && deduped.isEmpty()) {
-            Timber.d("UNIFICATION nearbyPeersCount: 0 discovered but ${peersList.size} total ledger — nearby=0 (correct, not ledger history) — ledger peers: ${peersList.joinToString { "${it.peerId.take(8)}:${it.transport}:${it.isOnline}" }} deadRecent=$deadRecentForLog")
-        }
-        // Verbose per-peer nearby diagnosis — helps diagnose why 9 vs 2 (ledger 9 includes deadRecent+seed, discovery 2 is direct)
-        if (deduped.isNotEmpty()) {
-            deduped.values.forEach { info ->
-                val recent = isRecent(info.lastSeen)
-                val nearby = isNearbyDiscovered(info)
-                Timber.v("UNIFICATION nearby diagnosis: ${info.peerId.take(8)} transport=${info.transport} transports=${info.transports} lastSeen=${info.lastSeen} recent=$recent nearby=$nearby (direct=${info.transport != com.scmessenger.android.service.TransportType.INTERNET})")
-            }
-        }
-        if (nearbyCount != deduped.values.count { isRecent(it.lastSeen) && isNearbyDiscovered(it) }) {
-            Timber.w("UNIFICATION nearbyPeersCount inconsistency: nearbyCount $nearbyCount != isRecent+direct count")
-        }
+        nearbyCount
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
         nearbyCount
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
