@@ -78,6 +78,43 @@ fn identity_id_index_key(identity_id: &str) -> Vec<u8> {
     [IDENTITY_ID_INDEX_PREFIX, identity_id.as_bytes()].concat()
 }
 
+// UNIFICATION: normalize nickname — trims whitespace, returns None if empty (mirrors Kotlin normalizeNickname)
+fn normalize_nickname(value: &Option<String>) -> Option<String> {
+    value
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+// UNIFICATION: synthetic fallback detection — "peer-..." placeholder must never overwrite real nickname
+fn is_synthetic_fallback_nickname(value: &Option<String>) -> bool {
+    if let Some(normalized) = normalize_nickname(value) {
+        normalized.to_lowercase().starts_with("peer-")
+    } else {
+        false
+    }
+}
+
+// UNIFICATION: authoritative nickname selection — prefers real over synthetic, mirrors Kotlin/iOS selectAuthoritativeNickname
+fn select_authoritative_nickname(
+    incoming: &Option<String>,
+    existing: &Option<String>,
+) -> Option<String> {
+    let incoming_norm = normalize_nickname(incoming);
+    let existing_norm = normalize_nickname(existing);
+    let incoming_synthetic = is_synthetic_fallback_nickname(&incoming_norm);
+    let existing_synthetic = is_synthetic_fallback_nickname(&existing_norm);
+    match (&incoming_norm, &existing_norm) {
+        _ if incoming_norm.is_none() && existing_synthetic => None,
+        _ if incoming_norm.is_none() => existing_norm,
+        _ if incoming_synthetic && existing_norm.is_none() => None,
+        _ if incoming_synthetic && existing_synthetic => None,
+        _ if incoming_synthetic => existing_norm,
+        _ if existing_synthetic => incoming_norm,
+        _ => incoming_norm,
+    }
+}
+
 #[derive(Clone)]
 pub struct ContactManager {
     backend: Arc<dyn StorageBackend>,
@@ -217,20 +254,155 @@ impl ContactManager {
                 .map(|opt| opt.is_some())
                 .unwrap_or(false);
             if exists {
-                // Merge nicknames into canonical, then remove libp2p duplicate
+                // UNIFICATION: Merge nicknames using authoritative logic — prefer real over synthetic
+                // Previously only copied when canonical None, keeping synthetic "peer-..." when libp2p held real "ChristyLove".
+                // Now use select_authoritative_nickname / is_synthetic_fallback_nickname: if canonical synthetic/None and libp2p real, replace.
                 if let Ok(Some(mut canonical_contact)) = self.get(canonical_hex.clone()) {
                     let mut changed = false;
-                    if canonical_contact.nickname.is_none() && contact.nickname.is_some() {
-                        canonical_contact.nickname = contact.nickname.clone();
+                    let canonical_nick_before = canonical_contact.nickname.clone();
+                    let libp2p_nick = contact.nickname.clone();
+                    let canonical_local_before = canonical_contact.local_nickname.clone();
+                    let libp2p_local = contact.local_nickname.clone();
+
+                    // UNIFICATION: authoritative nickname merge for federated nickname
+                    let authoritative_nick =
+                        select_authoritative_nickname(&contact.nickname, &canonical_contact.nickname);
+                    let canonical_is_synthetic =
+                        is_synthetic_fallback_nickname(&canonical_contact.nickname);
+                    let libp2p_is_synthetic = is_synthetic_fallback_nickname(&contact.nickname);
+                    let should_update_nick = match (&authoritative_nick, &canonical_contact.nickname) {
+                        (Some(auth), Some(curr)) => {
+                            // Only replace if canonical was synthetic/None; preserve real canonical when both real
+                            (is_synthetic_fallback_nickname(&Some(curr.clone()))
+                                || normalize_nickname(&Some(curr.clone())).is_none())
+                                && !is_synthetic_fallback_nickname(&Some(auth.clone()))
+                        }
+                        (Some(_), None) => true,
+                        (None, Some(curr)) if is_synthetic_fallback_nickname(&Some(curr.clone())) => true,
+                        _ => false,
+                    };
+                    // UNIFICATION verbose: log every deduplication nickname decision
+                    if should_update_nick {
+                        tracing::info!(
+                            event = "contacts_canonical_hex_dedup_nickname_merge",
+                            from = %peer_id_trimmed,
+                            to = %canonical_hex,
+                            canonical_nickname_before = ?canonical_nick_before,
+                            libp2p_nickname = ?libp2p_nick,
+                            authoritative_nickname = ?authoritative_nick,
+                            canonical_was_synthetic = canonical_is_synthetic,
+                            libp2p_was_synthetic = libp2p_is_synthetic,
+                            canonical_was_none = canonical_nick_before.is_none(),
+                            "UNIFICATION dedup: merging nickname via selectAuthoritativeNickname"
+                        );
+                        canonical_contact.nickname = authoritative_nick.clone();
                         changed = true;
+                    } else {
+                        tracing::info!(
+                            event = "contacts_canonical_hex_dedup_nickname_keep",
+                            from = %peer_id_trimmed,
+                            to = %canonical_hex,
+                            canonical_nickname = ?canonical_nick_before,
+                            libp2p_nickname = ?libp2p_nick,
+                            authoritative_nickname = ?authoritative_nick,
+                            canonical_was_synthetic = canonical_is_synthetic,
+                            libp2p_was_synthetic = libp2p_is_synthetic,
+                            "UNIFICATION dedup: keeping canonical nickname (no merge needed)"
+                        );
+                        // UNIFICATION: if authoritative is None but canonical synthetic, clear placeholder to None
+                        if authoritative_nick.is_none() && canonical_is_synthetic {
+                            tracing::info!(
+                                event = "contacts_canonical_hex_dedup_nickname_clear_synthetic",
+                                from = %peer_id_trimmed,
+                                to = %canonical_hex,
+                                cleared = ?canonical_nick_before,
+                                "UNIFICATION dedup: clearing synthetic nickname to None"
+                            );
+                            canonical_contact.nickname = None;
+                            changed = true;
+                        }
                     }
-                    if canonical_contact.local_nickname.is_none() && contact.local_nickname.is_some() {
-                        canonical_contact.local_nickname = contact.local_nickname.clone();
+
+                    // UNIFICATION: same authoritative logic for localNickname
+                    let authoritative_local =
+                        select_authoritative_nickname(&contact.local_nickname, &canonical_contact.local_nickname);
+                    let canonical_local_is_synthetic =
+                        is_synthetic_fallback_nickname(&canonical_contact.local_nickname);
+                    let libp2p_local_is_synthetic =
+                        is_synthetic_fallback_nickname(&contact.local_nickname);
+                    let should_update_local = match (&authoritative_local, &canonical_contact.local_nickname) {
+                        (Some(auth), Some(curr)) => {
+                            (is_synthetic_fallback_nickname(&Some(curr.clone()))
+                                || normalize_nickname(&Some(curr.clone())).is_none())
+                                && !is_synthetic_fallback_nickname(&Some(auth.clone()))
+                        }
+                        (Some(_), None) => true,
+                        (None, Some(curr)) if is_synthetic_fallback_nickname(&Some(curr.clone())) => true,
+                        _ => false,
+                    };
+                    if should_update_local {
+                        tracing::info!(
+                            event = "contacts_canonical_hex_dedup_local_nickname_merge",
+                            from = %peer_id_trimmed,
+                            to = %canonical_hex,
+                            canonical_local_before = ?canonical_local_before,
+                            libp2p_local = ?libp2p_local,
+                            authoritative_local = ?authoritative_local,
+                            canonical_was_synthetic = canonical_local_is_synthetic,
+                            libp2p_was_synthetic = libp2p_local_is_synthetic,
+                            "UNIFICATION dedup: merging localNickname via selectAuthoritativeNickname"
+                        );
+                        canonical_contact.local_nickname = authoritative_local.clone();
                         changed = true;
+                    } else {
+                        tracing::info!(
+                            event = "contacts_canonical_hex_dedup_local_nickname_keep",
+                            from = %peer_id_trimmed,
+                            to = %canonical_hex,
+                            canonical_local = ?canonical_local_before,
+                            libp2p_local = ?libp2p_local,
+                            authoritative_local = ?authoritative_local,
+                            "UNIFICATION dedup: keeping canonical localNickname"
+                        );
+                        if authoritative_local.is_none() && canonical_local_is_synthetic {
+                            tracing::info!(
+                                event = "contacts_canonical_hex_dedup_local_nickname_clear_synthetic",
+                                from = %peer_id_trimmed,
+                                to = %canonical_hex,
+                                cleared = ?canonical_local_before,
+                                "UNIFICATION dedup: clearing synthetic localNickname to None"
+                            );
+                            canonical_contact.local_nickname = None;
+                            changed = true;
+                        }
                     }
+
                     if changed {
-                        let _ = self.add(canonical_contact);
+                        let _ = self.add(canonical_contact.clone());
+                        tracing::info!(
+                            event = "contacts_canonical_hex_dedup_updated_canonical",
+                            peer_id = %canonical_hex,
+                            nickname = ?canonical_contact.nickname,
+                            local_nickname = ?canonical_contact.local_nickname,
+                            "UNIFICATION dedup: updated canonical contact with authoritative nicknames"
+                        );
+                    } else {
+                        tracing::info!(
+                            event = "contacts_canonical_hex_dedup_no_change",
+                            from = %peer_id_trimmed,
+                            to = %canonical_hex,
+                            canonical_nickname = ?canonical_nick_before,
+                            canonical_local = ?canonical_local_before,
+                            "UNIFICATION dedup: no nickname changes needed"
+                        );
                     }
+                } else {
+                    tracing::warn!(
+                        event = "contacts_canonical_hex_dedup_missing_canonical",
+                        from = %peer_id_trimmed,
+                        to = %canonical_hex,
+                        "UNIFICATION dedup: canonical contact missing despite exists flag"
+                    );
                 }
                 let _ = self.backend.remove(&contact_key(peer_id_trimmed));
                 deduped += 1;
@@ -1028,6 +1200,145 @@ mod tests {
         assert_eq!(
             migrated2, 0,
             "second migration should be idempotent (no-op)"
+        );
+    }
+
+    // UNIFICATION: dedup must prefer real nickname over synthetic "peer-..." placeholder
+    #[test]
+    fn test_canonical_hex_dedup_preserves_real_over_synthetic() {
+        use crate::identity::IdentityKeys;
+        let backend = Arc::new(MemoryStorage::new());
+        let keys = IdentityKeys::generate();
+        let pubkey_hex = hex::encode(keys.signing_key.verifying_key().to_bytes()).to_lowercase();
+        let mut libp2p_bytes = vec![0x00, 0x24, 0x08, 0x01, 0x12, 0x20];
+        libp2p_bytes.extend_from_slice(&keys.signing_key.verifying_key().to_bytes());
+        let libp2p_peer_id = bs58::encode(&libp2p_bytes).into_string();
+
+        let synthetic = Contact {
+            peer_id: pubkey_hex.clone(),
+            nickname: Some("peer-30d0fa67".to_string()),
+            local_nickname: Some("peer-abcd".to_string()),
+            public_key: pubkey_hex.clone(),
+            added_at: 0,
+            last_seen: None,
+            notes: None,
+            last_known_device_id: None,
+        };
+        let real = Contact {
+            peer_id: libp2p_peer_id.clone(),
+            nickname: Some("ChristyLove".to_string()),
+            local_nickname: Some("MyChristy".to_string()),
+            public_key: pubkey_hex.clone(),
+            added_at: 0,
+            last_seen: None,
+            notes: None,
+            last_known_device_id: None,
+        };
+        backend
+            .put(&contact_key(&pubkey_hex), &serde_json::to_vec(&synthetic).unwrap())
+            .unwrap();
+        backend
+            .put(&contact_key(&libp2p_peer_id), &serde_json::to_vec(&real).unwrap())
+            .unwrap();
+        let mgr = ContactManager::new(backend.clone());
+        let result = mgr.get(pubkey_hex.clone()).unwrap().unwrap();
+        assert_eq!(
+            result.nickname.as_deref(),
+            Some("ChristyLove"),
+            "UNIFICATION dedup should replace synthetic with real nickname"
+        );
+        assert_eq!(
+            result.local_nickname.as_deref(),
+            Some("MyChristy"),
+            "UNIFICATION dedup should replace synthetic localNickname with real"
+        );
+        assert!(
+            backend.get(&contact_key(&libp2p_peer_id)).unwrap().is_none(),
+            "libp2p duplicate should be removed"
+        );
+        assert_eq!(mgr.count(), 1);
+    }
+
+    #[test]
+    fn test_canonical_hex_dedup_keeps_real_when_libp2p_synthetic() {
+        use crate::identity::IdentityKeys;
+        let backend = Arc::new(MemoryStorage::new());
+        let keys = IdentityKeys::generate();
+        let pubkey_hex = hex::encode(keys.signing_key.verifying_key().to_bytes()).to_lowercase();
+        let mut libp2p_bytes = vec![0x00, 0x24, 0x08, 0x01, 0x12, 0x20];
+        libp2p_bytes.extend_from_slice(&keys.signing_key.verifying_key().to_bytes());
+        let libp2p_peer_id = bs58::encode(&libp2p_bytes).into_string();
+
+        let real = Contact {
+            peer_id: pubkey_hex.clone(),
+            nickname: Some("ChristyLove".to_string()),
+            local_nickname: Some("MyChristy".to_string()),
+            public_key: pubkey_hex.clone(),
+            added_at: 0,
+            last_seen: None,
+            notes: None,
+            last_known_device_id: None,
+        };
+        let synthetic = Contact {
+            peer_id: libp2p_peer_id.clone(),
+            nickname: Some("peer-abcdef".to_string()),
+            local_nickname: Some("peer-123456".to_string()),
+            public_key: pubkey_hex.clone(),
+            added_at: 0,
+            last_seen: None,
+            notes: None,
+            last_known_device_id: None,
+        };
+        backend
+            .put(&contact_key(&pubkey_hex), &serde_json::to_vec(&real).unwrap())
+            .unwrap();
+        backend
+            .put(&contact_key(&libp2p_peer_id), &serde_json::to_vec(&synthetic).unwrap())
+            .unwrap();
+        let mgr = ContactManager::new(backend.clone());
+        let result = mgr.get(pubkey_hex.clone()).unwrap().unwrap();
+        assert_eq!(
+            result.nickname.as_deref(),
+            Some("ChristyLove"),
+            "should keep canonical real when libp2p synthetic"
+        );
+        assert_eq!(
+            result.local_nickname.as_deref(),
+            Some("MyChristy"),
+            "should keep canonical real localNickname"
+        );
+        assert_eq!(mgr.count(), 1);
+    }
+
+    #[test]
+    fn test_is_synthetic_and_authoritative_helpers() {
+        // UNIFICATION helpers unit test
+        assert!(is_synthetic_fallback_nickname(&Some("peer-123".to_string())));
+        assert!(is_synthetic_fallback_nickname(&Some("PEER-abc".to_string())));
+        assert!(is_synthetic_fallback_nickname(&Some(" peer-xyz ".to_string())));
+        assert!(!is_synthetic_fallback_nickname(&Some("ChristyLove".to_string())));
+        assert!(!is_synthetic_fallback_nickname(&None));
+        assert!(!is_synthetic_fallback_nickname(&Some("".to_string())));
+        assert_eq!(
+            select_authoritative_nickname(
+                &Some("ChristyLove".to_string()),
+                &Some("peer-30d0fa".to_string())
+            )
+            .as_deref(),
+            Some("ChristyLove")
+        );
+        assert_eq!(
+            select_authoritative_nickname(&Some("peer-abc".to_string()), &Some("ChristyLove".to_string()))
+                .as_deref(),
+            Some("ChristyLove")
+        );
+        assert_eq!(
+            select_authoritative_nickname(&None, &Some("peer-abc".to_string())),
+            None
+        );
+        assert_eq!(
+            select_authoritative_nickname(&Some("peer-abc".to_string()), &Some("peer-xyz".to_string())),
+            None
         );
     }
 }

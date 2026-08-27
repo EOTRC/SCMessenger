@@ -5154,7 +5154,7 @@ open class MeshRepository(
             }
 
             // Fallback: Try contact manager
-            val contact = contactManager?.get(routingPeerId)
+            var contact = contactManager?.get(routingPeerId)
             if (publicKey == null && contact != null && !contact.publicKey.isNullOrEmpty()) {
                 publicKey = contact.publicKey.trim()
 
@@ -5218,22 +5218,148 @@ open class MeshRepository(
             }
 
             // Use public key as canonical peer ID for history storage
-            val normalizedPeerId = if (publicKey != null) {
+            var normalizedPeerId = if (publicKey != null) {
                 normalizePublicKey(publicKey) ?: routingPeerId
             } else {
                 routingPeerId
             }
 
-            // UNIFICATION: contact-gated send — mesh is promiscuous (all nodes relay),
-            // but only contacts may be messaged. Fail fast with clear prompt to add contact.
-            // Verbose log aids Android/Windows/Ubuntu pairing verification (peerId, transport, isKnownContact).
-            val isKnown = isKnownContact(normalizedPeerId) || isKnownContact(routingPeerId) || (contact != null)
+            // UNIFICATION: mesh node click auto-add — promiscuous relay (all nodes assist) but messaging needs a contact.
+            // When a mesh node is clicked (Dashboard peer list / mesh map) and the user tries to message, the peer's
+            // nickname is already known via PeerDiscoveryInfo (identity beacon) or ledger. Instead of blocking with
+            // "not in contacts", auto-create the contact using that imported nickname (non-synthetic) and proceed.
+            // Verbose logs aid Android/Windows/Ubuntu pairing verification (peerId, transport, isKnownContact, auto-add).
+            var isKnown = isKnownContact(normalizedPeerId) || isKnownContact(routingPeerId) || (contact != null)
             Timber.i("UNIFICATION sendMessage pairing check: routingPeerId=${routingPeerId.take(16)} normalizedPeerId=${normalizedPeerId.take(16)} publicKey=${publicKey?.take(8) ?: "null"} isKnownContact=$isKnown contactExists=${contact != null}")
             if (!isKnown) {
-                val errMsg = "Recipient not in contacts — add ${normalizedPeerId.take(12)} as a contact before sending. Promiscuous relay is enabled (all nodes assist), but messaging is contact-only."
-                Timber.w("UNIFICATION sendMessage BLOCKED: $errMsg (peerId=$normalizedPeerId routing=$routingPeerId)")
-                logDeliveryState(messageId = initialMessageId, state = "blocked_not_contact", detail = "recipient_not_contact peer=$normalizedPeerId")
-                throw IllegalStateException(errMsg)
+                Timber.i("UNIFICATION sendMessage auto-add: peer $normalizedPeerId not in contacts — attempting auto-add from discoveredPeers/ledger (mesh node click flow) routingPeerId=${routingPeerId.take(16)} publicKey=${publicKey?.take(8) ?: "null"}")
+                var autoPublicKey = publicKey
+                var autoPeerId = normalizedPeerId
+                // Primary source: discoveredPeers (mesh discovery / identity beacon). Match by routingPeerId, normalizedPeerId, or libp2pPeerId.
+                val discoveredMatch = _discoveredPeers.value.entries.firstOrNull { (key, info) ->
+                    PeerIdValidator.isSame(key, routingPeerId) ||
+                        PeerIdValidator.isSame(key, normalizedPeerId) ||
+                        PeerIdValidator.isSame(info.peerId, routingPeerId) ||
+                        PeerIdValidator.isSame(info.peerId, normalizedPeerId) ||
+                        (info.libp2pPeerId != null && PeerIdValidator.isSame(info.libp2pPeerId, routingPeerId)) ||
+                        (info.libp2pPeerId != null && PeerIdValidator.isSame(info.libp2pPeerId, normalizedPeerId)) ||
+                        (autoPublicKey != null && info.publicKey != null && normalizePublicKey(info.publicKey)?.equals(normalizePublicKey(autoPublicKey), ignoreCase = true) == true)
+                }?.value
+                if (autoPublicKey == null) {
+                    val discKey = discoveredMatch?.publicKey?.trim()?.takeIf { it.length == 64 }?.let { normalizePublicKey(it) }
+                    if (discKey != null) {
+                        autoPublicKey = discKey
+                        Timber.i("UNIFICATION sendMessage auto-add: resolved publicKey from discoveredPeers: ${autoPublicKey?.take(8)} for peer $routingPeerId (discoveredMatch peerId=${discoveredMatch?.peerId?.take(16)})")
+                    }
+                    if (autoPublicKey == null) {
+                        val ledgerKey = getAllLedgerEntries().firstOrNull { entry ->
+                            PeerIdValidator.isSame(entry.peerId, routingPeerId) ||
+                                PeerIdValidator.isSame(entry.peerId, normalizedPeerId) ||
+                                (entry.publicKey != null && normalizePublicKey(entry.publicKey) != null && PeerIdValidator.isSame(entry.publicKey, routingPeerId))
+                        }?.publicKey?.trim()?.takeIf { it.length == 64 }?.let { normalizePublicKey(it) }
+                        if (ledgerKey != null) {
+                            autoPublicKey = ledgerKey
+                            Timber.i("UNIFICATION sendMessage auto-add: resolved publicKey from ledger: ${autoPublicKey?.take(8)}")
+                        }
+                    }
+                    if (autoPublicKey == null && PeerIdValidator.isLibp2pPeerId(routingPeerId)) {
+                        try {
+                            val extracted = ironCore?.extractPublicKeyFromPeerId(routingPeerId)?.let { normalizePublicKey(it) }
+                            if (extracted != null) {
+                                autoPublicKey = extracted
+                                Timber.i("UNIFICATION sendMessage auto-add: extracted publicKey from libp2p peerId: ${autoPublicKey?.take(8)}")
+                            }
+                        } catch (_: Exception) {}
+                    }
+                    if (autoPublicKey == null) {
+                        val normalizedAsKey = normalizePublicKey(normalizedPeerId)
+                        if (normalizedAsKey != null) {
+                            autoPublicKey = normalizedAsKey
+                            Timber.i("UNIFICATION sendMessage auto-add: using normalizedPeerId as publicKey: ${autoPublicKey?.take(8)}")
+                        }
+                    }
+                }
+                if (autoPublicKey != null) {
+                    autoPeerId = normalizePublicKey(autoPublicKey) ?: autoPeerId
+                }
+                // Resolve nickname authoritatively from discoveredPeers/ledger (never synthetic peer-...).
+                var autoNickname: String? = null
+                try {
+                    autoNickname = resolveKnownPeerNickname(autoPeerId, routingPeerId, autoPublicKey)
+                    Timber.i("UNIFICATION sendMessage auto-add: resolved nickname via resolveKnownPeerNickname: ${autoNickname?.take(16) ?: "null"} (discoveredNick=${discoveredMatch?.nickname?.take(16) ?: "null"} localNick=${discoveredMatch?.localNickname?.take(16) ?: "null"}) for peer $autoPeerId")
+                } catch (e: Exception) {
+                    Timber.w(e, "UNIFICATION sendMessage auto-add: resolveKnownPeerNickname failed for $autoPeerId")
+                }
+                if (autoNickname.isNullOrBlank() || isSyntheticFallbackNickname(autoNickname)) {
+                    val directNick = discoveredMatch?.let {
+                        normalizeNickname(it.localNickname)?.takeUnless { v -> isSyntheticFallbackNickname(v) }
+                            ?: normalizeNickname(it.nickname)?.takeUnless { v -> isSyntheticFallbackNickname(v) }
+                    }
+                    if (!directNick.isNullOrBlank() && !isSyntheticFallbackNickname(directNick)) {
+                        autoNickname = directNick
+                        Timber.i("UNIFICATION sendMessage auto-add: using direct discovered nickname: $directNick for peer $autoPeerId")
+                    }
+                }
+                if (autoNickname.isNullOrBlank() || isSyntheticFallbackNickname(autoNickname)) {
+                    val ledgerNick = getAllLedgerEntries().asSequence()
+                        .filter { e ->
+                            PeerIdValidator.isSame(e.peerId, routingPeerId) || PeerIdValidator.isSame(e.peerId, autoPeerId) ||
+                                (autoPublicKey != null && e.publicKey != null && normalizePublicKey(e.publicKey)?.equals(autoPublicKey, ignoreCase = true) == true)
+                        }
+                        .mapNotNull { normalizeNickname(it.nickname)?.takeUnless { v -> isSyntheticFallbackNickname(v) } }
+                        .firstOrNull()
+                    if (ledgerNick != null) {
+                        autoNickname = selectAuthoritativeNickname(autoNickname, ledgerNick) ?: ledgerNick
+                        Timber.i("UNIFICATION sendMessage auto-add: using ledger nickname: $ledgerNick for peer $autoPeerId")
+                    }
+                }
+                val normalizedAutoKey = normalizePublicKey(autoPublicKey)
+                if (normalizedAutoKey != null && normalizedAutoKey.length == 64) {
+                    publicKey = normalizedAutoKey
+                    val canonicalPeerId = normalizedAutoKey.lowercase()
+                    try {
+                        val nowSec = (System.currentTimeMillis() / 1000).toULong()
+                        val nicknameForContact = autoNickname?.trim()?.takeIf { it.isNotEmpty() }?.takeUnless { isSyntheticFallbackNickname(it) }
+                        Timber.i("UNIFICATION sendMessage auto-add: creating contact canonical=$canonicalPeerId nickname=${nicknameForContact?.take(16) ?: "null"} pubKey=${normalizedAutoKey.take(8)}... (from discoveredPeers/ledger, synthetic filtered) discoveredMatch=${discoveredMatch?.peerId?.take(16) ?: "null"}")
+                        val contactToAdd = uniffi.api.Contact(
+                            peerId = canonicalPeerId,
+                            nickname = nicknameForContact,
+                            localNickname = null,
+                            publicKey = normalizedAutoKey,
+                            addedAt = nowSec,
+                            lastSeen = nowSec,
+                            notes = null,
+                            lastKnownDeviceId = null,
+                            verifiedAt = null,
+                            isTombstone = false
+                        )
+                        addContact(contactToAdd)
+                        contact = contactManager?.get(canonicalPeerId) ?: contactManager?.get(autoPeerId) ?: contact
+                        isKnown = isKnownContact(canonicalPeerId) || isKnownContact(autoPeerId) || isKnownContact(routingPeerId) || (contact != null)
+                        val displayAfterAdd = contact?.let { it.localNickname?.takeIf { v -> v.isNotBlank() } ?: it.nickname?.takeIf { v -> v.isNotBlank() } } ?: nicknameForContact ?: canonicalPeerId.take(12)
+                        Timber.i("UNIFICATION sendMessage auto-add: SUCCESS auto-added contact $canonicalPeerId displayName=$displayAfterAdd isKnownContact now=$isKnown")
+                        val correctedNormalized = normalizePublicKey(publicKey) ?: normalizedPeerId
+                        if (correctedNormalized != normalizedPeerId) {
+                            Timber.i("UNIFICATION sendMessage auto-add: correcting normalizedPeerId $normalizedPeerId -> $correctedNormalized for history")
+                            normalizedPeerId = correctedNormalized
+                        }
+                    } catch (e: Exception) {
+                        Timber.e(e, "UNIFICATION sendMessage auto-add: FAILED to auto-add contact for $autoPeerId")
+                    }
+                } else {
+                    Timber.w("UNIFICATION sendMessage auto-add: cannot auto-add — no valid publicKey (autoPublicKey=${autoPublicKey?.take(8) ?: "null"} normalizedPeerId=$normalizedPeerId routing=$routingPeerId)")
+                }
+                if (!isKnown) {
+                    val stillKnown = isKnownContact(normalizedPeerId) || isKnownContact(routingPeerId) || (contact != null)
+                    if (!stillKnown) {
+                        val errMsg = "Recipient not in contacts — add ${normalizedPeerId.take(12)} as a contact before sending. Promiscuous relay is enabled (all nodes assist), but messaging is contact-only."
+                        Timber.w("UNIFICATION sendMessage BLOCKED after auto-add attempt: $errMsg (peerId=$normalizedPeerId routing=$routingPeerId)")
+                        logDeliveryState(messageId = initialMessageId, state = "blocked_not_contact", detail = "recipient_not_contact peer=$normalizedPeerId auto_add_failed")
+                        throw IllegalStateException(errMsg)
+                    } else {
+                        isKnown = stillKnown
+                    }
+                }
             }
 
             // 1. Save to history IMMEDIATELY.
