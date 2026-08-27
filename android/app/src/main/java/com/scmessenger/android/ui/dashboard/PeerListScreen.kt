@@ -104,8 +104,9 @@ fun PeerListScreen(
                 }
 
                 else -> {
-                    // UNIFICATION_V2 crash guard outside LazyColumn scope
-                    val displayPeers = remember(peers) { peers.filter { it.peerId.isNotBlank() }.distinctBy { it.peerId } }
+                    // UNIFICATION_V2: Connected Peers = isOnline only (promiscuous mesh assists, but only contacts can send)
+                    // All nodes are relays, but Connected = recently seen (<5 min) — accurate nearby, not stale ledger
+                    val displayPeers = remember(peers) { peers.filter { it.peerId.isNotBlank() && it.isOnline }.distinctBy { it.peerId } }
                     Column(modifier = Modifier.fillMaxSize()) {
                         // Error banner
                         error?.let {
