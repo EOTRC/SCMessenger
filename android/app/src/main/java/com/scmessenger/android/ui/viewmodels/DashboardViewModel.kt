@@ -144,8 +144,6 @@ class DashboardViewModel @Inject constructor(
         }
         nearbyCount
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
-        nearbyCount
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
     // Loading state
     private val _isLoading = MutableStateFlow(false)
