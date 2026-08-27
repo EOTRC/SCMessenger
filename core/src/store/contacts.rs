@@ -153,18 +153,16 @@ impl ContactManager {
         }
     }
 
-    /// One-time migration: canonicalize peer_id from libp2p (12D3Koo...) to public_key_hex (64 hex).
+    /// Migration: canonicalize peer_id from libp2p (12D3Koo...) to public_key_hex (64 hex).
     /// Both hashes refer to same identity (libp2p for routing, hex for crypto) but must not spawn duplicate nodes.
-    /// Verbose log for verification. Idempotent via metadata_contacts_canonical_hex_migrated flag.
+    /// Verbose log for verification. Re-runnable: checks flag but still scans for remaining libp2p contacts if flag set,
+    /// to catch contacts added as 12D3 after initial migration (e.g., via addContact before canonical fix).
     fn migrate_libp2p_peer_ids_to_canonical_hex(&self) {
-        if self
+        let already_migrated = self
             .backend
             .get(b"metadata_contacts_canonical_hex_migrated")
             .map(|opt| opt.is_some())
-            .unwrap_or(false)
-        {
-            return;
-        }
+            .unwrap_or(false);
         let Ok(contacts) = self.list() else {
             let _ = self.backend.put(b"metadata_contacts_canonical_hex_migrated", b"true");
             return;
