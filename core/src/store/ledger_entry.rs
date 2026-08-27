@@ -323,6 +323,40 @@ pub fn is_self_certifying_binding(peer_id: &str, public_key_hex: &str) -> bool {
     peer_id_from_public_key_hex(public_key_hex).is_some_and(|derived| derived == peer_id)
 }
 
+// UNIFICATION: live canonicalization helper — mirrors load() migration 747-817.
+// Converts libp2p 12D3 peer_id to canonical 30d0fa public_key_hex on every write,
+// preventing duplicate nodes where ledger.json already collapsed to hex.
+fn canonical_ledger_peer_id(peer_id: &str, public_key: Option<&str>) -> Option<String> {
+    let trimmed = peer_id.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Already canonical hex — normalize case
+    if trimmed.len() == 64
+        && trimmed.chars().all(|c| c.is_ascii_hexdigit())
+        && hex::decode(trimmed).is_ok()
+    {
+        return Some(trimmed.to_lowercase());
+    }
+    if let Some(pk) = public_key {
+        let pk_trimmed = pk.trim();
+        let pk_valid = pk_trimmed.len() == 64
+            && pk_trimmed.chars().all(|c| c.is_ascii_hexdigit())
+            && hex::decode(pk_trimmed).is_ok();
+        if pk_valid && is_self_certifying_binding(trimmed, pk_trimmed) {
+            return Some(pk_trimmed.to_lowercase());
+        }
+        if let Some(derived) = public_key_hex_from_libp2p_peer_id(trimmed) {
+            return Some(derived.to_lowercase());
+        }
+        if pk_valid {
+            return None;
+        }
+        return public_key_hex_from_libp2p_peer_id(trimmed).map(|s| s.to_lowercase());
+    }
+    public_key_hex_from_libp2p_peer_id(trimmed).map(|s| s.to_lowercase())
+}
+
 fn truncate_tail_for_log(value: &str) -> &str {
     value.get(value.len().saturating_sub(8)..).unwrap_or(value)
 }
@@ -351,9 +385,14 @@ fn annotate_identity_locked(
         }
     });
 
+    // UNIFICATION: accept canonical hex (64 hex) as valid peer_id alongside libp2p PeerId
+    let is_canonical_hex_peer = peer_id.trim().len() == 64
+        && peer_id.trim().chars().all(|c| c.is_ascii_hexdigit())
+        && hex::decode(peer_id.trim()).is_ok();
     if multiaddr.len() > MAX_LEN_MULTIADDR
         || (!peer_id.is_empty()
-            && (peer_id.len() > MAX_LEN_PEER_ID || peer_id.parse::<libp2p::PeerId>().is_err()))
+            && (peer_id.len() > MAX_LEN_PEER_ID
+                || (!is_canonical_hex_peer && peer_id.parse::<libp2p::PeerId>().is_err())))
         || normalized_public_key
             .as_ref()
             .is_some_and(|value| value.len() > MAX_LEN_PUBLIC_KEY)
@@ -368,7 +407,7 @@ fn annotate_identity_locked(
     // re-derives the transport peer id; otherwise the annotation is a routing
     // hint and the key (which would misattribute another node's identity to
     // this peer) is dropped before it can reach the ledger.
-    let normalized_public_key = normalized_public_key.and_then(|key| {
+    let mut normalized_public_key = normalized_public_key.and_then(|key| {
         if peer_id.is_empty() || is_self_certifying_binding(&peer_id, &key) {
             Some(key)
         } else {
@@ -381,6 +420,46 @@ fn annotate_identity_locked(
             None
         }
     });
+
+    // UNIFICATION: Live canonicalize ledger writes — same logic as load() migration 747-817.
+    // Prevents new 12D3 entries that would duplicate already-migrated hex nodes.
+    let mut peer_id = peer_id;
+    if let Some(canonical) = canonical_ledger_peer_id(&peer_id, normalized_public_key.as_deref()) {
+        if canonical != peer_id.trim().to_lowercase() {
+            tracing::info!(
+                event = "ledger_canonical_hex_live",
+                from = %peer_id,
+                to = %canonical,
+                multiaddr = %multiaddr,
+                "canonicalized ledger peer_id on write libp2p -> hex"
+            );
+            peer_id = canonical.clone();
+            // Ensure public_key is populated/normalized when peer_id was libp2p
+            match &normalized_public_key {
+                Some(pk) if pk.trim().to_lowercase() == canonical => {
+                    if pk != &canonical {
+                        normalized_public_key = Some(canonical.clone());
+                    }
+                }
+                None => {
+                    normalized_public_key = Some(canonical.clone());
+                }
+                _ => {}
+            }
+        } else {
+            // Already canonical — normalize case for both fields
+            let normalized_peer = peer_id.trim().to_lowercase();
+            if peer_id != normalized_peer {
+                peer_id = normalized_peer;
+            }
+            if let Some(pk) = &normalized_public_key {
+                let normalized_pk = pk.trim().to_lowercase();
+                if pk != &normalized_pk {
+                    normalized_public_key = Some(normalized_pk);
+                }
+            }
+        }
+    }
 
     let target_port = get_multiaddr_port(&multiaddr);
     let mut found_dns_idx = None;
@@ -889,11 +968,45 @@ impl LedgerManager {
             );
             return;
         }
+        // UNIFICATION: accept canonical hex (64 hex) as valid peer_id alongside libp2p PeerId
+        let is_canonical_hex_peer = peer_id.trim().len() == 64
+            && peer_id.trim().chars().all(|c| c.is_ascii_hexdigit())
+            && hex::decode(peer_id.trim()).is_ok();
         if multiaddr.len() > MAX_LEN_MULTIADDR
             || (!peer_id.is_empty()
-                && (peer_id.len() > MAX_LEN_PEER_ID || peer_id.parse::<libp2p::PeerId>().is_err()))
+                && (peer_id.len() > MAX_LEN_PEER_ID
+                    || (!is_canonical_hex_peer && peer_id.parse::<libp2p::PeerId>().is_err())))
         {
             return;
+        }
+        // UNIFICATION: Live canonicalize ledger writes — same logic as load() migration 747-817.
+        // Prevents new 12D3 entries that would duplicate already-migrated hex nodes.
+        let mut peer_id = peer_id;
+        let mut canonical_public_key: Option<String> = None;
+        if let Some(canonical) = canonical_ledger_peer_id(&peer_id, None) {
+            if canonical != peer_id.trim().to_lowercase() {
+                tracing::info!(
+                    event = "ledger_canonical_hex_live",
+                    from = %peer_id,
+                    to = %canonical,
+                    multiaddr = %multiaddr,
+                    "canonicalized ledger peer_id on write libp2p -> hex"
+                );
+            }
+            if peer_id.trim().to_lowercase() != canonical || peer_id != canonical {
+                peer_id = canonical.clone();
+            }
+            canonical_public_key = Some(canonical);
+        } else {
+            let trimmed_lower = peer_id.trim().to_lowercase();
+            if trimmed_lower.len() == 64
+                && trimmed_lower.chars().all(|c| c.is_ascii_hexdigit())
+                && hex::decode(&trimmed_lower).is_ok()
+                && peer_id != trimmed_lower
+            {
+                peer_id = trimmed_lower.clone();
+                canonical_public_key = Some(trimmed_lower);
+            }
         }
 
         let snapshot = {
@@ -914,10 +1027,22 @@ impl LedgerManager {
             if let Some(idx) = found_dns_idx {
                 let entry = &mut entries[idx];
                 entry.success_count += 1;
+                // UNIFICATION: ensure existing DNS entry public_key is canonical if we derived one
+                if entry.public_key.is_none() {
+                    if let Some(pk) = &canonical_public_key {
+                        entry.public_key = Some(pk.clone());
+                    }
+                }
                 entry.last_seen = Some(current_timestamp());
             } else if let Some(entry) = entries.iter_mut().find(|e| e.multiaddr == multiaddr) {
                 entry.success_count += 1;
-                entry.peer_id = Some(peer_id);
+                entry.peer_id = Some(peer_id.clone());
+                // UNIFICATION: populate public_key with canonical if missing (mirrors load migration)
+                if entry.public_key.is_none() {
+                    if let Some(pk) = &canonical_public_key {
+                        entry.public_key = Some(pk.clone());
+                    }
+                }
                 entry.last_seen = Some(current_timestamp());
             } else {
                 while entries.len() >= MAX_LEDGER_ENTRIES {
@@ -926,7 +1051,7 @@ impl LedgerManager {
                 entries.push(LedgerEntry {
                     multiaddr,
                     peer_id: Some(peer_id),
-                    public_key: None,
+                    public_key: canonical_public_key.clone(),
                     nickname: None,
                     success_count: 1,
                     failure_count: 0,

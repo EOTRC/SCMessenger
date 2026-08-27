@@ -514,7 +514,56 @@ impl ContactManager {
         Err(IronCoreError::InvalidInput)
     }
 
-    pub fn add(&self, contact: Contact) -> Result<(), IronCoreError> {
+    pub fn add(&self, mut contact: Contact) -> Result<(), IronCoreError> {
+        // UNIFICATION: Live canonicalize contact writes — mirrors migrate_libp2p_peer_ids_to_canonical_hex (load migration).
+        // Prevents new 12D3 entries that would duplicate already-migrated hex nodes until next load.
+        let peer_id_trimmed = contact.peer_id.trim().to_string();
+        if !peer_id_trimmed.is_empty() {
+            let canonical_hex: Option<String> = if contact.public_key.trim().len() == 64
+                && contact.public_key.chars().all(|c| c.is_ascii_hexdigit())
+                && hex::decode(contact.public_key.trim()).is_ok()
+            {
+                Some(contact.public_key.trim().to_lowercase())
+            } else if let Ok(derived) = self.derive_public_key_from_peer_id(&peer_id_trimmed) {
+                Some(derived.to_lowercase())
+            } else if peer_id_trimmed.len() == 64
+                && peer_id_trimmed.chars().all(|c| c.is_ascii_hexdigit())
+                && hex::decode(&peer_id_trimmed).is_ok()
+            {
+                Some(peer_id_trimmed.to_lowercase())
+            } else {
+                None
+            };
+            if let Some(canonical) = canonical_hex {
+                if peer_id_trimmed.to_lowercase() != canonical {
+                    tracing::info!(
+                        event = "contacts_canonical_hex_live",
+                        from = %peer_id_trimmed,
+                        to = %canonical,
+                        "canonicalized contact peer_id on write libp2p -> hex"
+                    );
+                    contact.peer_id = canonical.clone();
+                    // Ensure public_key is populated/normalized when peer_id was libp2p
+                    let pk_valid = contact.public_key.trim().len() == 64
+                        && contact.public_key.chars().all(|c| c.is_ascii_hexdigit())
+                        && hex::decode(contact.public_key.trim()).is_ok();
+                    if !pk_valid {
+                        contact.public_key = canonical.clone();
+                    } else if contact.public_key.trim().to_lowercase() == canonical
+                        && contact.public_key != canonical
+                    {
+                        contact.public_key = canonical.clone();
+                    }
+                } else if contact.peer_id != canonical {
+                    contact.peer_id = canonical.clone();
+                    if contact.public_key.trim().to_lowercase() == canonical
+                        && contact.public_key != canonical
+                    {
+                        contact.public_key = canonical;
+                    }
+                }
+            }
+        }
         // UNIFICATION verbose logging for nickname save — diagnose ChristyLove revert to peer-... synthetic
         tracing::info!(
             event = "contacts_add",
