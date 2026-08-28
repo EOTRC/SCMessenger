@@ -2821,18 +2821,22 @@ mod tests {
         let addr = "/ip4/198.51.100.10/tcp/9001";
         let (self_peer, self_key) = self_certifying_pair();
 
-        mgr.annotate_identity(addr.to_string(), self_peer.clone(), Some(self_key), None);
+        mgr.annotate_identity(
+            addr.to_string(),
+            self_peer.clone(),
+            Some(self_key.clone()),
+            None,
+        );
 
         let entries = mgr.entries.lock();
         let entry = entries
             .iter()
             .find(|e| e.multiaddr == addr)
             .expect("entry stored");
-        assert_eq!(entry.peer_id.as_deref(), Some(self_peer.as_str()));
-        assert!(
-            entry.public_key.is_some(),
-            "a self-certifying binding must be kept"
-        );
+        // Live canonicalization rewrites a self-certifying libp2p peer_id
+        // to the canonical public-key hex on write; the binding survives.
+        assert_eq!(entry.peer_id.as_deref(), Some(self_key.as_str()));
+        assert_eq!(entry.public_key.as_deref(), Some(self_key.as_str()));
     }
 
     /// Load-time repair must strip poisoned bindings from ALL persisted entries
@@ -2877,13 +2881,19 @@ mod tests {
 
         let repaired = mgr.entries.lock();
         assert_eq!(repaired.len(), 2);
+        // Load migration canonicalizes the libp2p peer_id to the key hex
+        // derived from it; the poisoned OTHER key is what gets stripped.
+        let victim_canonical = public_key_hex_from_libp2p_peer_id(&victim_peer)
+            .expect("victim peer id is a libp2p id");
         let victim = repaired
             .iter()
-            .find(|e| e.peer_id.as_deref() == Some(victim_peer.as_str()))
+            .find(|e| e.peer_id.as_deref() == Some(victim_canonical.as_str()))
             .expect("poisoned entry retained as routing record");
-        assert!(
-            victim.public_key.is_none(),
-            "load repair must strip the poisoned binding"
+        // The poisoned OTHER key is gone; the migration replaces it with
+        // the victim's own canonical key (identity collapsed to hex).
+        assert_eq!(
+            victim.public_key.as_deref(),
+            Some(victim_canonical.as_str())
         );
         assert_eq!(victim.nickname.as_deref(), Some("Bob"));
         assert_eq!(victim.success_count, 1, "routing metadata preserved");
