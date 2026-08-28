@@ -2691,17 +2691,39 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>, auto_reply: boo
                                                 let _ = ui_broadcast.send(server::UiOutbound::JsonRpc(v));
                                             }
 
-                                            // Send delivery receipt back to sender.
-                                            if let Some(ref pk_hex) = sender_public_key_hex {
-                                                match core_rx.prepare_receipt(pk_hex.clone(), msg.id.clone()) {
-                                                    Ok(ack_bytes) => {
-                                                        tracing::debug!("Sending delivery ACK for {} to {}", msg.id, peer_id);
-                                                        if let Err(e) = swarm_handle.send_message(peer_id, ack_bytes, None, None).await {
-                                                            tracing::debug!("Failed to send delivery ACK to {}: {}", peer_id, e);
+                                            // Send delivery receipt back to the sender -- but ONLY
+                                            // for a genuine inbound user message. UNIFICATION_V3 D2:
+                                            // suppress acking scm.message.identity.v1 SYNC/CONFIG
+                                            // metadata (kind != "text", e.g. identity_sync /
+                                            // history_sync) that the sender emits send-and-forget
+                                            // with no outbox record, and a message that looped back
+                                            // to its own origin (sender == local node). NOTE: every
+                                            // outbound CHAT message is also wrapped in an identity
+                                            // envelope with kind == "text", so only kinds other than
+                                            // "text" are treated as metadata -- acking those produced
+                                            // the receiver's "[RECEIPT-RX] IGNORING ...
+                                            // direction=missing" stampede.
+                                            let is_identity_metadata = decoded_envelope
+                                                .as_ref()
+                                                .map(|d| d.kind.as_str() != "text")
+                                                .unwrap_or(false);
+                                            let local_pk = core_rx.get_identity_info().public_key_hex;
+                                            let is_self_loop = local_pk
+                                                .as_deref()
+                                                .map(|pk| sender_public_key_hex.as_deref() == Some(pk))
+                                                .unwrap_or(false);
+                                            if !is_identity_metadata && !is_self_loop {
+                                                if let Some(ref pk_hex) = sender_public_key_hex {
+                                                    match core_rx.prepare_receipt(pk_hex.clone(), msg.id.clone()) {
+                                                        Ok(ack_bytes) => {
+                                                            tracing::debug!("Sending delivery ACK for {} to {}", msg.id, peer_id);
+                                                            if let Err(e) = swarm_handle.send_message(peer_id, ack_bytes, None, None).await {
+                                                                tracing::debug!("Failed to send delivery ACK to {}: {}", peer_id, e);
+                                                            }
                                                         }
-                                                    }
-                                                    Err(e) => {
-                                                        tracing::debug!("Failed to prepare delivery ACK: {}", e);
+                                                        Err(e) => {
+                                                            tracing::debug!("Failed to prepare delivery ACK: {}", e);
+                                                        }
                                                     }
                                                 }
                                             }
@@ -2880,11 +2902,18 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>, auto_reply: boo
                                          // Identity-envelope parity: wrap chat text so the
                                          // receiver learns our nickname + route hints.
                                          let wire_message = crate::api::build_identity_wrapped_text(&core_rx, &swarm_handle, &message).await;
-                                         if let Ok(prep) = core_rx.prepare_message_with_id(pk.clone(), wire_message, scmessenger_core::MessageType::Text, None) {
-                                              let sent = ble_mesh::send_ble_message(&target.to_string(), &prep.envelope_data).await.is_ok()
-                                                  || swarm_handle.send_message(target, prep.envelope_data, None, None).await.is_ok();
+                                          if let Ok(prep) = core_rx.prepare_message_with_id(pk.clone(), wire_message, scmessenger_core::MessageType::Text, None) {
+                                               let ble_ok = ble_mesh::send_ble_message(&target.to_string(), &prep.envelope_data).await.is_ok();
+                                               let swarm_ok = swarm_handle.send_message(target, prep.envelope_data, None, None).await.is_ok();
+                                               if swarm_ok {
+                                                   // True transport ACK (R2): release the outbox entry without a
+                                                   // Delivered receipt. BLE gatt is fire-and-forget, so only the
+                                                   // swarm path marks sent.
+                                                   core_rx.mark_message_sent(prep.message_id.clone());
+                                               }
+                                               let sent = ble_ok || swarm_ok;
 
-                                              if sent {
+                                               if sent {
                                                   let mid = id.clone().unwrap_or_default();
                                                   let _ = ui_broadcast.send(server::UiOutbound::Legacy(server::UiEvent::MessageStatus {
                                                       message_id: mid.clone(),
@@ -3079,6 +3108,8 @@ async fn cmd_start(port: Option<u16>, http_bind: Option<String>, auto_reply: boo
                                                     .await
                                                     .is_ok()
                                                 {
+                                                    // True transport ACK (R2): release the outbox entry.
+                                                    core_rx.mark_message_sent(prep.message_id.clone());
                                                     let mid = msg_id.clone().unwrap_or_default();
                                                     let mut m = serde_json::Map::new();
                                                     m.insert("status".to_string(), "sent".into());
@@ -3928,14 +3959,14 @@ async fn cmd_send_offline(recipient: String, message: String) -> Result<()> {
     // nickname + route hints.
     let wire_message =
         crate::api::build_identity_wrapped_text(&core, &swarm_handle, &message).await;
-    let envelope_bytes = core
+    let (envelope_bytes, prepared_message_id) = core
         .prepare_message(
             contact.public_key.clone(),
             wire_message,
             scmessenger_core::MessageType::Text,
             None,
         )
-        .map(|pm| pm.envelope_data)
+        .map(|pm| (pm.envelope_data, pm.message_id))
         .context("Failed to encrypt message")?;
 
     println!(
@@ -3966,6 +3997,10 @@ async fn cmd_send_offline(recipient: String, message: String) -> Result<()> {
             .await
         {
             Ok(_) => {
+                // True transport ACK (R2): release the outbox entry without a
+                // Delivered receipt. send_message() awaits the actual delivery,
+                // not a buffer enqueue.
+                core.mark_message_sent(prepared_message_id.clone());
                 println!(
                     "{} Message sent successfully to {} (attempt {}/{})",
                     "[OK]".green(),
@@ -4026,14 +4061,20 @@ async fn queue_message_for_later_delivery(
     core.initialize_identity()
         .context("Failed to initialize identity for queued send")?;
 
-    let envelope_bytes = core
+    // NOTE (UNIFICATION_V3 D1 fix): the envelope's wire message id MUST be
+    // reused as the outbox entry key. A Delivered receipt returned by the
+    // recipient carries the wire id, and `Outbox::remove` matches strictly on
+    // `message_id`. Mismatching the two (previously a fresh UUID here) meant
+    // the receipt never cleared the outbox entry -> infinite retry storm.
+    let prepared = core
         .prepare_message(
             contact.public_key.clone(),
             message.to_string(),
             scmessenger_core::MessageType::Text,
             None,
-        )
-        .map(|pm| pm.envelope_data)?;
+        )?;
+    let envelope_bytes = prepared.envelope_data;
+    let wire_message_id = prepared.message_id;
 
     match Outbox::open_default(data_dir) {
         Ok(outbox_arc) => {
@@ -4044,7 +4085,7 @@ async fn queue_message_for_later_delivery(
                 .as_secs();
             let queued_msg = QueuedMessage {
                 version: 1,
-                message_id: uuid::Uuid::new_v4().to_string(),
+                message_id: wire_message_id,
                 recipient_id: contact.peer_id.clone(),
                 envelope_data: envelope_bytes,
                 queued_at: now,

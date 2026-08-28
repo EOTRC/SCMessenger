@@ -870,7 +870,16 @@ async fn handle_send_message(
         )
         .await
     {
-        Ok(()) => (StatusCode::OK, "accepted".to_string(), None),
+        Ok(()) => {
+            // send_message().await == Ok is the transport's true-delivery ACK
+            // (the swarm replies only after the recipient accepted the message).
+            // This is the approved convergence path for R2: a genuinely
+            // delivered text whose Delivered receipt never arrives must still
+            // release the sender's outbox entry. Never cleared on a buffer
+            // enqueue -- send_message is the delivery layer, not the queue.
+            core.mark_message_sent(prepared.message_id.clone());
+            (StatusCode::OK, "accepted".to_string(), None)
+        }
         Err(_swarm_err) => {
             match crate::ble_mesh::send_ble_message(
                 &recipient.peer_id.to_string(),

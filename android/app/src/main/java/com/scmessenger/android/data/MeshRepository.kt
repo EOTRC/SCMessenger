@@ -650,7 +650,13 @@ open class MeshRepository(
     private data class DeliveryAttemptResult(
         val acked: Boolean,
         val routePeerId: String?,
-        val terminalFailureCode: String? = null
+        val terminalFailureCode: String? = null,
+        // UNIFICATION_V3 R1: true ONLY when the swarm's transport send (the
+        // app's bridge.sendMessageStatus -> swarm send_message) returned Ok.
+        // Deliberately excludes BLE/WiFi-Direct local ACKs (fire-and-forget on
+        // the core) and buffer enqueues. The ONLY signal on which a durable
+        // core outbox entry may be cleared.
+        val coreSwarmAcked: Boolean = false
     )
 
     private data class ReplayDiscoveredIdentity(
@@ -2868,6 +2874,7 @@ open class MeshRepository(
                     identitySyncSentPeers.remove(normalizedRoute)
                     return@launch
                 }
+                val syncMessageId = prepared.messageId.trim()
 
                 // Use targeted delivery (swarm + BLE fallback) for identity sync
                 val contact = contactManager?.list()?.firstOrNull {
@@ -2881,12 +2888,25 @@ open class MeshRepository(
                     recipientPublicKey = recipientPublicKey
                 )
 
-                attemptDirectSwarmDelivery(
+                val delivery = attemptDirectSwarmDelivery(
                     routePeerCandidates = routeCandidates,
                     listeners = hints.listeners,
                     encryptedData = prepared.envelopeData,
+                    traceMessageId = syncMessageId,
                     blePeerId = hints.blePeerId
                 )
+                // UNIFICATION_V3 R1: identity_sync (send-and-forget, kind != "text")
+                // is never receipt-acked by the receiver, so its durable core outbox
+                // entry would otherwise accumulate forever. Clear it ONLY on the true
+                // swarm transport-delivery ACK (never a BLE/WiFi buffer write).
+                if (syncMessageId.isNotBlank() && delivery.coreSwarmAcked) {
+                    try {
+                        ironCore?.markMessageSent(syncMessageId)
+                        Timber.d("R1: cleared identity_sync core outbox on transport ACK: $syncMessageId")
+                    } catch (e: Exception) {
+                        Timber.e(e, "R1: markMessageSent failed for identity_sync $syncMessageId")
+                    }
+                }
                 Timber.d("Identity sync sent to $normalizedRoute")
             } catch (e: Exception) {
                 identitySyncSentPeers.remove(normalizedRoute)
@@ -2946,12 +2966,23 @@ open class MeshRepository(
                     historySyncSentPeers.remove(normalizedRoute)
                     return@launch
                 }
+                val syncMessageId = prepared.messageId.trim()
 
                 val contact = contactManager?.list()?.firstOrNull { it.peerId == normalizedRoute || parseRoutingHints(it.notes).libp2pPeerId == normalizedRoute }
                 val hints = parseRoutingHints(contact?.notes)
                 val routeCandidates = buildRoutePeerCandidates(contact?.peerId ?: normalizedRoute, normalizedRoute, contact?.notes, recipientPublicKey)
 
-                attemptDirectSwarmDelivery(routeCandidates, hints.listeners, prepared.envelopeData, hints.wifiPeerId, hints.blePeerId)
+                val delivery = attemptDirectSwarmDelivery(routeCandidates, hints.listeners, prepared.envelopeData, hints.wifiPeerId, hints.blePeerId, traceMessageId = syncMessageId)
+                // UNIFICATION_V3 R1: history_sync is never receipt-acked; clear its
+                // durable core outbox ONLY on the true swarm transport-delivery ACK.
+                if (syncMessageId.isNotBlank() && delivery.coreSwarmAcked) {
+                    try {
+                        ironCore?.markMessageSent(syncMessageId)
+                        Timber.d("R1: cleared history_sync core outbox on transport ACK: $syncMessageId")
+                    } catch (e: Exception) {
+                        Timber.e(e, "R1: markMessageSent failed for history_sync $syncMessageId")
+                    }
+                }
                 Timber.w("History sync request sent to $normalizedRoute")
             } catch (e: Exception) {
                 Timber.e(e, "History sync error for $normalizedRoute")
@@ -3007,8 +3038,19 @@ open class MeshRepository(
                         Timber.e("sendHistorySyncDataIfNeeded: prepared is null for batch $batchIndex of $canonicalPeerId")
                         continue
                     }
+                    val syncMessageId = prepared.messageId.trim()
 
-                    attemptDirectSwarmDelivery(routeCandidates, allListeners, prepared.envelopeData, wifiPeerId ?: hints.wifiPeerId, hints.blePeerId)
+                    val delivery = attemptDirectSwarmDelivery(routeCandidates, allListeners, prepared.envelopeData, wifiPeerId ?: hints.wifiPeerId, hints.blePeerId, traceMessageId = syncMessageId)
+                    // UNIFICATION_V3 R1: history_sync_data is never receipt-acked; clear
+                    // its durable core outbox ONLY on the true swarm transport-delivery ACK.
+                    if (syncMessageId.isNotBlank() && delivery.coreSwarmAcked) {
+                        try {
+                            ironCore?.markMessageSent(syncMessageId)
+                            Timber.d("R1: cleared history_sync_data core outbox on transport ACK: $syncMessageId")
+                        } catch (e: Exception) {
+                            Timber.e(e, "R1: markMessageSent failed for sync_data $syncMessageId")
+                        }
+                    }
                     sentBatches++
                     // Small delay between batches to avoid overwhelming BLE
                     if (batchIndex < batches.size - 1) {
@@ -7839,7 +7881,13 @@ open class MeshRepository(
             )
             return DeliveryAttemptResult(
                 acked = true,
-                routePeerId = routePeerCandidates.firstOrNull()
+                routePeerId = routePeerCandidates.firstOrNull(),
+                // The smart router may have succeeded over BLE/WiFi-Direct (local
+                // fire-and-forget ACK) OR over the core swarm (sendMessageStatus==null).
+                // Only the swarm transports are authoritative for clearing the durable
+                // outbox; BLE/WiFi-Direct must NOT clear it.
+                coreSwarmAcked = smartResult.transport == com.scmessenger.android.transport.SmartTransportRouter.TransportType.CORE ||
+                    smartResult.transport == com.scmessenger.android.transport.SmartTransportRouter.TransportType.TCP_MDNS
             )
         }
 
@@ -7950,7 +7998,7 @@ open class MeshRepository(
                     outcome = "success",
                     detail = "ctx=$attemptContext route=$routePeerId latency=${latencyMs}ms"
                 )
-                return DeliveryAttemptResult(acked = true, routePeerId = routePeerId)
+                return DeliveryAttemptResult(acked = true, routePeerId = routePeerId, coreSwarmAcked = true)
             } else {
                 Timber.w("Core-routed delivery failed for $routePeerId: $directError; trying alternative transports")
                 logDeliveryAttempt(
@@ -8000,7 +8048,7 @@ open class MeshRepository(
                         outcome = "success",
                         detail = "ctx=$attemptContext route=$routePeerId latency=${latencyMs}ms"
                     )
-                    return DeliveryAttemptResult(acked = true, routePeerId = routePeerId)
+                    return DeliveryAttemptResult(acked = true, routePeerId = routePeerId, coreSwarmAcked = true)
                 } else {
                     Timber.w("Relay-circuit retry failed for $routePeerId: $relayError")
                     logDeliveryAttempt(
@@ -8098,29 +8146,18 @@ open class MeshRepository(
                     updated = true
                     continue
                 }
-                // P3_ANDROID_RETRY_SUPPRESSION: No-downgrade rule enforcement
-                // Once message reaches Sent state (confirmed by transport), it may NOT move to Failed or Corrupted.
-                // Messages that have been acked by transport are tracked separately (ackedWithoutReceiptCount)
-                // and should only be stopped via age-based ceiling (above), never via attempt-count ceiling.
-                if (item.ackedWithoutReceiptCount > 0) {
-                    // Transport-confirmed success: keep message in Sent state indefinitely (until age-based stop)
-                    Timber.d("Skipping retry for ${item.historyRecordId}: transport-acked message cannot be downgraded acked_count=${item.ackedWithoutReceiptCount}")
-                    logDeliveryState(
-                        messageId = item.historyRecordId,
-                        state = "held",
-                        detail = "acked_without_receipt_protection acked_count=${item.ackedWithoutReceiptCount} attempt=${item.attemptCount}"
-                    )
-                    iterator.set(
-                        item.copy(
-                            nextAttemptAtEpochSec = now + 120L  // Schedule next check in 2 minutes
-                        )
-                    )
-                    updated = true
-                    continue
-                }
+                // P3_ANDROID_RETRY_SUPPRESSION / UNIFICATION_V3 D3: No-downgrade rule.
+                // Once a message is transport-acked it may NOT move to Failed/Corrupted,
+                // but it MUST keep re-sending until it gets an application-level
+                // Delivered receipt (or the age-based ceiling above stops it). The
+                // previous behavior parked transport-acked messages ("held", +120s
+                // forever) and never re-sent, which stranded messages despite live
+                // transport. We now fall through to the real send path below; the
+                // attempt-cap branch is additionally guarded so acked-without-receipt
+                // messages are never corrupted/dropped by the attempt count.
                 // AND-DELIVERY-001: Enforce maximum retry limit to prevent infinite retries
                 // Only applies to messages that have NOT been transport-acked
-                if (item.attemptCount >= pendingOutboxMaxAttempts) {
+                if (item.attemptCount >= pendingOutboxMaxAttempts && item.ackedWithoutReceiptCount == 0) {
                     Timber.w("Dropping message ${item.historyRecordId} after ${item.attemptCount} attempts (max=$pendingOutboxMaxAttempts) - NOT transport-acked")
                     markMessageCorrupted(item.historyRecordId)
                     logDeliveryState(
