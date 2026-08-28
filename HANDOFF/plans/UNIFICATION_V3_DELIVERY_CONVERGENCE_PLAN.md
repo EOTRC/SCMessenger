@@ -1,6 +1,6 @@
 # SCMessenger Unification V3 — Delivery / Ack Convergence Plan
 
-Status: **PLANNED — mint 2026-08-27 (verify-plan-before-implement)**
+Status: **RESULT — verified 2026-08-28 (D1–D3 + R1+R2 deployed, soak-verified)**
 Owner: Operator (Treystu) delegation request. Branches from `fix/android-receipt-envelope`.
 Supersedes nothing; extends `UNIFICATION_V2_RESULTS_PLAN.md` (Verdict 4) with the **delivery layer**.
 
@@ -110,6 +110,27 @@ Baseline must be captured immediately before the first build (this exact session
 
 ### 3.5 Rollback
 Each fix is a single small diff on its own file. If V1–V10 fail, revert that fix and re-verify; D1–D3 do not depend on each other’s correctness for build (only for end-state).
+
+### 3.6 Post-deploy verification results (2026-08-28) — RESULT
+
+D1/D2/D3 deployed + verified in the 2026-08-27/28 session; the final convergence turn added **R1 (Android, MeshRepository.kt)** and **R2 (Windows CLI, api.rs/api_axum.rs/main.rs):** clear the core outbox entry strictly on a true swarm transport ACK (`mark_message_sent(…message_id)` immediately after `send_message(...) == Ok`); BLE/WiFi-Direct are **never** a clear. `Outbox::remove` logs INFO `outbox_dequeue … reason="delivery_confirmed"` (outbox.rs:387-392).
+
+| # | Check | Result (live, ~25-min soak, both nodes on new SHA) |
+|---|---|---|
+| V1 | Windows outbox to 8580a133 growth | **0 `outbox_enqueue`** the whole window (pre-fix era run: 35 enqueues, 0 dequeues). Nothing accumulating; legacy `0ac772f6`/`808ee57c` backlog absent (culled at the 12-attempt cap before deploy). |
+| V2 | `receipt_outbox_cleared` / mark-on-ACK | Wired at every send site (`main.rs:2912,3112,4003,4297`; `api.rs:880`; `api_axum.rs:292`) tracking the true swarm-ACK; `outbox_dequeue … delivery_confirmed` not live-emitted only because Windows enqueued **0** messages to Android this window (outbox was already empty). |
+| V3 | Windows outbox idle / no retry climb | `outbox_retry_attempt` = 0; nothing climbing toward the 12 cap. |
+| V6 | Android `[RECEIPT-RX] IGNORING … direction=missing` | **0** across soak. |
+| V7 | `[RECEIPT-RX] INVALID` | 0 lines. |
+| V8/V9 | Android outbox drain | flat **23** (378d26f5:18, self 8580a133:1, a27fe5a7/26206070/c0a682ef/6a05e70d:1) — Windows-targeted entries already 0 from the D1/D2 drain (30→0). No growth, no held-stack accumulation. |
+| R1 (live) | `R1: cleared … on transport ACK` | **5** clears this soak: history_sync IDs 8d6fbfb, ebbbd5c (pre-restart) + 2b1ca3bf, b20af9be, 52027e00 (post-restart) — sync-family sends to Windows released from the core outbox only on genuine swarm delivery. `outbox_retry_attempt … 30d0fa67` = 0. |
+| V11 | retry-storm / stampede | 0 on both sides (0 enqueues, 0 retry-attempt lines, 0 IGNORING). |
+| V12 | Mesh online | exactly 2 others (`30d0fa67` Windows, `8db1612a` AWS), self excluded, phantoms gone. |
+| AWS | relay soak | healthy; only routine Kademlia/AutoNAT debug lines. |
+
+**Verdict: converges.** Windows CLI `cargo build -p scmessenger-cli --release` exit=0 (10m10s; exe 22,068,736 B deployed to `OxAlphaAPI/cli-artifact/`, size match); Android `gradlew assembleDebug` exit=0 (APK 54,808,544 B), `adb install -r` Success. Both nodes healthy. Committed `0c75bf1a` (`fix(mesh): converge core outbox on true swarm delivery ACK (R1+R2)`) on `fix/android-receipt-envelope`.
+
+Known pre-existing (out of scope): CLI offline `send` cannot route to Android — stored contact `peer_id` is 64-hex while `libp2p::PeerId::from_str` requires base58 (`main.rs:3981`).
 
 ---
 
