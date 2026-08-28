@@ -163,7 +163,7 @@ Rule: one theme = one branch = one revert; `main` stays green (`SHIP_PLAN.md:2:S
 | Verdict 4 (coalesce + online-authority) | done 2026-08-27 | `29d1acfd` docs; `fb2bb3f6` impl |
 | Verdict 5 (delivery/ack convergence R1+R2) | done 2026-08-28 | `6be72c82` docs; `0c75bf1a` impl (`mark_message_sent` on true swarm ACK) |
 | CI green on PR #234 (fmt, test fix, hygiene) | IN PROGRESS 2026-08-28 | 5 red lanes at `6be72c82`: fmt diffs (`cli/src/main.rs:4066`, `contacts.rs` x13, `behaviour.rs:317`), `message_request_lifecycle_accept` (handler passes identity_id but `ContactsManager::add` canonicalizes to pubkey), trailing whitespace. Fix + merge plan in `HANDOFF/ORCHESTRATOR_TAKEOVER_2026-08-28.md` |
-| Ratchet session-recovery verification | pending 2026-08-28 | `iron_core.rs:3437` decrypt-divergence branch must trigger re-establishment on a fresh session fork (`306e3149`/`838f9ecd`); verdict to be recorded here |
+| Ratchet session-recovery verification | done 2026-08-28 | `decrypt_with_ratchet_fallback` (`core/src/crypto/encrypt.rs:663-832`) rebuilds the receiver session from static keys (V1) / bootstrap fields (V2) on decrypt divergence, retries, and only surfaces `Failed to decrypt ratchet message` (`iron_core.rs:3437`) after both attempts fail. Verdict: PASS — auto re-establishment verified at source (`306e3149`) |
 | Verifier-1: plan readiness | pending | subagent report |
 | Implement S2 de-split + P0 fail-closed | pending | branch + CI |
 | Verifier-2: post-impl re-audit | pending | `dup_index.json` + `cargo test` |
@@ -185,3 +185,4 @@ Rule: one theme = one branch = one revert; `main` stays green (`SHIP_PLAN.md:2:S
 - **Build provenance:** CLI `cargo build --release` exit=0 (10m10s; exe 22,068,736 B, `cli-artifact/` size match); APK `assembleDebug` exit=0 (54,808,544 B), `adb install -r` Success.
 
 **Pre-existing, out of scope (flagged):** CLI offline `send` cannot reach Android contacts — stored `contact.peer_id` is 64-hex while `libp2p::PeerId::from_str` needs base58 (`cli/src/main.rs:3981`).
+
