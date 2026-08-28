@@ -118,3 +118,31 @@ Unification V2 P0).
 - README refresh, CHANGELOG truthing, release-notes draft — tag boundary.
 
 --- END FILE ---
+
+## 7. Prep completed while CI runs (2026-08-28, unblocked work)
+
+- **D5 branch hygiene inventory (read-only):** 212 remote branches exist.
+  17 are merged into main (safe delete candidates: `codex/pr139-five-node-gate-fixes`,
+  `gpt/pr139-libp2p-admission-fix-20260811`, `gpt/pr139-receipt-filter-20260811`,
+  `gpt/pr139-receipt-fix-20260812`, `orch/qwen-takeover-setup-2026-08-04`,
+  `pr-138`, `windows/pr139-ble-parity`, `fork/burn1`, plus pixiegirlchristy
+  mirror refs). ~195 remain stale (many `cto/*`, `checkpoint-*`, `dependabot/*`,
+  `copilot/sub-pr-*`, `codex/*`, `claude/*`). Deletion requires operator
+  approval — inventory only, no deletion performed.
+- **AWS deploy readiness:** health 200 `{"status":"healthy"}` at
+  54.226.67.101:9876. Docker needs sudo on the box (passwordless). Deploy
+  script drafted: `scripts/aws_deploy.sh` (pull testbotz/scmessenger:latest,
+  restart scm-node, identity persists at /opt/scm-relay-data, health poll).
+  Image rebuilds from main via `.github/workflows/docker-publish.yml` on merge.
+- **Release docs state:** README already claims v0.4.0-rc.1 correctly
+  (lines 20-21); CHANGELOG has an Unreleased section; release-notes draft
+  referenced in V040_COMPLETION_PLAN (Phase A) — no separate file found yet,
+  needs drafting at the tag boundary.
+- **Signing config:** `android/keystore.properties.template` exists
+  (storeFile=release.keystore); actual keystore + secrets are operator-owned.
+- **Backup review lane configured:** `scripts/fireworks_opinion.sh`
+  (operator-provided Fireworks key, stored in ~/.config/scmorc/fireworks.env,
+  never committed). agy (Gemini CLI) available for reviewer roles; opus and
+  gemini-3.1-pro named as reviewer options by operator.
+
+--- END FILE ---
