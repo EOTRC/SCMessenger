@@ -160,6 +160,10 @@ Rule: one theme = one branch = one revert; `main` stays green (`SHIP_PLAN.md:2:S
 |---|---|---|
 | Mint V2 plan (this file) | done 2026-08-26 | `git diff HANDOFF/plans/UNIFICATION_V2_RESULTS_PLAN.md` |
 | S2 coalesce + online-authority + self-exclusion | done 2026-08-27 | `fb2bb3f6` dashboard peers = 2 online others (Win+AWS); phantoms offline; `UNIFICATION` logs on-device |
+| Verdict 4 (coalesce + online-authority) | done 2026-08-27 | `29d1acfd` docs; `fb2bb3f6` impl |
+| Verdict 5 (delivery/ack convergence R1+R2) | done 2026-08-28 | `6be72c82` docs; `0c75bf1a` impl (`mark_message_sent` on true swarm ACK) |
+| CI green on PR #234 (fmt, test fix, hygiene) | IN PROGRESS 2026-08-28 | 5 red lanes at `6be72c82`: fmt diffs (`cli/src/main.rs:4066`, `contacts.rs` x13, `behaviour.rs:317`), `message_request_lifecycle_accept` (handler passes identity_id but `ContactsManager::add` canonicalizes to pubkey), trailing whitespace. Fix + merge plan in `HANDOFF/ORCHESTRATOR_TAKEOVER_2026-08-28.md` |
+| Ratchet session-recovery verification | pending 2026-08-28 | `iron_core.rs:3437` decrypt-divergence branch must trigger re-establishment on a fresh session fork (`306e3149`/`838f9ecd`); verdict to be recorded here |
 | Verifier-1: plan readiness | pending | subagent report |
 | Implement S2 de-split + P0 fail-closed | pending | branch + CI |
 | Verifier-2: post-impl re-audit | pending | `dup_index.json` + `cargo test` |
