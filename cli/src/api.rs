@@ -574,6 +574,60 @@ pub struct ApiContext {
     pub swarm_handle: Arc<scmessenger_core::transport::SwarmHandle>,
 }
 
+/// Wrap outbound chat text in the `scm.message.identity.v1` envelope so
+/// receivers (Android/iOS/CLI) auto-learn our nickname and route hints.
+///
+/// Mirrors Android's `MeshRepository.encodeMeshMessagePayload`: on any
+/// failure the bare text is returned unchanged — wrapping must be additive
+/// and can never lose a message. Honors the `identity_envelope` config flag
+/// (default on).
+pub async fn build_identity_wrapped_text(
+    core: &scmessenger_core::IronCore,
+    swarm_handle: &scmessenger_core::transport::SwarmHandle,
+    text: &str,
+) -> String {
+    let enabled = crate::config::Config::load()
+        .map(|config| config.identity_envelope)
+        .unwrap_or(true);
+    if !enabled {
+        return text.to_string();
+    }
+
+    let info = core.get_identity_info();
+    if !info.initialized {
+        return text.to_string();
+    }
+
+    let listeners: Vec<String> = swarm_handle
+        .get_listeners()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|addr| addr.to_string())
+        .collect();
+    let external_addresses: Vec<String> = swarm_handle
+        .get_external_addresses()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|addr| addr.to_string())
+        .collect();
+
+    scmessenger_core::message::identity_envelope::build_identity_envelope(
+        "text",
+        text,
+        &scmessenger_core::message::identity_envelope::EnvelopeSenderHints {
+            identity_id: info.identity_id.unwrap_or_default(),
+            public_key: info.public_key_hex.unwrap_or_default(),
+            device_id: info.device_id.unwrap_or_default(),
+            nickname: info.nickname.unwrap_or_default(),
+            libp2p_peer_id: info.libp2p_peer_id.unwrap_or_default(),
+            listeners,
+            external_addresses,
+        },
+    )
+}
+
 #[derive(Debug)]
 struct ApiRecipient {
     public_key: String,
@@ -759,10 +813,15 @@ async fn handle_send_message(
     let core = &ctx.core;
     let recipient = resolve_api_recipient(core, &request.recipient)?;
 
+    // Identity-envelope parity with Android/iOS: wrap the chat text so the
+    // receiver learns our nickname + route hints. Local history keeps the
+    // bare text; only the wire payload carries the envelope.
+    let wire_text = build_identity_wrapped_text(core, &ctx.swarm_handle, &request.message).await;
+
     let prepared = core
         .prepare_message_with_id(
             recipient.public_key.clone(),
-            request.message.clone(),
+            wire_text,
             scmessenger_core::MessageType::Text,
             None,
         )
@@ -792,33 +851,54 @@ async fn handle_send_message(
             )
         })?;
 
-    let ble_result =
-        crate::ble_mesh::send_ble_message(&recipient.peer_id.to_string(), &prepared.envelope_data)
-            .await;
-    let (http_status, status, error) = if ble_result.is_ok() {
-        (StatusCode::OK, "accepted".to_string(), None)
-    } else {
-        match ctx
-            .swarm_handle
-            .send_message(
-                recipient.peer_id,
-                prepared.envelope_data,
-                Some(recipient.identity_id.clone()),
-                None,
+    // SWARM-FIRST DISPATCH. The previous order tried BLE GATT first and
+    // short-circuited the swarm send whenever the GATT write reported success.
+    // After a doze/offline window the phone's GATT server still accepts writes
+    // (notification "completes") while its ingress cannot receive, so messages
+    // were silently lost and never reached the libp2p path that actually works.
+    // SwarmBridge::send_message already performs dual-stack delivery (BLE when
+    // the peer is nearby + swarm), so it goes first; the raw BLE write below is
+    // only a last-resort fallback when the swarm dispatch itself fails.
+    let ble_fallback_data = prepared.envelope_data.clone();
+    let (http_status, status, error) = match ctx
+        .swarm_handle
+        .send_message(
+            recipient.peer_id,
+            prepared.envelope_data,
+            Some(recipient.identity_id.clone()),
+            None,
+        )
+        .await
+    {
+        Ok(()) => {
+            // send_message().await == Ok is the transport's true-delivery ACK
+            // (the swarm replies only after the recipient accepted the message).
+            // This is the approved convergence path for R2: a genuinely
+            // delivered text whose Delivered receipt never arrives must still
+            // release the sender's outbox entry. Never cleared on a buffer
+            // enqueue -- send_message is the delivery layer, not the queue.
+            core.mark_message_sent(prepared.message_id.clone());
+            (StatusCode::OK, "accepted".to_string(), None)
+        }
+        Err(_swarm_err) => {
+            match crate::ble_mesh::send_ble_message(
+                &recipient.peer_id.to_string(),
+                &ble_fallback_data,
             )
             .await
-        {
-            Ok(()) => (StatusCode::OK, "accepted".to_string(), None),
-            Err(e) if ctx.swarm_handle.is_event_loop_alive() => (
-                StatusCode::ACCEPTED,
-                "retrying".to_string(),
-                Some(format!("Initial dispatch failed; retrying: {}", e)),
-            ),
-            Err(e) => {
-                return Err((
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    format!("Message was not accepted by BLE or Swarm: {}", e),
-                ));
+            {
+                Ok(()) => (StatusCode::OK, "accepted".to_string(), None),
+                Err(e) if ctx.swarm_handle.is_event_loop_alive() => (
+                    StatusCode::ACCEPTED,
+                    "retrying".to_string(),
+                    Some(format!("Initial dispatch failed; retrying: {}", e)),
+                ),
+                Err(e) => {
+                    return Err((
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        format!("Message was not accepted by BLE or Swarm: {}", e),
+                    ));
+                }
             }
         }
     };

@@ -436,6 +436,9 @@ impl ConnectionLedger {
         let parsed_pid = PeerId::from_str(peer_id).ok();
         self.dial_policy
             .reset_on_connection_established(&stripped, parsed_pid);
+        if let Some(pid) = parsed_pid {
+            self.dial_policy.reset_peer_backoff(pid);
+        }
 
         self.entries
             .entry(stripped.clone())
@@ -863,6 +866,9 @@ impl ConnectionLedger {
             let target_pid = learned_peer_id.or(pid_opt);
             self.dial_policy
                 .reset_on_connection_established(&addr_key, target_pid);
+            if let Some(pid) = target_pid {
+                self.dial_policy.reset_peer_backoff(pid);
+            }
 
             // P0 stale-address reaping (2026-08-12): this is a CONFIRMED
             // connection to `addr_key`, so drop this peer's other ledger

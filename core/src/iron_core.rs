@@ -438,23 +438,29 @@ impl IronCore {
         let transport_memory =
             crate::store::transport_memory::TransportMemoryStore::new(backend.clone());
 
-        let identity = match IdentityManager::with_backend(backend.clone()) {
-            Ok(mgr) => mgr,
-            Err(e) => {
-                if storage_err.is_none() {
-                    tracing::warn!(
-                        "Failed to hydrate identity from persistent store (not yet initialized or read error): {:?}",
-                        e
-                    );
-                } else {
-                    tracing::error!(
-                        "Persistent storage degraded; identity will not be hydrated from RAM: {:?}",
-                        e
-                    );
+        let (identity, identity_hydrate_err): (IdentityManager, Option<String>) =
+            match IdentityManager::with_backend(backend.clone()) {
+                Ok(mgr) => (mgr, None),
+                Err(e) => {
+                    let msg = format!("{:?}", e);
+                    if storage_err.is_none() {
+                        tracing::warn!(
+                            "Failed to hydrate identity from persistent store (not yet initialized or read error): {:?}",
+                            e
+                        );
+                    } else {
+                        tracing::error!(
+                            "Persistent storage degraded; identity will not be hydrated from RAM: {:?}",
+                            e
+                        );
+                    }
+                    // UNIFICATION_V2 fail-closed: surface hydrate failure as degraded so UI can block sends
+                    // Keep empty identity (not initialized) but propagate degraded flag
+                    (IdentityManager::new(), Some(msg))
                 }
-                IdentityManager::new()
-            }
-        };
+            };
+        // Merge hydrate error into storage_degraded if storage was otherwise healthy
+        let effective_storage_err = storage_err.or(identity_hydrate_err);
 
         Self {
             identity: Arc::new(RwLock::new(identity)),
@@ -478,7 +484,7 @@ impl IronCore {
             auto_block_engine: Arc::new(RwLock::new(auto_block)),
             storage_path: Some(path),
             log_directory: None,
-            storage_degraded: Arc::new(RwLock::new(storage_err)),
+            storage_degraded: Arc::new(RwLock::new(effective_storage_err.clone())),
             #[cfg(not(target_arch = "wasm32"))]
             ledger_manager: hydrated_ledger_manager(p),
             running: Arc::new(RwLock::new(false)),
@@ -563,23 +569,29 @@ impl IronCore {
         let transport_memory =
             crate::store::transport_memory::TransportMemoryStore::new(backend.clone());
 
-        let identity = match IdentityManager::with_backend(backend.clone()) {
-            Ok(mgr) => mgr,
-            Err(e) => {
-                if storage_err.is_none() {
-                    tracing::warn!(
-                        "Failed to hydrate identity from persistent store (not yet initialized or read error): {:?}",
-                        e
-                    );
-                } else {
-                    tracing::error!(
-                        "Persistent storage degraded; identity will not be hydrated from RAM: {:?}",
-                        e
-                    );
+        let (identity, identity_hydrate_err): (IdentityManager, Option<String>) =
+            match IdentityManager::with_backend(backend.clone()) {
+                Ok(mgr) => (mgr, None),
+                Err(e) => {
+                    let msg = format!("{:?}", e);
+                    if storage_err.is_none() {
+                        tracing::warn!(
+                            "Failed to hydrate identity from persistent store (not yet initialized or read error): {:?}",
+                            e
+                        );
+                    } else {
+                        tracing::error!(
+                            "Persistent storage degraded; identity will not be hydrated from RAM: {:?}",
+                            e
+                        );
+                    }
+                    // UNIFICATION_V2 fail-closed: surface hydrate failure as degraded so UI can block sends
+                    // Keep empty identity (not initialized) but propagate degraded flag
+                    (IdentityManager::new(), Some(msg))
                 }
-                IdentityManager::new()
-            }
-        };
+            };
+        // Merge hydrate error into storage_degraded if storage was otherwise healthy
+        let effective_storage_err = storage_err.or(identity_hydrate_err);
 
         Self {
             identity: Arc::new(RwLock::new(identity)),
@@ -603,7 +615,7 @@ impl IronCore {
             auto_block_engine: Arc::new(RwLock::new(auto_block)),
             storage_path: Some(path),
             log_directory: Some(log_dir),
-            storage_degraded: Arc::new(RwLock::new(storage_err)),
+            storage_degraded: Arc::new(RwLock::new(effective_storage_err.clone())),
             #[cfg(not(target_arch = "wasm32"))]
             ledger_manager: hydrated_ledger_manager(p),
             running: Arc::new(RwLock::new(false)),
@@ -3387,7 +3399,16 @@ impl IronCore {
                     return Err(IronCoreError::CryptoError);
                 };
             let identity = self.identity.read();
-            let keys = identity.keys().ok_or(IronCoreError::NotInitialized)?;
+            let keys = match identity.keys() {
+                Some(k) => k,
+                None => {
+                    tracing::error!(
+                        "receive_message: dropping inbound envelope ({} bytes): local identity keys not initialized",
+                        envelope_data.len()
+                    );
+                    return Err(IronCoreError::NotInitialized);
+                }
+            };
             local_identity_id = identity.identity_id();
             sender_pubkey = match &wire {
                 crate::message::WireEnvelope::V1(e) => e.sender_public_key.clone(),
@@ -3412,7 +3433,12 @@ impl IronCore {
                 sender_bundle.as_ref(),
             )
             .map_err(|e| {
-                tracing::warn!("Failed to decrypt ratchet message: {:?}", e);
+                tracing::warn!(
+                    "Failed to decrypt ratchet message from peer {}..: {:?} (envelope_len={})",
+                    &hex::encode(&sender_pubkey)[..16],
+                    e,
+                    envelope_data.len()
+                );
                 IronCoreError::CryptoError
             })?
         };
@@ -3436,7 +3462,13 @@ impl IronCore {
         let sender_public_key_hex = hex::encode(&sender_pubkey);
         let canonical_peer_id =
             crate::identity::keys::identity_id_from_public_key_hex(&sender_public_key_hex)
-                .ok_or(IronCoreError::CryptoError)?;
+                .ok_or_else(|| {
+                    tracing::error!(
+                "receive_message: cannot derive canonical identity for sender {}..; dropping",
+                &sender_public_key_hex[..16]
+            );
+                    IronCoreError::CryptoError
+                })?;
 
         // Also check device-specific blocks using the sender's last known device ID
         // Try the authenticated public key and its canonical identity_id; first

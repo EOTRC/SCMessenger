@@ -366,6 +366,48 @@ fn build_seed_dial_candidates(
     candidates
 }
 
+/// UNIFICATION_V2_TRANSPORT: network-aware mode for seed dials. RFC1918
+/// relevance: dialing a 192.168.x.y peer when not on that subnet is pointless
+/// (no route, just a timeout + backoff). If none of our own bound/external
+/// addresses is RFC1918/ULA, we are not on a private LAN → use Public to skip
+/// those candidates. Ephemeral vs stable is handled by ledger freshness
+/// ordering, not by pruning — this only gates reachability.
+#[cfg(not(target_arch = "wasm32"))]
+fn infer_seed_network_mode(my_addrs: &[String]) -> crate::transport::addr_filter::NetworkMode {
+    use crate::transport::addr_filter::NetworkMode;
+    for s in my_addrs {
+        if let Ok(addr) = s.parse::<Multiaddr>() {
+            for proto in addr.iter() {
+                match proto {
+                    libp2p::multiaddr::Protocol::Ip4(ip) => {
+                        if ip.is_private() {
+                            return NetworkMode::Local;
+                        }
+                    }
+                    libp2p::multiaddr::Protocol::Ip6(ip) => {
+                        // ULA fc00::/7 is the IPv6 RFC1918 analogue.
+                        if (ip.segments()[0] & 0xfe00) == 0xfc00 {
+                            return NetworkMode::Local;
+                        }
+                        if let Some(v4) = crate::transport::addr_filter::embedded_ipv4(&ip) {
+                            if v4.is_private() {
+                                return NetworkMode::Local;
+                            }
+                        }
+                        if let Some((srv, cli)) = crate::transport::addr_filter::teredo_ipv4s(&ip) {
+                            if srv.is_private() || cli.is_private() {
+                                return NetworkMode::Local;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    NetworkMode::Public
+}
+
 /// Filter mDNS-advertised addresses to exclude circuit addresses that are too long for TXT records.
 ///
 /// The libp2p mDNS implementation has a 1300-byte limit on TXT records. Circuit addresses
@@ -466,7 +508,14 @@ fn is_direct_dial_addr(addr: &Multiaddr) -> bool {
 /// wants to pin the handshake to that discovered identity.  Keep this helper
 /// deliberately strict: mDNS is a LAN discovery mechanism, so circuit,
 /// websocket, DNS and self-targeted addresses must not become automatic dials.
+// UNIFICATION_V2_IDENTITY: retained for LAN direct-dial parity; not currently wired
+// into the mDNS observer path (NsdManager on Android handles discovery) — keep
+// available for native loopback tests rather than deleting.
+// TRANSPORT_UNIFICATION dead_code is intentional: suppress warning until mDNS
+// parity path is wired. Removing this helper would silently drop LAN direct-dial
+// coverage; the allow + comment keeps `cargo check -D warnings` clean.
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
 fn build_mdns_dial_addr(
     local_peer_id: PeerId,
     peer_id: PeerId,
@@ -1378,6 +1427,73 @@ fn dispatch_ranked_route(
     }
 }
 
+/// Fire a hint-driven dial toward `peer_id` using envelope-sourced addresses.
+///
+/// Candidates come from the hint store (fresh `connection_hints` /
+/// `external_addresses` / `listeners` learned from the recipient's identity
+/// envelopes), are deduped against known-dead addresses (dial-policy backoff
+/// entries), and every considered port is logged at DEBUG so open-port
+/// determination stays visible. Returns how many candidates were dialed.
+#[cfg(not(target_arch = "wasm32"))]
+fn try_envelope_hint_dial(
+    swarm: &mut libp2p::Swarm<IronCoreBehaviour>,
+    dial_policy_manager: &DialPolicyManager,
+    peer_id: PeerId,
+) -> usize {
+    let hinted = super::hint_store::peer_hint_dial_candidates(peer_id);
+    if hinted.is_empty() {
+        return 0;
+    }
+
+    let mut candidates: Vec<Multiaddr> = Vec::new();
+    for addr in hinted {
+        let addr_key = multiaddr_to_key(&addr);
+        // Dedupe against known-dead: an address sitting in backoff (worse,
+        // marked dead for the session after 3 failures) is skipped so stale
+        // hints cannot consume the concurrent-dial budget.
+        if let Some(state) = dial_policy_manager.get_backoff_state(&addr_key) {
+            if !state.is_eligible() {
+                tracing::debug!(
+                    "[HINT-DIAL] Skipping backed-off hint candidate {} for {} (attempt_count={}, dead={})",
+                    addr_key,
+                    peer_id,
+                    state.attempt_count,
+                    state.is_dead
+                );
+                continue;
+            }
+        }
+        candidates.push(addr);
+    }
+    if candidates.is_empty() {
+        return 0;
+    }
+
+    // Port-probing knowledge surface: which candidate ports we are about to
+    // probe per peer, so logs directly show open-port determination at dial
+    // time and PORT_REACHABLE (on ConnectionEstablished) closes the loop.
+    tracing::debug!(
+        "[HINT-DIAL] Envelope-hint candidates for {}: {:?}",
+        peer_id,
+        candidates.iter().map(|a| a.to_string()).collect::<Vec<_>>()
+    );
+
+    let opts = libp2p::swarm::dial_opts::DialOpts::peer_id(peer_id)
+        .addresses(candidates)
+        .condition(libp2p::swarm::dial_opts::PeerCondition::DisconnectedAndNotDialing)
+        .build();
+    match swarm.dial(opts) {
+        Ok(_) => {
+            tracing::info!("[HINT-DIAL] Queued envelope-hint dial to {}", peer_id);
+            1
+        }
+        Err(e) => {
+            tracing::debug!("[HINT-DIAL] Hint dial to {} not queued: {}", peer_id, e);
+            0
+        }
+    }
+}
+
 /// Convert libp2p Kademlia protocol mode to routing transport type.
 /// Maps the Kademlia query mode to the appropriate transport classification.
 #[cfg(not(target_arch = "wasm32"))]
@@ -1724,6 +1840,23 @@ async fn apply_delivery_convergence_marker(
             pending_cleared
         );
     }
+}
+
+/// Pick a carrier peer for the drift store-and-forward fallback.
+///
+/// Returns the first connected peer that is neither the destination nor
+/// ourselves. Used when a direct send fails but an established connection
+/// (e.g. a relay over cellular) can carry custody of the envelope until the
+/// destination reconnects.
+#[cfg(not(target_arch = "wasm32"))]
+fn select_drift_fallback_carrier(
+    connected_peers: impl IntoIterator<Item = PeerId>,
+    target_peer: PeerId,
+    local_peer_id: PeerId,
+) -> Option<PeerId> {
+    connected_peers
+        .into_iter()
+        .find(|peer| *peer != target_peer && *peer != local_peer_id)
 }
 
 fn dispatch_pending_custody_for_peer(
@@ -2926,6 +3059,9 @@ pub async fn start_swarm_with_config(
         };
         let mut relay_reconnect_pending: Vec<(PeerId, u32, web_time::Instant)> = Vec::new();
         let mut seen_delivery_convergence_markers: HashSet<String> = HashSet::new();
+        // Messages already committed to the drift store-and-forward fallback;
+        // prevents re-committing on every direct retry after relay acceptance.
+        let mut drift_fallback_committed: HashSet<String> = HashSet::new();
 
         // Auto-dial bootstrap nodes for cross-network discovery
         // Self-dial guard: track bootstrap addrs that resolve to our own peer
@@ -3104,6 +3240,17 @@ pub async fn start_swarm_with_config(
                             if let Some(mut pending) = pending_messages.remove(&msg_id) {
                                 let routes = multi_path_delivery.ranked_routes(&pending.target_peer, 3);
                                 if routes.is_empty() {
+                                    // Last-resort candidate refresh before keeping the message
+                                    // in the retry cycle: dial any fresh envelope hints so a
+                                    // later pass has a live path instead of an empty ladder.
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    if !swarm.is_connected(&pending.target_peer) {
+                                        try_envelope_hint_dial(
+                                            &mut swarm,
+                                            &dial_policy_manager,
+                                            pending.target_peer,
+                                        );
+                                    }
                                     tracing::warn!(
                                         "No route candidates available for message {}; keeping in retry cycle",
                                         msg_id
@@ -3206,7 +3353,10 @@ pub async fn start_swarm_with_config(
                     }
 
                     _ = backoff_prune_interval.tick() => {
-                        // P1 Item 3: Periodically prune old backoff entries to prevent memory leak
+                        // UNIFICATION_V2_TRANSPORT + P1 Item 3: self-prune stale backoff;
+                        // ledger itself deprioritizes (not prunes) — this tick reaps
+                        // dial-policy memory hygiene. Also wired on
+                        // ConnectionEstablished via reset_peer_backoff above.
                         dial_policy_manager.prune_old_entries(Duration::from_secs(3600)); // Prune entries older than 1 hour
                         tracing::debug!("[DIAL-POLICY] Pruned stale backoff entries");
                     }
@@ -3743,6 +3893,59 @@ pub async fn start_swarm_with_config(
                                                 engine.record_unreachable_peer(&pending.target_peer.to_string());
                                                 let peer_bytes = extract_peer_id_bytes(&pending.target_peer.to_bytes());
                                                 engine.base_engine_mut().local_cell_mut().update_reliability(&peer_bytes, false);
+                                            }
+                                        }
+                                        // DRIFT FALLBACK: the direct route failed (e.g. stale
+                                        // LAN hints while only a relay is reachable). If any
+                                        // other peer is connected right now, commit the
+                                        // encrypted envelope to store-and-forward custody on
+                                        // that carrier; its custody ledger holds it until the
+                                        // destination connects and pulls it via drift sync.
+                                        if !swarm.is_connected(&pending.target_peer)
+                                            && !drift_fallback_committed.contains(&message_id)
+                                        {
+                                            let carrier = select_drift_fallback_carrier(
+                                                swarm.connected_peers().cloned(),
+                                                pending.target_peer,
+                                                local_peer_id,
+                                            )
+                                            .filter(|candidate| {
+                                                !peer_is_blocked(&core_handle, *candidate)
+                                            });
+                                            if let Some(carrier) = carrier {
+                                                tracing::warn!(
+                                                    "no direct route; committing to drift store via relay carrier={} destination={} message={}",
+                                                    carrier,
+                                                    pending.target_peer,
+                                                    message_id
+                                                );
+                                                if let Some(core) =
+                                                    core_handle.as_ref().and_then(|w| w.upgrade())
+                                                {
+                                                    core.drift_activate();
+                                                }
+                                                let relay_request = RelayRequest {
+                                                    destination_peer: pending
+                                                        .target_peer
+                                                        .to_bytes(),
+                                                    envelope_data: wrap_in_drift_frame(
+                                                        &pending.envelope_data,
+                                                    ),
+                                                    message_id: message_id.clone(),
+                                                    recipient_identity_id: pending
+                                                        .recipient_identity_id
+                                                        .clone(),
+                                                    intended_device_id: pending
+                                                        .intended_device_id
+                                                        .clone(),
+                                                };
+                                                let request_id = swarm
+                                                    .behaviour_mut()
+                                                    .relay
+                                                    .send_request(&carrier, relay_request);
+                                                pending_relay_requests
+                                                    .insert(request_id, message_id.clone());
+                                                drift_fallback_committed.insert(message_id.clone());
                                             }
                                         }
                                         pending_messages.insert(message_id, pending);
@@ -4931,13 +5134,14 @@ pub async fn start_swarm_with_config(
                                     }
                                 }
 
-                                // Check if peer advertises relay capability
-                                let is_relay = info.agent_version.contains("relay");
-                                if is_relay {
-                                    tracing::info!("Peer {} is identified as a RELAY node (agent: {})", peer_id, info.agent_version);
+                                // UNIFICATION_V2: All nodes are relays — per repo philosophy "A node is a node. All nodes are mandatory relays."
+                                // Former gate `info.agent_version.contains("relay")` incorrectly distinguished infrastructure vs user nodes.
+                                // Now every identified peer is registered as mesh relay-capable.
+                                {
+                                    tracing::debug!("Peer {} registered as mesh relay peer (agent: {})", peer_id, info.agent_version);
                                     bootstrap_capability.add_peer(peer_id);
                                     multi_path_delivery.add_relay(peer_id);
-                                    // Mycorrhizal routing: mark relay-capable peer as gateway
+                                    // Mycorrhizal routing: mark peer as gateway
                                     let gw_bytes = extract_peer_id_bytes(&peer_id.to_bytes());
                                     {
                                         let mut guard = routing_engine_handle.write();
@@ -4946,9 +5150,9 @@ pub async fn start_swarm_with_config(
                                         }
                                     }
 
-                                    // Keep only the relay's own direct Identify addresses for
+                                    // Keep only the peer's own direct Identify addresses for
                                     // future circuit construction. Never use this node's
-                                    // external addresses as if they belonged to the relay:
+                                    // external addresses as if they belonged to the peer:
                                     // that creates self-returning and nested circuits as the
                                     // mesh grows.
                                     let local_transport_addrs: Vec<String> = bound_addresses
@@ -5062,6 +5266,11 @@ pub async fn start_swarm_with_config(
                                 // P1 Item 3: Reset backoff state on successful connection
                                 let addr_key = multiaddr_to_key(&remote_addr);
                                 dial_policy_manager.reset_on_connection_established(&addr_key, Some(peer_id));
+                                // An established connection is proof of liveness for the PEER,
+                                // not just this address: clear dead/backoff on every addr entry
+                                // attributed to this peer (inbound remote addrs are ephemeral
+                                // ports that never match the dialed addr_key).
+                                dial_policy_manager.reset_peer_backoff(peer_id);
                                 // Complete the dial attempt since it succeeded
                                 dial_policy_manager.complete_dial_attempt(&addr_key);
 
@@ -5114,6 +5323,12 @@ pub async fn start_swarm_with_config(
                                 if let Some(c) = &core_handle {
                                     if let Some(c_arc) = c.upgrade() {
                                         let fp = crate::store::transport_memory::get_network_fingerprint();
+                                        // TRANSPORT_UNIFICATION: placeholder means cache is per-device not per-network.
+                                        // Callers handle this by treating missing last_good as "no preference" and
+                                        // probing the full ladder; recording still uses the placeholder key (global).
+                                        if crate::store::transport_memory::is_placeholder_fingerprint(&fp) {
+                                            tracing::debug!("[TRANSPORT-MEMORY] placeholder fingerprint in use — cache is per-device (not per-network) until BSSID bridge is wired");
+                                        }
                                         let mut transport = String::new();
                                         let mut port = 0;
                                         for p in remote_addr.iter() {
@@ -5124,7 +5339,17 @@ pub async fn start_swarm_with_config(
                                             }
                                         }
                                         if port > 0 {
-                                            let _ = c_arc.transport_memory.read().record_success(&peer_id, &fp, transport, port, 0);
+                                            let _ = c_arc.transport_memory.read().record_success(&peer_id, &fp, transport.clone(), port, 0);
+                                            // Port-probing knowledge surface (companion to
+                                            // [HINT-DIAL] candidate logging): which port
+                                            // actually proved reachable per peer.
+                                            tracing::debug!(
+                                                "[PORT-REACHABLE] peer={} transport={} port={} via={}",
+                                                peer_id,
+                                                transport,
+                                                port,
+                                                remote_addr
+                                            );
                                         }
 
                                         // Review F11: `record_connection` had ZERO callers in
@@ -5677,6 +5902,22 @@ pub async fn start_swarm_with_config(
                         match command {
                             #[cfg(not(target_arch = "wasm32"))]
                             SwarmCommand::SendMessage { peer_id, envelope_data, recipient_identity_id, intended_device_id, reply } => {
+                                // ENVELOPE-HINT DIALING: when the routing table only knows
+                                // stale candidates (live-cell failure 2026-08-25:
+                                // `route=direct relay=- candidate=1/1` against a peer that
+                                // had long left the LAN), the recipient's identity envelope
+                                // carries its CURRENT reachables. Dial those hints now so
+                                // the direct route below has a live connection to ride on,
+                                // instead of burning retries and drifting into store-and-
+                                // forward for something one dial could have delivered.
+                                if !swarm.is_connected(&peer_id) {
+                                    try_envelope_hint_dial(
+                                        &mut swarm,
+                                        &dial_policy_manager,
+                                        peer_id,
+                                    );
+                                }
+
                                 // PHASE 6: Multi-path delivery with routing engine integration
                                 let message_id = format!("{}-{}", peer_id, SystemTime::now().duration_since(UNIX_EPOCH).expect("system clock before UNIX_EPOCH").as_millis());
 
@@ -5980,6 +6221,12 @@ pub async fn start_swarm_with_config(
                                         Some(pid) => {
                                             let mut candidates = vec![addr.clone()];
                                             let fp = crate::store::transport_memory::get_network_fingerprint();
+                                            // TRANSPORT_UNIFICATION: placeholder is handled by falling back to full
+                                            // port ladder when get_last_good returns None. Using the placeholder
+                                            // key is safe — it just means the cache is global, not per-network.
+                                            if crate::store::transport_memory::is_placeholder_fingerprint(&fp) {
+                                                tracing::debug!("[TRANSPORT-MEMORY] placeholder fingerprint — per-device cache, probing full ladder for {}", pid);
+                                            }
 
                                             if let Some(c) = &core_handle {
                                                 if let Some(c_arc) = c.upgrade() {
@@ -6399,12 +6646,17 @@ pub async fn start_swarm_with_config(
                                     None => (Vec::new(), Vec::new()),
                                 };
 
+                                // UNIFICATION_V2_TRANSPORT: dynamic NetworkMode — RFC1918 only
+                                // when we ourselves are on a private LAN. Treat AWS etc as
+                                // regular node; reliability emerges from ledger freshness,
+                                // not node class.
+                                let seed_mode = infer_seed_network_mode(&my_addrs);
                                 let candidates = build_seed_dial_candidates(
                                     proven,
                                     seeds,
                                     &bootstrap_addrs_clone,
                                     &my_addrs,
-                                    crate::transport::addr_filter::NetworkMode::Local,
+                                    seed_mode,
                                 );
 
                                 // Dial the first candidate that the swarm accepts, then wait
@@ -7987,11 +8239,13 @@ mod tests {
     use super::{
         build_mdns_dial_addr, build_routable_relay_addrs, extract_ed25519_public_key_from_peer_id,
         is_ledger_exchange_path_failure, peer_is_blocked, rearm_ledger_exchange_after_failure,
-        resolve_dial_target, should_apply_delivery_convergence_marker,
-        target_peer_id_from_multiaddr, validate_delivery_convergence_marker_shape,
-        verify_registration_message, DeliveryConvergenceMarker, PendingCustodyDispatch,
-        PendingMessage, RelayAbuseGuardrails, RELAY_DUPLICATE_WINDOW_MS,
-        RELAY_PEER_BUCKET_BURST_CAPACITY, RELAY_PEER_BUCKET_REFILL_PER_SEC,
+        resolve_dial_target, select_drift_fallback_carrier,
+        should_apply_delivery_convergence_marker, target_peer_id_from_multiaddr,
+        try_envelope_hint_dial, validate_delivery_convergence_marker_shape,
+        verify_registration_message, wrap_in_drift_frame, DeliveryConvergenceMarker,
+        PendingCustodyDispatch, PendingMessage, RelayAbuseGuardrails, RelayRequest,
+        RELAY_DUPLICATE_WINDOW_MS, RELAY_PEER_BUCKET_BURST_CAPACITY,
+        RELAY_PEER_BUCKET_REFILL_PER_SEC,
     };
     use crate::identity::IdentityKeys;
     use crate::store::relay_custody::RelayCustodyStore;
@@ -8023,6 +8277,145 @@ mod tests {
         ));
         assert!(!pending.contains_key(peer));
         assert!(!exchanged.contains(peer));
+    }
+
+    #[test]
+    fn drift_fallback_carrier_skips_target_and_self() {
+        let local = PeerId::random();
+        let target = PeerId::random();
+        let relay = PeerId::random();
+
+        assert_eq!(select_drift_fallback_carrier([], target, local), None);
+        assert_eq!(select_drift_fallback_carrier([target], target, local), None);
+        assert_eq!(select_drift_fallback_carrier([local], target, local), None);
+        assert_eq!(
+            select_drift_fallback_carrier([target, local, relay], target, local),
+            Some(relay)
+        );
+    }
+
+    #[test]
+    fn drift_custody_roundtrip_holds_envelope_until_pickup_and_delivery() {
+        use crate::store::relay_custody::{CustodyState, RelayCustodyStore};
+
+        let source = PeerId::random();
+        let destination = PeerId::random();
+        let store = RelayCustodyStore::in_memory();
+        let envelope = vec![7u8; 64];
+
+        let custody = store
+            .accept_custody(
+                source.to_string(),
+                destination.to_string(),
+                "msg-drift-fallback".to_string(),
+                envelope.clone(),
+                None,
+                None,
+            )
+            .expect("custody acceptance must succeed");
+
+        // Envelope held in Accepted state until the destination connects.
+        assert_eq!(custody.state, CustodyState::Accepted);
+        let pending = store.pending_for_destination(&destination.to_string(), 64);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].envelope_data, envelope);
+        assert_eq!(pending[0].relay_message_id, "msg-drift-fallback");
+
+        // Pickup: mark dispatching, recipient ACKs, custody is finalized.
+        store
+            .mark_dispatching(&destination.to_string(), &custody.custody_id, "drift_pull")
+            .expect("dispatch marking must succeed");
+        store
+            .mark_delivered(
+                &destination.to_string(),
+                &custody.custody_id,
+                "recipient_ack",
+            )
+            .expect("delivery marking must succeed");
+        assert!(store
+            .pending_for_destination(&destination.to_string(), 64)
+            .is_empty());
+    }
+
+    /// Relay-as-bridge handoff with an AWS-shaped carrier: sender cannot reach
+    /// the destination, the AWS relay is the only connected peer, custody is
+    /// accepted on the carrier, held through the partition, then picked up and
+    /// finalized when the destination reconnects. Byte-exact envelope round
+    /// trip sender → carrier custody → destination pickup.
+    #[test]
+    fn drift_relay_bridge_aws_carrier_holds_envelope_until_destination_pickup() {
+        use crate::store::relay_custody::{CustodyState, RelayCustodyStore};
+
+        let sender = PeerId::random();
+        let destination = PeerId::random();
+        let aws_relay = PeerId::random();
+
+        // Carrier selection must land on the AWS relay (never the target or self).
+        assert_eq!(
+            select_drift_fallback_carrier([destination, sender, aws_relay], destination, sender),
+            Some(aws_relay)
+        );
+
+        // Sender commits custody to the AWS carrier (the exact RelayRequest
+        // payload shape dispatch uses).
+        let carrier_store = RelayCustodyStore::in_memory();
+        let envelope: Vec<u8> = (0..128u8).cycle().take(512).collect();
+        let relay_request = RelayRequest {
+            destination_peer: destination.to_bytes(),
+            envelope_data: wrap_in_drift_frame(&envelope),
+            message_id: "msg-aws-bridge".to_string(),
+            recipient_identity_id: None,
+            intended_device_id: None,
+        };
+
+        // Carrier side: unwrap the drift frame exactly as its inbound relay
+        // handler does before accept_custody.
+        let framed = relay_request.envelope_data;
+        let unwrapped = crate::drift::DriftFrame::from_bytes(&framed)
+            .expect("carrier must decode the DriftFrame it was handed")
+            .payload;
+        assert_eq!(unwrapped, envelope);
+
+        let custody = carrier_store
+            .accept_custody(
+                sender.to_string(),
+                destination.to_string(),
+                relay_request.message_id.clone(),
+                unwrapped,
+                relay_request.recipient_identity_id.clone(),
+                relay_request.intended_device_id.clone(),
+            )
+            .expect("AWS carrier must accept custody");
+        assert_eq!(custody.state, CustodyState::Accepted);
+
+        // Partition window: nothing pending anywhere else, envelope only in
+        // carrier custody, byte-exact.
+        {
+            let held = carrier_store.pending_for_destination(&destination.to_string(), 64);
+            assert_eq!(held.len(), 1);
+            assert_eq!(held[0].envelope_data, envelope);
+            assert_eq!(held[0].relay_message_id, "msg-aws-bridge");
+        }
+
+        // Destination reconnects; periodic pull marks dispatching and the
+        // recipient ACK finalizes custody.
+        carrier_store
+            .mark_dispatching(
+                &destination.to_string(),
+                &custody.custody_id,
+                "periodic_pull",
+            )
+            .expect("dispatch marking must succeed after reconnect");
+        carrier_store
+            .mark_delivered(
+                &destination.to_string(),
+                &custody.custody_id,
+                "recipient_ack",
+            )
+            .expect("delivery marking must succeed");
+        assert!(carrier_store
+            .pending_for_destination(&destination.to_string(), 64)
+            .is_empty());
     }
 
     #[test]

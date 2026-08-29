@@ -258,10 +258,16 @@ async fn handle_send_message(
         .parse::<libp2p::PeerId>()
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid peer ID: {}", e)))?;
 
+    // Identity-envelope parity with Android/iOS (see api.rs
+    // build_identity_wrapped_text): wrap chat text so receivers learn our
+    // nickname + route hints.
+    let wire_text =
+        crate::api::build_identity_wrapped_text(core, &ctx.swarm_handle, &request.message).await;
+
     let prepared = core
         .prepare_message_with_id(
             contact.public_key.clone(),
-            request.message.clone(),
+            wire_text,
             scmessenger_core::MessageType::Text,
             None,
         )
@@ -272,14 +278,20 @@ async fn handle_send_message(
             )
         })?;
 
-    let sent = crate::ble_mesh::send_ble_message(&peer_id.to_string(), &prepared.envelope_data)
+    let ble_ok = crate::ble_mesh::send_ble_message(&peer_id.to_string(), &prepared.envelope_data)
         .await
-        .is_ok()
-        || ctx
-            .swarm_handle
-            .send_message(peer_id, prepared.envelope_data, None, None)
-            .await
-            .is_ok();
+        .is_ok();
+    let swarm_ok = ctx
+        .swarm_handle
+        .send_message(peer_id, prepared.envelope_data, None, None)
+        .await
+        .is_ok();
+    if swarm_ok {
+        // Only the swarm path is a true transport ACK (BLE gatt write is
+        // fire-and-forget). Release the outbox entry (R2) strictly on it.
+        core.mark_message_sent(prepared.message_id.clone());
+    }
+    let sent = ble_ok || swarm_ok;
 
     if !sent {
         return Err((
